@@ -58,12 +58,26 @@ jobs:
         run: |
           go mod download
 
+      - name: Make LXD tarball and unpack it
+        env:
+          CUSTOM_VERSION: "test"
+        run: |
+          make dist
+          tar -xzf lxd-test.tar.gz
+
+      - name: Build LXD dependencies
+        run: |
+          cd lxd-test
+          make deps
+
       - name: Run LXD build
         run: |
+          cd lxd-test
           make
 
       - name: Run static analysis
         run: |
+          rm -rf lxd-test
           make static-analysis
 
       - name: Unit tests (all)
