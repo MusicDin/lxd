@@ -58,11 +58,6 @@ jobs:
         run: |
           go mod download
 
-      - name: Unit tests (all)
-        run: |
-          sudo go test ./...
-          sudo rm -f /tmp/lxddoc.log
-
       - name: Make LXD tarball and unpack it
         env:
           CUSTOM_VERSION: "test"
@@ -80,7 +75,15 @@ jobs:
           cd lxd-test
           make
 
+      - name: Cleanup generated files
+        run: |
+          rm -rf lxd-test
+          sudo rm -f /tmp/lxddoc.log
+
       - name: Run static analysis
         run: |
-          rm -rf lxd-test/
           make static-analysis
+
+      - name: Unit tests (all)
+        run: |
+          sudo go test ./...
