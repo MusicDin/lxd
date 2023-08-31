@@ -78,7 +78,7 @@ jobs:
       - name: Cleanup generated files
         run: |
           rm -rf lxd-test
-          sudo rm -f /tmp/lxddoc.log
+          rm -f /tmp/lxddoc.log
 
       - name: Run static analysis
         run: |
