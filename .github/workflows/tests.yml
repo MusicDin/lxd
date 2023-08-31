@@ -61,6 +61,7 @@ jobs:
       - name: Unit tests (all)
         run: |
           sudo go test ./...
+          sudo rm -f /tmp/lxddoc.log
 
       - name: Make LXD tarball and unpack it
         env:
