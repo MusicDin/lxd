@@ -59,10 +59,6 @@ jobs:
         run: |
           go mod download
 
-      - name: Unit tests (all)
-        run: |
-          sudo go test ./...
-
       - name: Run static analysis
         run: |
           make static-analysis
@@ -88,4 +84,9 @@ jobs:
         run: |
           cd lxd-test
           make
+
+      - name: Unit tests (all)
+        run: |
+          cd lxd-test
+          sudo go test ./...
 
