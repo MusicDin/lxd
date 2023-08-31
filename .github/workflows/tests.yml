@@ -46,6 +46,7 @@ jobs:
             libsqlite3-dev \
             libtool \
             libudev-dev \
+            libuv1-dev \
             make \
             pkg-config \
             shellcheck
