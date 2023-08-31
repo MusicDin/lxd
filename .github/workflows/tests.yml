@@ -77,7 +77,7 @@ jobs:
 
       - name: Run static analysis
         run: |
-          rm -rf lxd-test
+          rm -rf lxd-test/
           make static-analysis
 
       - name: Unit tests (all)
