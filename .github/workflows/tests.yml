@@ -81,13 +81,14 @@ jobs:
           cd lxd-test
           make
 
-      - name: Cleanup generated files
-        run: |
-          rm -rf lxd-test
-          rm -f /tmp/lxddoc.log
+      # - name: Cleanup generated files
+      #   run: |
+      #     rm -rf lxd-test
+      #     rm -f /tmp/lxddoc.log
 
       - name: Run static analysis
         run: |
+          cd lxd-test
           make static-analysis
 
       - name: Unit tests (all)
