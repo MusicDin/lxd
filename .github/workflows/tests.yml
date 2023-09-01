@@ -55,6 +55,7 @@ jobs:
             make \
             pkg-config \
             shellcheck \
+            sqlite3 \
             build-essential
 
           sudo apt list --installed
@@ -89,4 +90,5 @@ jobs:
 
       - name: Unit tests (all)
         run: |
+          rm -f /tmp/lxddoc.log
           sudo go test ./...
