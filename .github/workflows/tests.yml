@@ -49,7 +49,27 @@ jobs:
             libuv1-dev \
             make \
             pkg-config \
-            shellcheck
+            shellcheck \
+            acl \
+            attr \
+            autoconf \
+            automake \
+            dnsmasq-base \
+            liblxc1 \
+            liblz4-dev \
+            rsync \
+            tcl \
+            xz-utils \
+            ebtables
+
+
+
+
+# apt -y install acl attr autoconf automake dnsmasq-base git libacl1-dev libcap-dev liblxc1 liblxc-dev libsqlite3-dev libtool libudev-dev liblz4-dev libuv1-dev make pkg-config rsync squashfs-tools tar tcl xz-utils ebtables
+# apt -y install lvm2 thin-provisioning-tools
+# apt -y install btrfs-progs
+# apt -y install curl gettext jq sqlite3 socat bind9-dnsutils
+# apt -y install shellcheck
 
           sudo apt list --installed
 
