@@ -49,13 +49,13 @@ jobs:
             libseccomp-dev \
             libselinux-dev \
             libsqlite3-dev \
+            libdqlite-dev \
             libtool \
             libudev-dev \
             libuv1-dev \
             make \
             pkg-config \
             shellcheck \
-            sqlite3 \
             build-essential
 
           sudo apt list --installed
@@ -84,11 +84,11 @@ jobs:
           cd /home/runner/work/lxd/lxd-test
           make
 
-      - name: Run static analysis
-        run: |
-          make static-analysis
-
       - name: Unit tests (all)
         run: |
           rm -f /tmp/lxddoc.log
           sudo go test ./...
+
+      - name: Run static analysis
+        run: |
+          make static-analysis
