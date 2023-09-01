@@ -92,4 +92,5 @@ jobs:
       - name: Unit tests (all)
         run: |
           rm -f /tmp/lxddoc.log
+          cd /home/runner/work/lxd/lxd-test
           sudo go test ./...
