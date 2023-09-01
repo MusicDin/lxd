@@ -14,7 +14,7 @@ jobs:
   code-tests:
     env:
       CGO_LDFLAGS_ALLOW: "(-Wl,-wrap,pthread_create)|(-Wl,-z,now)"
-      CGO_LDFLAGS: "-L${HOME}/work/lxd/lxd-test/vendor/raft/.libs -L${HOME}/work/lxd/lxd-test/vendor/dqlite/.libs/"
+      CGO_LDFLAGS: "-L${HOME}/work/lxd/lxd-test/vendor/raft/.libs/ -L${HOME}/work/lxd/lxd-test/vendor/dqlite/.libs/"
       CGO_CFLAGS: "-I${HOME}/work/lxd/lxd-test/vendor/raft/include/ -I${HOME}/work/lxd/lxd-test/vendor/dqlite/include/"
       LD_RUN_PATH: "${HOME}/work/lxd/lxd-test/vendor/raft/.libs/:${HOME}/work/lxd/lxd-test/vendor/dqlite/.libs/"
       LD_LIBRARY_PATH: "${HOME}/work/lxd/lxd-test/vendor/raft/.libs/:${HOME}/work/lxd/lxd-test/vendor/dqlite/.libs/"
