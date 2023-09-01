@@ -49,9 +49,6 @@ jobs:
             lxc-templates \
             libseccomp-dev \
             libselinux-dev \
-            libsqlite3-dev \
-            libsqlite-dev \
-            sqlite3 \
             libtool \
             libudev-dev \
             libuv1-dev \
