@@ -12,12 +12,6 @@ concurrency:
 
 jobs:
   code-tests:
-    env:
-      CGO_LDFLAGS_ALLOW: "(-Wl,-wrap,pthread_create)|(-Wl,-z,now)"
-      CGO_LDFLAGS: "-L${HOME}/work/lxd/lxd-test/vendor/raft/.libs/ -L${HOME}/work/lxd/lxd-test/vendor/dqlite/.libs/"
-      CGO_CFLAGS: "-I${HOME}/work/lxd/lxd-test/vendor/raft/include/ -I${HOME}/work/lxd/lxd-test/vendor/dqlite/include/"
-      LD_RUN_PATH: "${HOME}/work/lxd/lxd-test/vendor/raft/.libs/:${HOME}/work/lxd/lxd-test/vendor/dqlite/.libs/"
-      LD_LIBRARY_PATH: "${HOME}/work/lxd/lxd-test/vendor/raft/.libs/:${HOME}/work/lxd/lxd-test/vendor/dqlite/.libs/"
     name: Code tests
     runs-on: ubuntu-22.04
     steps:
@@ -88,14 +82,29 @@ jobs:
           make deps
 
       - name: Run LXD build
+        env:
+          CGO_LDFLAGS_ALLOW: "(-Wl,-wrap,pthread_create)|(-Wl,-z,now)"
+          CGO_LDFLAGS: "-L${HOME}/work/lxd/lxd-test/vendor/raft/.libs -L${HOME}/work/lxd/lxd-test/vendor/dqlite/.libs/"
+          CGO_CFLAGS: "-I${HOME}/work/lxd/lxd-test/vendor/raft/include/ -I${HOME}/work/lxd/lxd-test/vendor/dqlite/include/"
+          LD_LIBRARY_PATH: "${HOME}/work/lxd/lxd-test/vendor/raft/.libs/:${HOME}/work/lxd/lxd-test/vendor/dqlite/.libs/"
         run: |
           make
 
       - name: Unit tests (all)
+        env:
+          CGO_LDFLAGS_ALLOW: "(-Wl,-wrap,pthread_create)|(-Wl,-z,now)"
+          CGO_LDFLAGS: "-L${HOME}/work/lxd/lxd-test/vendor/raft/.libs -L${HOME}/work/lxd/lxd-test/vendor/dqlite/.libs/"
+          CGO_CFLAGS: "-I${HOME}/work/lxd/lxd-test/vendor/raft/include/ -I${HOME}/work/lxd/lxd-test/vendor/dqlite/include/"
+          LD_LIBRARY_PATH: "${HOME}/work/lxd/lxd-test/vendor/raft/.libs/:${HOME}/work/lxd/lxd-test/vendor/dqlite/.libs/"
         run: |
           rm -f /tmp/lxddoc.log
           sudo go test ./...
 
       - name: Run static analysis
+        env:
+          CGO_LDFLAGS_ALLOW: "(-Wl,-wrap,pthread_create)|(-Wl,-z,now)"
+          CGO_LDFLAGS: "-L${HOME}/work/lxd/lxd-test/vendor/raft/.libs -L${HOME}/work/lxd/lxd-test/vendor/dqlite/.libs/"
+          CGO_CFLAGS: "-I${HOME}/work/lxd/lxd-test/vendor/raft/include/ -I${HOME}/work/lxd/lxd-test/vendor/dqlite/include/"
+          LD_LIBRARY_PATH: "${HOME}/work/lxd/lxd-test/vendor/raft/.libs/:${HOME}/work/lxd/lxd-test/vendor/dqlite/.libs/"
         run: |
           make static-analysis
