@@ -76,6 +76,10 @@ jobs:
           cd ~/work/lxd/lxd-test
           make deps
 
+      - name: Unit tests (all)
+        run: |
+          sudo go test ./...
+
       - name: Run LXD build
         run: |
           make
@@ -83,7 +87,3 @@ jobs:
       - name: Run static analysis
         run: |
           make static-analysis
-
-      - name: Unit tests (all)
-        run: |
-          sudo go test ./...
