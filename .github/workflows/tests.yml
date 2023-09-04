@@ -76,14 +76,15 @@ jobs:
           cd ~/work/lxd/lxd-test
           make deps
 
-      - name: Unit tests (all)
-        run: |
-          sudo --preserve-env go test ./...
-
       - name: Run LXD build
         run: |
           make
 
+      - name: Unit tests (all)
+        run: |
+          cd ~/work/lxd/lxd-test
+          sudo --preserve-env go test ./...
+          
       - name: Run static analysis
         run: |
           make static-analysis
