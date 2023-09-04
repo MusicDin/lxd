@@ -78,7 +78,7 @@ jobs:
 
       - name: Unit tests (all)
         run: |
-          go test ./...
+          sudo --preserve-env go test ./...
 
       - name: Run LXD build
         run: |
