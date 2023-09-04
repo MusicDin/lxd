@@ -78,7 +78,7 @@ jobs:
 
       - name: Unit tests (all)
         run: |
-          sudo go test ./...
+          sudo --preserve-env=CGO_CFLAGS,CGO_LDFLAGS,CGO_LDFLAGS_ALLOW,LD_LIBRARY_PATH go test ./...
 
       - name: Run LXD build
         run: |
