@@ -48,6 +48,7 @@ jobs:
             lxc-templates \
             libseccomp-dev \
             libselinux-dev \
+            libsqlite3-dev \
             libtool \
             libudev-dev \
             libuv1-dev \
@@ -84,7 +85,6 @@ jobs:
         env:
           CGO_ENABLED: 0
         run: |
-          cd ~/work/lxd/lxd-test
           sudo --preserve-env=CGO_CFLAGS,CGO_LDFLAGS,CGO_LDFLAGS_ALLOW,LD_LIBRARY_PATH go test ./...
           
       - name: Run static analysis
