@@ -85,7 +85,7 @@ jobs:
           CGO_ENABLED: 0
         run: |
           cd ~/work/lxd/lxd-test
-          sudo --preserve-env go test ./...
+          sudo --preserve-env=CGO_CFLAGS,CGO_LDFLAGS,CGO_LDFLAGS_ALLOW,LD_LIBRARY_PATH go test ./...
           
       - name: Run static analysis
         run: |
