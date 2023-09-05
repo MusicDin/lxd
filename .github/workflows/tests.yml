@@ -85,7 +85,7 @@ jobs:
         env:
           CGO_ENABLED: 0
         run: |
-          sudo --preserve-env=CGO_CFLAGS,CGO_LDFLAGS,CGO_LDFLAGS_ALLOW,LD_LIBRARY_PATH go test ./...
+          sudo --preserve-env=CGO_ENABLED,CGO_CFLAGS,CGO_LDFLAGS,CGO_LDFLAGS_ALLOW,LD_LIBRARY_PATH go test ./...
           
       - name: Run static analysis
         run: |
