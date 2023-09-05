@@ -49,6 +49,7 @@ jobs:
             libseccomp-dev \
             libselinux-dev \
             libsqlite3-dev \
+            libsqlite3-0 \
             libtool \
             libudev-dev \
             libuv1-dev \
