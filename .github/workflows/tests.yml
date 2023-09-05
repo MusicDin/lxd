@@ -14,7 +14,7 @@ jobs:
   code-tests:
     env:
       CGO_CFLAGS: "-I/home/runner/work/lxd/lxd-test/vendor/raft/include/ -I/home/runner/work/lxd/lxd-test/vendor/dqlite/include/"
-      CGO_LDFLAGS: "-L/home/runner/work/lxd/lxd-test/vendor/raft/.libs/ -L/home/runner/work/lxd/lxd-test/vendor/dqlite/.libs/"
+      CGO_LDFLAGS: "-L/home/runner/work/lxd/lxd-test/vendor/raft/.libs -L/home/runner/work/lxd/lxd-test/vendor/dqlite/.libs/"
       LD_LIBRARY_PATH: "/home/runner/work/lxd/lxd-test/vendor/raft/.libs/:/home/runner/work/lxd/lxd-test/vendor/dqlite/.libs/"
       CGO_LDFLAGS_ALLOW: "(-Wl,-wrap,pthread_create)|(-Wl,-z,now)"
     name: Code tests
@@ -80,6 +80,12 @@ jobs:
       - name: Run LXD build
         run: |
           make
+      
+      - name: Debugging
+        run: |
+          ls -l /home/runner/work/lxd/lxd-test/vendor/dqlite/.libs/
+          echo $LD_LIBRARY_PATH
+          sudo ldconfig -v
 
       - name: Unit tests (all)
         run: |
