@@ -81,6 +81,8 @@ jobs:
           make
 
       - name: Unit tests (all)
+        env:
+          CGO_ENABLED: 0
         run: |
           cd ~/work/lxd/lxd-test
           sudo --preserve-env go test ./...
