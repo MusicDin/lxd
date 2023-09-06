@@ -50,7 +50,7 @@ jobs:
             libselinux-dev \
             libsqlite3-dev \
             libsqlite3-0 \
-            libsqlite-0 \
+            libdqlite0 \
             libtool \
             libudev-dev \
             libuv1-dev \
