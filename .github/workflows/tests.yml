@@ -91,7 +91,7 @@ jobs:
       - name: Unit tests (all)
         run: |
           pwd
-          sudo --preserve-env=GOPATH,CGO_CFLAGS,CGO_LDFLAGS,CGO_LDFLAGS_ALLOW,LD_LIBRARY_PATH go test ./...
+          sudo --preserve-env=PATH,GOPATH,CGO_CFLAGS,CGO_LDFLAGS,CGO_LDFLAGS_ALLOW,LD_LIBRARY_PATH go test ./...
           
       - name: Run static analysis
         run: |
