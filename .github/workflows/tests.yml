@@ -35,6 +35,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo add-apt-repository ppa:ubuntu-lxc/lxc-git-master -y --no-update
+          sudo add-apt-repository ppa:dqlite/dev -y --no-update
           sudo apt-get update
 
           sudo apt-get install --no-install-recommends -y \
@@ -49,7 +50,6 @@ jobs:
             libseccomp-dev \
             libselinux-dev \
             libsqlite3-dev \
-            libsqlite3-0 \
             libdqlite0 \
             libtool \
             libudev-dev \
