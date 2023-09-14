@@ -382,6 +382,7 @@ var APIExtensions = []string{
 	"zfs_delegate",
 	"operations_get_query_all_projects",
 	"metadata_configuration",
+	"disk_initial_volume_configuration",
 }
 
 // APIExtensionsCount returns the number of available API extensions.
