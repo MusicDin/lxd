@@ -2285,3 +2285,12 @@ This parameter allows bypassing the project name filter.
 ## `metadata_configuration`
 Adds the `GET /1.0/metadata/configuration` API endpoint to retrieve the generated metadata configuration in a JSON format. The JSON structure adopts the structure ```"configs" > `ENTITY` > `ENTITY_SECTION` > "keys" > [<CONFIG_OPTION_0>, <CONFIG_OPTION_1>, ...]```.
 Check the list of {doc}`configuration options </config-options>` to see which configuration options are included.
+
+## `disk_initial_volume_configuration`
+
+This API extension provides the capability to set initial volume configurations for instance root devices.
+Initial volume configurations are prefixed with `initial.` and can be specified either through profiles or directly
+during instance initialization using the `--device` flag.
+
+Note that these configuration are applied only at the time of instance creation and subsequent modifications have
+no effect on existing devices.
