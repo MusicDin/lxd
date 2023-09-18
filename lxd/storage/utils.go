@@ -431,19 +431,24 @@ func poolAndVolumeCommonRules(vol *drivers.Volume) map[string]func(string) error
 		// Note: size should not be modifiable for non-custom volumes and should be checked
 		// in the relevant volume update functions.
 		"size": validate.Optional(validate.IsSize),
-		"snapshots.expiry": func(value string) error {
-			// Validate expression
-			_, err := shared.GetExpiry(time.Time{}, value)
-			return err
-		},
-		"snapshots.schedule": validate.Optional(validate.IsCron([]string{"@hourly", "@daily", "@midnight", "@weekly", "@monthly", "@annually", "@yearly"})),
-		"snapshots.pattern":  validate.IsAny,
 	}
 
 	// security.shifted and security.unmapped are only relevant for custom filesystem volumes.
 	if (vol == nil) || (vol != nil && vol.Type() == drivers.VolumeTypeCustom && vol.ContentType() == drivers.ContentTypeFS) {
 		rules["security.shifted"] = validate.Optional(validate.IsBool)
 		rules["security.unmapped"] = validate.Optional(validate.IsBool)
+	}
+
+	// volume snapshot settings are only applicable for custom volumes. For instance volumes, they have
+	// to be set on instance level.
+	if vol != nil && vol.Type() == drivers.VolumeTypeCustom {
+		rules["snapshots.schedule"] = validate.Optional(validate.IsCron([]string{"@hourly", "@daily", "@midnight", "@weekly", "@monthly", "@annually", "@yearly"}))
+		rules["snapshots.pattern"] = validate.IsAny
+		rules["snapshots.expiry"] = func(value string) error {
+			// Validate expression
+			_, err := shared.GetExpiry(time.Time{}, value)
+			return err
+		}
 	}
 
 	return rules
