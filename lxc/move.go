@@ -192,35 +192,43 @@ func (c *cmdMove) Run(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Support for server-side pool move.
-	if c.flagStorage != "" && sourceRemote == destRemote {
+	// Support for server-side project move.
+	if sourceRemote == destRemote {
 		source, err := conf.GetInstanceServer(sourceRemote)
 		if err != nil {
 			return err
 		}
 
-		if source.HasExtension("instance_pool_move") {
+		moveDone := false
+
+		if c.flagStorage != "" && source.HasExtension("instance_pool_move") {
 			if c.flagMode != moveDefaultMode {
 				return fmt.Errorf(i18n.G("The --mode flag can't be used with --storage"))
 			}
 
-			return moveInstancePool(conf, sourceResource, destResource, c.flagInstanceOnly, c.flagStorage, stateful)
-		}
-	}
+			err := moveInstancePool(conf, sourceResource, destResource, c.flagInstanceOnly, c.flagStorage, stateful)
+			if err != nil {
+				return err
+			}
 
-	// Support for server-side project move.
-	if c.flagTargetProject != "" && sourceRemote == destRemote {
-		source, err := conf.GetInstanceServer(sourceRemote)
-		if err != nil {
-			return err
+			moveDone = true
 		}
 
-		if source.HasExtension("instance_project_move") {
+		if c.flagTargetProject != "" && source.HasExtension("instance_project_move") {
 			if c.flagMode != moveDefaultMode {
 				return fmt.Errorf(i18n.G("The --mode flag can't be used with --target-project"))
 			}
 
-			return moveInstanceProject(conf, sourceResource, destResource, c.flagTargetProject, c.flagInstanceOnly, stateful)
+			err := moveInstanceProject(conf, sourceResource, destResource, c.flagTargetProject, c.flagInstanceOnly, stateful)
+			if err != nil {
+				return err
+			}
+
+			moveDone = true
+		}
+
+		if moveDone {
+			return nil
 		}
 	}
 
