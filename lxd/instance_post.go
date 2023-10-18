@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -573,15 +574,75 @@ func instancePostProjectMigration(s *state.State, inst instance.Instance, newNam
 		}
 	}
 
-	// Load source root disk from expanded devices (in case instance doesn't have its own root disk).
-	rootDevKey, rootDev, err := shared.GetRootDiskDevice(inst.ExpandedDevices().CloneNative())
-	if err != nil {
-		return err
-	}
-
-	// Copy device config from instance
+	// Copy device config from instance.
 	localDevices := inst.LocalDevices().Clone()
-	localDevices[rootDevKey] = rootDev
+
+	// Check if root disk device is present in the instance config. If instance config has not
+	// root disk device configured, check if any of the profiles that will be applied in the
+	// target project contain a root disk device. Lastly, set current root disk device in the
+	// instance's config.
+	_, _, err := shared.GetRootDiskDevice(inst.LocalDevices().CloneNative())
+	if err != nil && !errors.Is(err, shared.ErrNoRootDisk) {
+		return err
+	} else if errors.Is(err, shared.ErrNoRootDisk) {
+		instProfiles := make([]string, 0, len(inst.Profiles()))
+		for _, p := range inst.Profiles() {
+			instProfiles = append(instProfiles, p.Name)
+		}
+
+		rootDiskFound := false
+
+		// Find profiles that will be applied in target project and check if any of them contains
+		// root disk device.
+		err := s.DB.Cluster.Transaction(s.ShutdownCtx, func(ctx context.Context, tx *db.ClusterTx) error {
+			profiles, err := dbCluster.GetProfilesIfEnabled(ctx, tx.Tx(), newProject, instProfiles)
+			if err != nil {
+				return err
+			}
+
+			for _, p := range profiles {
+				// Get disk devices of the matching profile.
+				devDiskType := dbCluster.TypeDisk
+				devDiskfilter := dbCluster.DeviceFilter{
+					Type: &devDiskType,
+				}
+
+				disks, err := dbCluster.GetProfileDevices(ctx, tx.Tx(), p.ID, devDiskfilter)
+				if err != nil {
+					return err
+				}
+
+				devices := make(map[string]map[string]string)
+				for _, d := range disks {
+					devices[d.Name] = d.Config
+				}
+
+				_, _, err = shared.GetRootDiskDevice(devices)
+				if err != nil {
+					continue
+				}
+
+				rootDiskFound = true
+				break
+			}
+
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+
+		// If root disk device was not found in target project profiles, apply current root disk device
+		// to the instance's config.
+		if !rootDiskFound {
+			rootDevKey, rootDev, err := shared.GetRootDiskDevice(inst.ExpandedDevices().CloneNative())
+			if err != nil {
+				return err
+			}
+
+			localDevices[rootDevKey] = rootDev
+		}
+	}
 
 	// Specify the target instance config with the new name.
 	args := db.InstanceArgs{
