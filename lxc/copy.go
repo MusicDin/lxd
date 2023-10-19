@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"net/url"
+	"path"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -89,14 +91,14 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 		return fmt.Errorf(i18n.G("You must specify a destination instance name when using --target"))
 	}
 
+	// Check that a destination instance was specified, if --refresh is passed.
+	if destName == "" && c.flagRefresh {
+		return fmt.Errorf(i18n.G("You must specify a destination instance name when using --refresh"))
+	}
+
 	// Don't allow refreshing without profiles.
 	if c.flagRefresh && c.flagNoProfiles {
 		return fmt.Errorf(i18n.G("--no-profiles cannot be used with --refresh"))
-	}
-
-	// If no destination name was provided, use the same as the source
-	if destName == "" && destResource != "" {
-		destName = sourceName
 	}
 
 	// Connect to the source host
@@ -203,10 +205,6 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 		}
 
 		rootDiskDeviceKey, _, _ := shared.GetRootDiskDevice(entry.Devices)
-		if err != nil {
-			return err
-		}
-
 		if rootDiskDeviceKey != "" && pool != "" {
 			entry.Devices[rootDiskDeviceKey]["pool"] = pool
 		} else if pool != "" {
@@ -398,26 +396,33 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 	}
 
 	// If choosing a random name, show it to the user
-	if destResource == "" && c.flagTargetProject == "" {
+	if destName == "" && c.flagTargetProject == "" {
 		// Get the successful operation data
 		opInfo, err := op.GetTarget()
 		if err != nil {
 			return err
 		}
 
-		// Extract the list of affected instances
+		// Extract the list of affected instances.
+		// - copy returns destination and source instance
+		// - move (using copy) returns only dest instance
 		instances, ok := opInfo.Resources["instances"]
-		if !ok || len(instances) != 1 {
-			// Extract the list of affected instances using old "containers" field
+		if !ok || len(instances) == 0 {
+
+			// Extract the list of affected instances using old "containers" field.
 			instances, ok = opInfo.Resources["containers"]
-			if !ok || len(instances) != 1 {
+			if !ok || len(instances) == 0 {
 				return fmt.Errorf(i18n.G("Failed to get the new instance name"))
 			}
 		}
 
 		// Extract the name of the instance
-		fields := strings.Split(instances[0], "/")
-		fmt.Printf(i18n.G("Instance name is: %s")+"\n", fields[len(fields)-1])
+		url, err := url.Parse(path.Base(instances[0]))
+		if err != nil {
+			return fmt.Errorf(i18n.G("Failed to parse new instance name: %v"), err)
+		}
+
+		fmt.Printf(i18n.G("Instance name is: %s")+"\n", url.Path)
 	}
 
 	// Start the instance if needed
