@@ -724,7 +724,7 @@ func (r *ProtocolLXD) CreateInstanceFromImage(source ImageServer, image api.Imag
 func (r *ProtocolLXD) CopyInstance(source InstanceServer, instance api.Instance, args *InstanceCopyArgs) (RemoteOperation, error) {
 	// Base request
 	req := api.InstancesPost{
-		Name:        instance.Name,
+		Name:        args.Name,
 		InstancePut: instance.Writable(),
 		Type:        api.InstanceType(instance.Type),
 	}
@@ -1697,7 +1697,7 @@ func (r *ProtocolLXD) CopyInstanceSnapshot(source InstanceServer, instanceName s
 
 	// Base request
 	req := api.InstancesPost{
-		Name: cName,
+		Name: args.Name,
 		InstancePut: api.InstancePut{
 			Architecture: snapshot.Architecture,
 			Config:       snapshot.Config,
