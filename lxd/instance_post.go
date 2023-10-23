@@ -323,33 +323,11 @@ func instancePost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if req.Migration {
-		// Server-side pool migration.
-		if req.Pool != "" {
+		// Server-side instance migration.
+		if req.Pool != "" || req.Project != "" {
 			// Setup the instance move operation.
 			run := func(op *operations.Operation) error {
-				return instancePostPoolMigration(s, inst, req.Name, req.InstanceOnly, req.Pool, req.Live, req.AllowInconsistent, op)
-			}
-
-			resources := map[string][]api.URL{}
-			resources["instances"] = []api.URL{*api.NewURL().Path(version.APIVersion, "instances", name)}
-			op, err := operations.OperationCreate(s, projectName, operations.OperationClassTask, operationtype.InstanceMigrate, resources, nil, run, nil, nil, r)
-			if err != nil {
-				return response.InternalError(err)
-			}
-
-			return operations.OperationResponse(op)
-		}
-
-		// Server-side project migration.
-		if req.Project != "" {
-			// Check if user has access to target project
-			if !s.Authorizer.UserHasPermission(r, req.Project, "manage-containers") {
-				return response.Forbidden(nil)
-			}
-
-			// Setup the instance move operation.
-			run := func(op *operations.Operation) error {
-				return instancePostProjectMigration(s, inst, req.Name, req.Project, req.InstanceOnly, req.Live, req.AllowInconsistent, op)
+				return instancePostMigration(s, inst, req.Name, req.Pool, req.Project, req.InstanceOnly, req.Live, req.AllowInconsistent, op)
 			}
 
 			resources := map[string][]api.URL{}
@@ -459,8 +437,182 @@ func instancePost(d *Daemon, r *http.Request) response.Response {
 	return operations.OperationResponse(op)
 }
 
+// Move an instance.
+func instancePostMigration(s *state.State, inst instance.Instance, newName string, newPool string, newProject string, instanceOnly bool, stateful bool, allowInconsistent bool, op *operations.Operation) error {
+	// TODO: Pool only?
+	if inst.IsSnapshot() {
+		return fmt.Errorf("Instance snapshots cannot be moved between pools")
+	}
+
+	if newProject == "" {
+		newProject = inst.Project().Name
+	}
+
+	statefulStart := false
+	if inst.IsRunning() {
+		if stateful {
+			statefulStart = true
+			err := inst.Stop(true)
+			if err != nil {
+				return err
+			}
+		} else {
+			return api.StatusErrorf(http.StatusBadRequest, "Instance must be stopped to move between pools statelessly")
+		}
+	}
+
+	// Copy config from instance to avoid modifying it.
+	localConfig := make(map[string]string)
+	for k, v := range inst.LocalConfig() {
+		localConfig[k] = v
+	}
+
+	localDevices := inst.LocalDevices().Clone()
+
+	logger.Warnf("Local devices (before): %+v", localDevices)
+
+	// TODO: Handle pool configuration.
+
+	// Check if root disk device is present in the instance config. If instance config has not
+	// root disk device configured, check if any of the profiles that will be applied in the
+	// target project contain a root disk device. Lastly, set current root disk device in the
+	// instance's config.
+	rootDevKey, rootDev, err := shared.GetRootDiskDevice(inst.LocalDevices().CloneNative())
+	logger.Warnf("test: %+v", rootDevKey)
+	if err != nil && !errors.Is(err, shared.ErrNoRootDisk) {
+		return err
+
+	} else if errors.Is(err, shared.ErrNoRootDisk) {
+		instProfiles := make([]string, 0, len(inst.Profiles()))
+		for _, p := range inst.Profiles() {
+			instProfiles = append(instProfiles, p.Name)
+		}
+
+		// Find profiles that will be applied in target project and check if any of them contains
+		// root disk device.
+		err := s.DB.Cluster.Transaction(s.ShutdownCtx, func(ctx context.Context, tx *db.ClusterTx) error {
+			profiles, err := dbCluster.GetProfilesIfEnabled(ctx, tx.Tx(), newProject, instProfiles)
+			if err != nil {
+				return err
+			}
+
+			for _, p := range profiles {
+				// Get disk devices of the matching profile.
+				devDiskType := dbCluster.TypeDisk
+				devDiskfilter := dbCluster.DeviceFilter{
+					Type: &devDiskType,
+				}
+
+				disks, err := dbCluster.GetProfileDevices(ctx, tx.Tx(), p.ID, devDiskfilter)
+				if err != nil {
+					return err
+				}
+
+				devices := make(map[string]map[string]string)
+				for _, d := range disks {
+					devices[d.Name] = d.Config
+				}
+
+				rootDevKey, rootDev, err = shared.GetRootDiskDevice(devices)
+				if err != nil {
+					continue
+				}
+
+				break
+			}
+
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+
+		// If root disk device was not found in target project profiles, apply current root disk device
+		// to the instance's config.
+		if rootDev == nil {
+			rootDevKey, rootDev, err = shared.GetRootDiskDevice(inst.ExpandedDevices().CloneNative())
+			if err != nil {
+				return err
+			}
+
+			localDevices[rootDevKey] = rootDev
+		}
+	}
+
+	if newPool != "" {
+		logger.Warnf("Setting new root pool: %+v", newPool)
+		rootDev["pool"] = newPool
+		localDevices[rootDevKey] = rootDev
+	}
+
+	logger.Warnf("Local devices: %+v", localDevices)
+
+	// Specify the target instance config with the new name.
+	args := db.InstanceArgs{
+		Name:         newName,
+		BaseImage:    localConfig["volatile.base_image"],
+		Config:       localConfig,
+		Devices:      localDevices,
+		Project:      newProject,
+		Type:         inst.Type(),
+		Architecture: inst.Architecture(),
+		Description:  inst.Description(),
+		Ephemeral:    inst.IsEphemeral(),
+		Profiles:     inst.Profiles(),
+		Stateful:     inst.IsStateful(),
+	}
+
+	// If we are moving the instance to a new pool but keeping the same instance name, then we need to create
+	// the copy of the instance on the new pool with a temporary name that is different from the source to
+	// avoid conflicts. Then after the source instance has been deleted we will rename the new instance back
+	// to the original name.
+	if newName == inst.Name() && newProject == inst.Project().Name {
+		logger.Warnf("Tmp Move: [NameOld: %v, NameNew: %v] [ProjectOld: %v, ProjectNew: %v]", inst.Name(), newName, inst.Project().Name, newProject)
+		args.Name, err = instance.MoveTemporaryName(inst)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Copy instance to new target instance.
+	targetInst, err := instanceCreateAsCopy(s, instanceCreateAsCopyOpts{
+		sourceInstance:       inst,
+		targetInstance:       args,
+		instanceOnly:         instanceOnly,
+		applyTemplateTrigger: false, // Don't apply templates when moving.
+		allowInconsistent:    allowInconsistent,
+	}, op)
+	if err != nil {
+		return err
+	}
+
+	// Delete original instance.
+	err = inst.Delete(true)
+	if err != nil {
+		return err
+	}
+
+	// Rename copy from temporary name to original name if needed.
+	if newName == inst.Name() && newProject == inst.Project().Name {
+		logger.Warnf("Rename: [NameOld: %v, NameNew: %v] [ProjectOld: %v, ProjectNew: %v]", inst.Name(), newName, inst.Project().Name, newProject)
+		err = targetInst.Rename(newName, false) // Don't apply templates when moving.
+		if err != nil {
+			return err
+		}
+	}
+
+	if statefulStart {
+		err = targetInst.Start(true)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // Move an instance to another pool.
-func instancePostPoolMigration(s *state.State, inst instance.Instance, newName string, instanceOnly bool, newPool string, stateful bool, allowInconsistent bool, op *operations.Operation) error {
+func instancePostPoolMigration(s *state.State, inst instance.Instance, newName string, newProject string, instanceOnly bool, newPool string, stateful bool, allowInconsistent bool, op *operations.Operation) error {
 	if inst.IsSnapshot() {
 		return fmt.Errorf("Instance snapshots cannot be moved between pools")
 	}
@@ -530,12 +682,14 @@ func instancePostPoolMigration(s *state.State, inst instance.Instance, newName s
 		allowInconsistent:    allowInconsistent,
 	}, op)
 	if err != nil {
+		logger.Errorf("Create as copy inst: %v (project: %v): %v", inst.Name(), inst.Project().Name, err)
 		return err
 	}
 
 	// Delete original instance.
 	err = inst.Delete(true)
 	if err != nil {
+		logger.Errorf("Delete inst: %v (project: %v): %v", inst.Name(), inst.Project().Name, err)
 		return err
 	}
 

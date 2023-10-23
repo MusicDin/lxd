@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/canonical/lxd/lxd/instance/instancetype"
+	"github.com/canonical/lxd/shared/logger"
 	"github.com/canonical/lxd/shared/units"
 	"github.com/canonical/lxd/shared/validate"
 )
@@ -51,6 +52,9 @@ func GetRootDiskDevice(devices map[string]map[string]string) (string, map[string
 	var dev map[string]string
 
 	for n, d := range devices {
+
+		logger.Warnf("Checking device: [%v] %v", n, d)
+
 		if IsRootDiskDevice(d) {
 			if devName != "" {
 				return "", nil, fmt.Errorf("More than one root device found")

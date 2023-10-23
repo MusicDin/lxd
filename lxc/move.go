@@ -10,6 +10,7 @@ import (
 	"github.com/canonical/lxd/shared/api"
 	cli "github.com/canonical/lxd/shared/cmd"
 	"github.com/canonical/lxd/shared/i18n"
+	"github.com/canonical/lxd/shared/logger"
 )
 
 type cmdMove struct {
@@ -192,43 +193,22 @@ func (c *cmdMove) Run(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Support for server-side project move.
+	// Support for server-side move.
 	if sourceRemote == destRemote {
 		source, err := conf.GetInstanceServer(sourceRemote)
 		if err != nil {
 			return err
 		}
 
-		moveDone := false
+		logger.Warnf("Time to call migration...")
 
-		if c.flagStorage != "" && source.HasExtension("instance_pool_move") {
+		// TODO: Handle this using a new extension?
+		if c.flagStorage != "" && source.HasExtension("instance_pool_move") && source.HasExtension("instance_project_move") {
 			if c.flagMode != moveDefaultMode {
 				return fmt.Errorf(i18n.G("The --mode flag can't be used with --storage"))
 			}
 
-			err := moveInstancePool(conf, sourceResource, destResource, c.flagInstanceOnly, c.flagStorage, stateful)
-			if err != nil {
-				return err
-			}
-
-			moveDone = true
-		}
-
-		if c.flagTargetProject != "" && source.HasExtension("instance_project_move") {
-			if c.flagMode != moveDefaultMode {
-				return fmt.Errorf(i18n.G("The --mode flag can't be used with --target-project"))
-			}
-
-			err := moveInstanceProject(conf, sourceResource, destResource, c.flagTargetProject, c.flagInstanceOnly, stateful)
-			if err != nil {
-				return err
-			}
-
-			moveDone = true
-		}
-
-		if moveDone {
-			return nil
+			return moveInstance(conf, sourceResource, destResource, c.flagInstanceOnly, c.flagStorage, c.flagTargetProject, stateful)
 		}
 	}
 
@@ -338,8 +318,8 @@ func moveClusterInstance(conf *config.Config, sourceResource string, destResourc
 	return nil
 }
 
-// Move an instance between pools using special POST /instances/<name> API.
-func moveInstancePool(conf *config.Config, sourceResource string, destResource string, instanceOnly bool, storage string, stateful bool) error {
+// Move an instance between pools and projects using special POST /instances/<name> API.
+func moveInstance(conf *config.Config, sourceResource string, destResource string, instanceOnly bool, storage string, targetProject string, stateful bool) error {
 	// Parse the source.
 	sourceRemote, sourceName, err := conf.ParseRemote(sourceResource)
 	if err != nil {
@@ -372,75 +352,82 @@ func moveInstancePool(conf *config.Config, sourceResource string, destResource s
 	req := api.InstancePost{
 		Name:         destName,
 		Migration:    true,
-		Pool:         storage,
 		InstanceOnly: instanceOnly,
+		Pool:         storage,
+		Project:      targetProject,
 		Live:         stateful,
 	}
 
+	logger.Warnf("Calling migration...")
 	op, err := source.MigrateInstance(sourceName, req)
 	if err != nil {
+		logger.Errorf("MigrateInstance: %v", err)
 		return fmt.Errorf(i18n.G("Migration API failure: %w"), err)
 	}
 
+	logger.Warnf("Waiting for migration OP to complete...")
 	err = op.Wait()
 	if err != nil {
+		logger.Errorf("Waiting for migration OP to complete: %v", err)
 		return fmt.Errorf(i18n.G("Migration operation failure: %w"), err)
 	}
+
+	logger.Warnf("Move is done")
 
 	return nil
 }
 
 // Move an instance between projects using special POST /instances/<name> API.
-func moveInstanceProject(conf *config.Config, sourceResource string, destResource string, targetProject string, instanceOnly bool, stateful bool) error {
-	// Parse the source.
-	sourceRemote, sourceName, err := conf.ParseRemote(sourceResource)
-	if err != nil {
-		return err
-	}
+// func moveInstanceProject(conf *config.Config, sourceResource string, destResource string, targetProject string, instanceOnly bool, stateful bool) error {
+// 	// Parse the source.
+// 	sourceRemote, sourceName, err := conf.ParseRemote(sourceResource)
+// 	if err != nil {
+// 		return err
+// 	}
 
-	// Parse the destination.
-	_, destName, err := conf.ParseRemote(destResource)
-	if err != nil {
-		return err
-	}
+// 	// Parse the destination.
+// 	_, destName, err := conf.ParseRemote(destResource)
+// 	if err != nil {
+// 		return err
+// 	}
 
-	// Make sure we have an instance or snapshot name.
-	if sourceName == "" {
-		return fmt.Errorf(i18n.G("You must specify a source instance name"))
-	}
+// 	// Make sure we have an instance or snapshot name.
+// 	if sourceName == "" {
+// 		return fmt.Errorf(i18n.G("You must specify a source instance name"))
+// 	}
 
-	// The destination name is optional.
-	if destName == "" {
-		destName = sourceName
-	}
+// 	// The destination name is optional.
+// 	if destName == "" {
+// 		destName = sourceName
+// 	}
 
-	// Connect to the source host.
-	source, err := conf.GetInstanceServer(sourceRemote)
-	if err != nil {
-		return fmt.Errorf(i18n.G("Failed to connect to cluster member: %w"), err)
-	}
+// 	// Connect to the source host.
+// 	source, err := conf.GetInstanceServer(sourceRemote)
+// 	if err != nil {
+// 		return fmt.Errorf(i18n.G("Failed to connect to cluster member: %w"), err)
+// 	}
 
-	// Pass the new project to the migration API.
-	req := api.InstancePost{
-		Name:         destName,
-		Migration:    true,
-		Project:      targetProject,
-		InstanceOnly: instanceOnly,
-		Live:         stateful,
-	}
+// 	// Pass the new project to the migration API.
+// 	req := api.InstancePost{
+// 		Name:         destName,
+// 		Migration:    true,
+// 		Project:      targetProject,
+// 		InstanceOnly: instanceOnly,
+// 		Live:         stateful,
+// 	}
 
-	op, err := source.MigrateInstance(sourceName, req)
-	if err != nil {
-		return fmt.Errorf(i18n.G("Migration API failure: %w"), err)
-	}
+// 	op, err := source.MigrateInstance(sourceName, req)
+// 	if err != nil {
+// 		return fmt.Errorf(i18n.G("Migration API failure: %w"), err)
+// 	}
 
-	err = op.Wait()
-	if err != nil {
-		return fmt.Errorf(i18n.G("Migration operation failure: %w"), err)
-	}
+// 	err = op.Wait()
+// 	if err != nil {
+// 		return fmt.Errorf(i18n.G("Migration operation failure: %w"), err)
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 // Default migration mode when moving an instance.
 const moveDefaultMode = "pull"
