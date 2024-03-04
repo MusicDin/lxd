@@ -1032,10 +1032,8 @@ func AllowProjectUpdate(globalConfig *clusterConfig.Config, tx *db.ClusterTx, pr
 	for _, key := range changed {
 		if strings.HasPrefix(key, "restricted.") {
 			project := api.Project{
-				Name: projectName,
-				ProjectPut: api.ProjectPut{
+				Name:   projectName,
 					Config: config,
-				},
 			}
 
 			err := checkRestrictions(project, info.Instances, info.Profiles)
