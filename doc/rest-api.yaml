@@ -163,7 +163,7 @@ definitions:
         description: CertificatePut represents the modifiable fields of a LXD certificate
         properties:
             certificate:
-                description: The certificate itself, as PEM encoded X509 (or as base64 encoded X509 on POST)
+                description: The certificate itself, as PEM encoded X509
                 example: X509 PEM certificate
                 type: string
                 x-go-name: Certificate
@@ -198,8 +198,8 @@ definitions:
         description: CertificatesPost represents the fields of a new LXD certificate
         properties:
             certificate:
-                description: The certificate itself, as PEM encoded X509 (or as base64 encoded X509 on POST)
-                example: X509 PEM certificate
+                description: The certificate itself, as base64 encoded X509 PEM certificate
+                example: base64 encoded X509 PEM certificate
                 type: string
                 x-go-name: Certificate
             name:
@@ -1596,11 +1596,6 @@ definitions:
                 example: foo
                 type: string
                 x-go-name: Project
-            restore:
-                description: If set, instance will be restored to the provided snapshot name
-                example: snap0
-                type: string
-                x-go-name: Restore
             stateful:
                 description: Whether the instance currently has saved state on disk
                 example: false
@@ -1890,11 +1885,6 @@ definitions:
                 example: foo
                 type: string
                 x-go-name: Project
-            restore:
-                description: If set, instance will be restored to the provided snapshot name
-                example: snap0
-                type: string
-                x-go-name: Restore
             snapshots:
                 description: List of snapshots.
                 items:
@@ -6186,11 +6176,6 @@ definitions:
                 example: default
                 type: string
                 x-go-name: Project
-            restore:
-                description: Name of a snapshot to restore
-                example: snap0
-                type: string
-                x-go-name: Restore
             type:
                 description: Volume type
                 example: custom
