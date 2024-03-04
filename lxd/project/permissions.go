@@ -67,9 +67,15 @@ func AllowInstanceCreation(globalConfig *clusterConfig.Config, tx *db.ClusterTx,
 
 	// Add the instance being created.
 	info.Instances = append(info.Instances, api.Instance{
-		Name:        req.Name,
-		Project:     projectName,
-		InstancePut: req.InstancePut,
+		Name:         req.Name,
+		Project:      projectName,
+		Architecture: req.Architecture,
+		Config:       req.Config,
+		Devices:      req.Devices,
+		Ephemeral:    req.Ephemeral,
+		Profiles:     req.Profiles,
+		Stateful:     req.Stateful,
+		Description:  req.Description,
 	})
 
 	// Special case restriction checks on volatile.* keys.
