@@ -51,10 +51,8 @@ type AuthGroupFilter struct {
 // ToAPI converts the Group to an api.AuthGroup, making extra database queries as necessary.
 func (g *AuthGroup) ToAPI(ctx context.Context, tx *sql.Tx) (*api.AuthGroup, error) {
 	group := &api.AuthGroup{
-		AuthGroupsPost: api.AuthGroupsPost{
-			AuthGroupPost: api.AuthGroupPost{Name: g.Name},
-			AuthGroupPut:  api.AuthGroupPut{Description: g.Description},
-		},
+		Name:        g.Name,
+		Description: g.Description,
 	}
 
 	permissions, err := GetPermissionsByAuthGroupID(ctx, tx, g.ID)
