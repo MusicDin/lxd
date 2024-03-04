@@ -643,7 +643,7 @@ func clusterPutJoin(d *Daemon, r *http.Request, req api.ClusterPut) response.Res
 
 					internalNetwork := api.InitNetworksProjectPost{
 						NetworksPost: api.NetworksPost{
-							NetworkPut: network.NetworkPut,
+							NetworkPut: network.Writable(),
 							Name:       network.Name,
 							Type:       network.Type,
 						},
@@ -1019,7 +1019,7 @@ func clusterInitMember(d lxd.InstanceServer, client lxd.InstanceServer, memberCo
 
 			post := api.InitNetworksProjectPost{
 				NetworksPost: api.NetworksPost{
-					NetworkPut: network.NetworkPut,
+					NetworkPut: network.Writable(),
 					Name:       network.Name,
 					Type:       network.Type,
 				},
