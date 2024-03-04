@@ -137,8 +137,6 @@ func (f *NetworkLoadBalancerPut) Normalise() {
 //
 // API extension: network_load_balancer.
 type NetworkLoadBalancer struct {
-	NetworkLoadBalancerPut `yaml:",inline"`
-
 	// The listen address of the load balancer
 	// Example: 192.0.2.1
 	ListenAddress string `json:"listen_address" yaml:"listen_address"`
@@ -146,14 +144,43 @@ type NetworkLoadBalancer struct {
 	// What cluster member this record was found on
 	// Example: lxd01
 	Location string `json:"location" yaml:"location"`
+
+	// Description of the load balancer listen IP
+	// Example: My public IP load balancer
+	Description string `json:"description" yaml:"description"`
+
+	// Load balancer configuration map (refer to doc/network-load-balancers.md)
+	// Example: {"user.mykey": "foo"}
+	Config map[string]string `json:"config" yaml:"config"`
+
+	// Backends (optional)
+	Backends []NetworkLoadBalancerBackend `json:"backends" yaml:"backends"`
+
+	// Port forwards (optional)
+	Ports []NetworkLoadBalancerPort `json:"ports" yaml:"ports"`
+}
+
+// Normalise normalises the fields in the load balancer so that they are comparable with ones stored.
+func (f *NetworkLoadBalancer) Normalise() {
+	fPut := f.Writable()
+	fPut.Normalise()
+
+	f.Description = fPut.Description
+	f.Backends = fPut.Backends
+	f.Ports = fPut.Ports
 }
 
 // Etag returns the values used for etag generation.
-func (f *NetworkLoadBalancer) Etag() []any {
-	return []any{f.ListenAddress, f.Description, f.Config, f.Backends, f.Ports}
+func (lb *NetworkLoadBalancer) Etag() []any {
+	return []any{lb.ListenAddress, lb.Description, lb.Config, lb.Backends, lb.Ports}
 }
 
 // Writable converts a full NetworkLoadBalancer struct into a NetworkLoadBalancerPut struct (filters read-only fields).
-func (f *NetworkLoadBalancer) Writable() NetworkLoadBalancerPut {
-	return f.NetworkLoadBalancerPut
+func (lb *NetworkLoadBalancer) Writable() NetworkLoadBalancerPut {
+	return NetworkLoadBalancerPut{
+		Description: lb.Description,
+		Config:      lb.Config,
+		Backends:    lb.Backends,
+		Ports:       lb.Ports,
+	}
 }
