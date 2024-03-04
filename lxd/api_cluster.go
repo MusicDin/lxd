@@ -1509,7 +1509,7 @@ func clusterNodeGet(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	return response.SyncResponseETag(true, memberInfo, memberInfo.ClusterMemberPut)
+	return response.SyncResponseETag(true, memberInfo, memberInfo.Writable())
 }
 
 // swagger:operation PATCH /1.0/cluster/members/{name} cluster cluster_member_patch
@@ -1647,7 +1647,7 @@ func updateClusterNode(s *state.State, gateway *cluster.Gateway, r *http.Request
 	}
 
 	// Validate the request is fine
-	err = util.EtagCheck(r, memberInfo.ClusterMemberPut)
+	err = util.EtagCheck(r, memberInfo.Writable())
 	if err != nil {
 		return response.PreconditionFailed(err)
 	}
@@ -3856,7 +3856,7 @@ func clusterGroupGet(d *Daemon, r *http.Request) response.Response {
 		return response.InternalError(err)
 	}
 
-	return response.SyncResponseETag(true, apiGroup, apiGroup.ClusterGroupPut)
+	return response.SyncResponseETag(true, apiGroup, apiGroup.Writable())
 }
 
 // swagger:operation POST /1.0/cluster/groups/{name} cluster-groups cluster_group_post
