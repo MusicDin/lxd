@@ -1495,7 +1495,7 @@ func patchStorageSetVolumeUUID(_ string, d *Daemon) error {
 				bucket.Config["volatile.uuid"] = uuid.New().String()
 
 				err := s.DB.Cluster.Transaction(s.ShutdownCtx, func(ctx context.Context, ct *db.ClusterTx) error {
-					return ct.UpdateStoragePoolBucket(d.shutdownCtx, pool, bucket.ID, &bucket.StorageBucketPut)
+					return ct.UpdateStoragePoolBucket(d.shutdownCtx, pool, bucket.ID, bucket.Writable())
 				})
 				if err != nil {
 					return err

@@ -352,7 +352,7 @@ func storageBucketPoolConfigAdd(tx *sql.Tx, bucketID int64, config map[string]st
 }
 
 // UpdateStoragePoolBucket updates an existing Storage Bucket.
-func (c *ClusterTx) UpdateStoragePoolBucket(ctx context.Context, poolID int64, bucketID int64, info *api.StorageBucketPut) error {
+func (c *ClusterTx) UpdateStoragePoolBucket(ctx context.Context, poolID int64, bucketID int64, info api.StorageBucketPut) error {
 	// Update existing Storage Bucket record.
 	res, err := c.tx.ExecContext(ctx, `
 		UPDATE storage_buckets

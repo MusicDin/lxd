@@ -953,7 +953,7 @@ func clusterInitMember(d lxd.InstanceServer, client lxd.InstanceServer, memberCo
 		logger.Debugf("Populating init data for storage pool %q", pool.Name)
 
 		post := api.StoragePoolsPost{
-			StoragePoolPut: pool.StoragePoolPut,
+			StoragePoolPut: pool.Writable(),
 			Driver:         pool.Driver,
 			Name:           pool.Name,
 		}
