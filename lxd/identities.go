@@ -451,9 +451,7 @@ func getIdentities(d *Daemon, r *http.Request) response.Response {
 					Identifier:           id.Identifier,
 					Name:                 id.Name,
 				},
-				IdentityPut: api.IdentityPut{
-					Groups: groupNamesByIdentityID[id.ID],
-				},
+				Groups: groupNamesByIdentityID[id.ID],
 			})
 		}
 
