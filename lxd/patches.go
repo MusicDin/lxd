@@ -325,7 +325,8 @@ func patchNetworkACLRemoveDefaults(name string, d *Daemon) error {
 
 				// Write back modified config if needed.
 				if modified {
-					err = tx.UpdateNetworkACL(ctx, aclID, &acl.NetworkACLPut)
+					aclPut := acl.Writable()
+					err = tx.UpdateNetworkACL(ctx, aclID, &aclPut)
 					if err != nil {
 						return fmt.Errorf("Failed updating network ACL %d: %w", aclID, err)
 					}
