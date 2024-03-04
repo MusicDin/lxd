@@ -240,7 +240,7 @@ func (d *zone) Update(config *api.NetworkZonePut, clientType request.ClientType)
 
 	// Update the database and notify the rest of the cluster.
 	if clientType == request.ClientTypeNormal {
-		oldConfig := d.info.NetworkZonePut
+		oldConfig := d.info.Writable()
 
 		// Update database.
 		err = d.state.DB.Cluster.UpdateNetworkZone(d.id, config)
@@ -249,12 +249,14 @@ func (d *zone) Update(config *api.NetworkZonePut, clientType request.ClientType)
 		}
 
 		// Apply changes internally and reinitialise.
-		d.info.NetworkZonePut = *config
+		d.info.Config = config.Config
+		d.info.Description = config.Description
 		d.init(d.state, d.id, d.projectName, d.info)
 
 		revert.Add(func() {
 			_ = d.state.DB.Cluster.UpdateNetworkZone(d.id, &oldConfig)
-			d.info.NetworkZonePut = oldConfig
+			d.info.Config = oldConfig.Config
+			d.info.Description = oldConfig.Description
 			d.init(d.state, d.id, d.projectName, d.info)
 		})
 
@@ -265,7 +267,7 @@ func (d *zone) Update(config *api.NetworkZonePut, clientType request.ClientType)
 		}
 
 		err = notifier(func(client lxd.InstanceServer) error {
-			return client.UseProject(d.projectName).UpdateNetworkZone(d.info.Name, d.info.NetworkZonePut, "")
+			return client.UseProject(d.projectName).UpdateNetworkZone(d.info.Name, d.info.Writable(), "")
 		})
 		if err != nil {
 			return err

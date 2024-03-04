@@ -4717,8 +4717,10 @@ func (n *ovn) ForwardUpdate(listenAddress string, req api.NetworkForwardPut, cli
 		}
 
 		newForward := api.NetworkForward{
-			ListenAddress:     curForward.ListenAddress,
-			NetworkForwardPut: req,
+			ListenAddress: curForward.ListenAddress,
+			Description:   req.Description,
+			Config:        req.Config,
+			Ports:         req.Ports,
 		}
 
 		newForwardEtagHash, err := util.EtagHash(newForward.Etag())
@@ -4742,8 +4744,10 @@ func (n *ovn) ForwardUpdate(listenAddress string, req api.NetworkForwardPut, cli
 		}
 
 		revert.Add(func() {
+			curForwardPut := curForward.Writable()
+
 			// Apply old settings to OVN on failure.
-			portMaps, err := n.forwardValidate(net.ParseIP(curForward.ListenAddress), &curForward.NetworkForwardPut)
+			portMaps, err := n.forwardValidate(net.ParseIP(curForward.ListenAddress), &curForwardPut)
 			if err == nil {
 				vips := n.forwardFlattenVIPs(net.ParseIP(curForward.ListenAddress), net.ParseIP(curForward.Config["target_address"]), portMaps)
 				_ = client.LoadBalancerApply(n.getLoadBalancerName(curForward.ListenAddress), []openvswitch.OVNRouter{n.getRouterName()}, []openvswitch.OVNSwitch{n.getIntSwitchName()}, vips...)
@@ -4752,7 +4756,8 @@ func (n *ovn) ForwardUpdate(listenAddress string, req api.NetworkForwardPut, cli
 		})
 
 		err = n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-			return tx.UpdateNetworkForward(ctx, n.ID(), curForwardID, &newForward.NetworkForwardPut)
+			newForwardPut := newForward.Writable()
+			return tx.UpdateNetworkForward(ctx, n.ID(), curForwardID, &newForwardPut)
 		})
 		if err != nil {
 			return err
@@ -4760,7 +4765,8 @@ func (n *ovn) ForwardUpdate(listenAddress string, req api.NetworkForwardPut, cli
 
 		revert.Add(func() {
 			_ = n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-				return tx.UpdateNetworkForward(ctx, n.ID(), curForwardID, &curForward.NetworkForwardPut)
+				curForwardPut := curForward.Writable()
+				return tx.UpdateNetworkForward(ctx, n.ID(), curForwardID, &curForwardPut)
 			})
 		})
 
@@ -5072,8 +5078,11 @@ func (n *ovn) LoadBalancerUpdate(listenAddress string, req api.NetworkLoadBalanc
 		}
 
 		newLoadBalancer := api.NetworkLoadBalancer{
-			ListenAddress:          curLoadBalancer.ListenAddress,
-			NetworkLoadBalancerPut: req,
+			ListenAddress: curLoadBalancer.ListenAddress,
+			Description:   req.Description,
+			Config:        req.Config,
+			Backends:      req.Backends,
+			Ports:         req.Ports,
 		}
 
 		newLoadBalancerEtagHash, err := util.EtagHash(newLoadBalancer.Etag())
@@ -5099,7 +5108,8 @@ func (n *ovn) LoadBalancerUpdate(listenAddress string, req api.NetworkLoadBalanc
 
 		revert.Add(func() {
 			// Apply old settings to OVN on failure.
-			portMaps, err := n.loadBalancerValidate(net.ParseIP(curLoadBalancer.ListenAddress), &curLoadBalancer.NetworkLoadBalancerPut)
+			curLoadBalancerPut := curLoadBalancer.Writable()
+			portMaps, err := n.loadBalancerValidate(net.ParseIP(curLoadBalancer.ListenAddress), &curLoadBalancerPut)
 			if err == nil {
 				vips := n.loadBalancerFlattenVIPs(net.ParseIP(curLoadBalancer.ListenAddress), portMaps)
 				_ = client.LoadBalancerApply(n.getLoadBalancerName(curLoadBalancer.ListenAddress), []openvswitch.OVNRouter{n.getRouterName()}, []openvswitch.OVNSwitch{n.getIntSwitchName()}, vips...)
@@ -5108,7 +5118,8 @@ func (n *ovn) LoadBalancerUpdate(listenAddress string, req api.NetworkLoadBalanc
 		})
 
 		err = n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-			return tx.UpdateNetworkLoadBalancer(ctx, n.ID(), curLoadBalancerID, &newLoadBalancer.NetworkLoadBalancerPut)
+			newLoadBalancerPut := newLoadBalancer.Writable()
+			return tx.UpdateNetworkLoadBalancer(ctx, n.ID(), curLoadBalancerID, &newLoadBalancerPut)
 		})
 		if err != nil {
 			return err
@@ -5116,7 +5127,8 @@ func (n *ovn) LoadBalancerUpdate(listenAddress string, req api.NetworkLoadBalanc
 
 		revert.Add(func() {
 			_ = n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-				return tx.UpdateNetworkLoadBalancer(ctx, n.ID(), curLoadBalancerID, &curLoadBalancer.NetworkLoadBalancerPut)
+				curLoadBalancerPut := curLoadBalancer.Writable()
+				return tx.UpdateNetworkLoadBalancer(ctx, n.ID(), curLoadBalancerID, &curLoadBalancerPut)
 			})
 		})
 
@@ -5579,8 +5591,9 @@ func (n *ovn) PeerUpdate(peerName string, req api.NetworkPeerPut) error {
 	}
 
 	newPeer := api.NetworkPeer{
-		Name:           curPeer.Name,
-		NetworkPeerPut: req,
+		Name:        curPeer.Name,
+		Description: req.Description,
+		Config:      req.Config,
 	}
 
 	newPeerEtagHash, err := util.EtagHash(newPeer.Etag())
@@ -5593,7 +5606,8 @@ func (n *ovn) PeerUpdate(peerName string, req api.NetworkPeerPut) error {
 	}
 
 	err = n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-		return tx.UpdateNetworkPeer(ctx, n.ID(), curPeerID, &newPeer.NetworkPeerPut)
+		newPeerPut := newPeer.Writable()
+		return tx.UpdateNetworkPeer(ctx, n.ID(), curPeerID, &newPeerPut)
 	})
 	if err != nil {
 		return err
