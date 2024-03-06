@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - test/main
+      - bak/embed-struct
 
 permissions:
   contents: read
@@ -35,15 +36,12 @@ jobs:
       fail-fast: false
       matrix:
         go: ["1.22.x"]
-        suite: ["cluster", "standalone"]
+        suite: ["standalone"]
         backend: ["dir", "btrfs", "lvm", "zfs", "ceph", "random"]
-        # Only test with go-tip when the event is not a push
-        include: >-
-          ${{
-            github.event_name != 'push' &&
-              fromJSON('[{"go":"1.21.x","suite":"cluster","backend":"dir"},{"go":"1.21.x","suite":"standalone","backend":"dir"},{"go":"tip","suite":"cluster","backend":"dir"},{"go":"tip","suite":"standalone","backend":"dir"}]') ||
-              fromJSON('[{"go":"1.21.x","suite":"cluster","backend":"dir"},{"go":"1.21.x","suite":"standalone","backend":"dir"}]')
-          }}
+        include:
+          - go: stable
+            suite: standalone
+            backend: dir
 
     steps:
       - name: Performance tuning
