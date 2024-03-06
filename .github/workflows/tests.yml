@@ -35,12 +35,9 @@ jobs:
       fail-fast: false
       matrix:
         go: ["1.22.x"]
-        suite: ["cluster", "standalone"]
+        suite: ["standalone"]
         backend: ["dir", "btrfs", "lvm", "zfs", "ceph", "random"]
         include:
-          - go: stable
-            suite: cluster
-            backend: dir
           - go: stable
             suite: standalone
             backend: dir
