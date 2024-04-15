@@ -2407,3 +2407,7 @@ This extension adds a new image restriction, `requirements.nesting` which when `
 
 Adds the {config:option}`instance-miscellaneous:linux.kernel_modules.load` container configuration option. If the option is set to `ondemand`, the `finit_modules()` syscall is intercepted and a privileged user in the container's user namespace can load the Linux kernel modules specified in the
 allow list {config:option}`instance-miscellaneous:linux.kernel_modules`.
+
+## `instance_import_conversion`
+
+Adds the ability to convert images from different formats (e.g. VMDK or QCow2) into RAW image format and import them as LXD instances.
