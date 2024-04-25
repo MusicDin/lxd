@@ -7300,6 +7300,7 @@ func (d *qemu) MigrateReceive(args instance.MigrateReceiveArgs) error {
 			Name:                  d.Name(),
 			MigrationType:         respTypes[0],
 			Refresh:               args.Refresh,                // Indicate to receiver volume should exist.
+			ConversionOptions:     args.ConversionOptions,      // Non-empty options indicate that image needs conversion.
 			TrackProgress:         true,                        // Use a progress tracker on receiver to get in-cluster progress information.
 			Live:                  false,                       // Indicates we won't get a final rootfs sync.
 			VolumeSize:            offerHeader.GetVolumeSize(), // Block size setting override.
