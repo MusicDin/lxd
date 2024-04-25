@@ -72,6 +72,9 @@ type VolumeTargetArgs struct {
 	MigrationType         Type
 	TrackProgress         bool
 	Refresh               bool
+	Convert               bool
+	ConvertOptions        []string
+	ConvertFilePath       string
 	Live                  bool
 	VolumeSize            int64
 	ContentType           string
