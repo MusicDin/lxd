@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"gopkg.in/yaml.v2"
 
+	"github.com/canonical/lxd/lxd/apparmor"
 	"github.com/canonical/lxd/lxd/backup"
 	backupConfig "github.com/canonical/lxd/lxd/backup/config"
 	"github.com/canonical/lxd/lxd/cluster/request"
@@ -2119,92 +2121,198 @@ func (b *lxdBackend) CreateInstanceFromMigration(inst instance.Instance, conn io
 	args.Config = vol.Config()
 	args.Name = inst.Name()
 
-	projectName := inst.Project().Name
+	if len(args.ConversionOptions) == 0 {
+		projectName := inst.Project().Name
 
-	// If migration header supplies a volume size, then use that as block volume size instead of pool default.
-	// This way if the volume being received is larger than the pool default size, the block volume created
-	// will still be able to accommodate it.
-	if args.VolumeSize > 0 && contentType == drivers.ContentTypeBlock {
-		b.logger.Debug("Setting volume size from offer header", logger.Ctx{"size": args.VolumeSize})
-		args.Config["size"] = fmt.Sprintf("%d", args.VolumeSize)
-	} else if args.Config["size"] != "" {
-		b.logger.Debug("Using volume size from root disk config", logger.Ctx{"size": args.Config["size"]})
-	}
+		// If migration header supplies a volume size, then use that as block volume size instead of pool default.
+		// This way if the volume being received is larger than the pool default size, the block volume created
+		// will still be able to accommodate it.
+		if args.VolumeSize > 0 && contentType == drivers.ContentTypeBlock {
+			l.Debug("Setting volume size from offer header", logger.Ctx{"size": args.VolumeSize})
+			args.Config["size"] = fmt.Sprintf("%d", args.VolumeSize)
+		} else if args.Config["size"] != "" {
+			l.Debug("Using volume size from root disk config", logger.Ctx{"size": args.Config["size"]})
+		}
 
-	var preFiller drivers.VolumeFiller
+		var preFiller drivers.VolumeFiller
 
-	if !args.Refresh && !isRemoteClusterMove {
-		// If the negotiated migration method is rsync and the instance's base image is
-		// already on the host then setup a pre-filler that will unpack the local image
-		// to try and speed up the rsync of the incoming volume by avoiding the need to
-		// transfer the base image files too.
-		if args.MigrationType.FSType == migration.MigrationFSType_RSYNC {
-			fingerprint := inst.ExpandedConfig()["volatile.base_image"]
-			imageExists := false
+		if !args.Refresh && !isRemoteClusterMove {
+			// If the negotiated migration method is rsync and the instance's base image is
+			// already on the host then setup a pre-filler that will unpack the local image
+			// to try and speed up the rsync of the incoming volume by avoiding the need to
+			// transfer the base image files too.
+			if args.MigrationType.FSType == migration.MigrationFSType_RSYNC {
+				fingerprint := inst.ExpandedConfig()["volatile.base_image"]
+				imageExists := false
 
-			if fingerprint != "" {
-				err = b.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-					// Confirm that the image is present in the project.
-					_, _, err = tx.GetImage(ctx, fingerprint, cluster.ImageFilter{Project: &projectName})
+				if fingerprint != "" {
+					err = b.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
+						// Confirm that the image is present in the project.
+						_, _, err = tx.GetImage(ctx, fingerprint, cluster.ImageFilter{Project: &projectName})
 
-					return err
-				})
-				if err != nil && !response.IsNotFoundError(err) {
-					return err
+						return err
+					})
+					if err != nil && !response.IsNotFoundError(err) {
+						return err
+					}
+
+					// Make sure that the image is available locally too (not guaranteed in clusters).
+					imageExists = err == nil && shared.PathExists(shared.VarPath("images", fingerprint))
 				}
 
-				// Make sure that the image is available locally too (not guaranteed in clusters).
-				imageExists = err == nil && shared.PathExists(shared.VarPath("images", fingerprint))
-			}
+				if imageExists {
+					l.Debug("Using optimised migration from existing image", logger.Ctx{"fingerprint": fingerprint})
 
-			if imageExists {
-				l.Debug("Using optimised migration from existing image", logger.Ctx{"fingerprint": fingerprint})
+					// Populate the volume filler with the fingerprint and image filler
+					// function that can be used by the driver to pre-populate the
+					// volume with the contents of the image.
+					preFiller = drivers.VolumeFiller{
+						Fingerprint: fingerprint,
+						Fill:        b.imageFiller(fingerprint, op),
+					}
 
-				// Populate the volume filler with the fingerprint and image filler
-				// function that can be used by the driver to pre-populate the
-				// volume with the contents of the image.
-				preFiller = drivers.VolumeFiller{
-					Fingerprint: fingerprint,
-					Fill:        b.imageFiller(fingerprint, op),
-				}
-
-				// Ensure if the image doesn't yet exist on a driver which supports
-				// optimized storage, then it gets created first.
-				err = b.EnsureImage(preFiller.Fingerprint, op)
-				if err != nil {
-					return err
+					// Ensure if the image doesn't yet exist on a driver which supports
+					// optimized storage, then it gets created first.
+					err = b.EnsureImage(preFiller.Fingerprint, op)
+					if err != nil {
+						return err
+					}
 				}
 			}
 		}
-	}
 
-	// Retrieve a list of target volume snapshots.
-	// Afterwards load the volume from the snapshot to ensure the right ordering.
-	instSnapshots, err := inst.Snapshots()
-	if err != nil {
-		return err
-	}
-
-	targetSnapshots := make([]drivers.Volume, 0, len(instSnapshots))
-	for _, instSnapshot := range instSnapshots {
-		snap, err := VolumeDBGet(b, inst.Project().Name, instSnapshot.Name(), volType)
+		// Retrieve a list of target volume snapshots.
+		// Afterwards load the volume from the snapshot to ensure the right ordering.
+		instSnapshots, err := inst.Snapshots()
 		if err != nil {
 			return err
 		}
 
-		snapshotStorageName := project.Instance(inst.Project().Name, instSnapshot.Name())
-		targetSnapshots = append(targetSnapshots, b.GetVolume(volType, contentType, snapshotStorageName, snap.Config))
-	}
+		targetSnapshots := make([]drivers.Volume, 0, len(instSnapshots))
+		for _, instSnapshot := range instSnapshots {
+			snap, err := VolumeDBGet(b, inst.Project().Name, instSnapshot.Name(), volType)
+			if err != nil {
+				return err
+			}
 
-	volCopy := drivers.NewVolumeCopy(vol, targetSnapshots...)
+			snapshotStorageName := project.Instance(inst.Project().Name, instSnapshot.Name())
+			targetSnapshots = append(targetSnapshots, b.GetVolume(volType, contentType, snapshotStorageName, snap.Config))
+		}
 
-	err = b.driver.CreateVolumeFromMigration(volCopy, conn, args, &preFiller, op)
-	if err != nil {
-		return err
-	}
+		volCopy := drivers.NewVolumeCopy(vol, targetSnapshots...)
 
-	if !isRemoteClusterMove {
+		err = b.driver.CreateVolumeFromMigration(volCopy, conn, args, &preFiller, op)
+		if err != nil {
+			return err
+		}
+
+		if !isRemoteClusterMove {
+			revert.Add(func() { _ = b.DeleteInstance(inst, op) })
+		}
+	} else {
+		var imgUploadPath string
+
+		// When conversion option "format" is enabled, we need to upload the image to a temporary location
+		// before converting it into the desired format. The conversion cannot be done in-place, therefore
+		// the image has to be saved in an intermediate location.
+		if slices.Contains(args.ConversionOptions, "format") {
+			// Generate a unique filename for the uploaded image and use the backups directory
+			// as the default destination.
+			conversionID := fmt.Sprintf("conversion_%s_%s", inst.Project().Name, inst.Name())
+			imgUploadPath = filepath.Join(shared.VarPath("backups"), conversionID)
+
+			// Create temporary file where image is uploaded.
+			file, err := os.Create(imgUploadPath)
+			if err != nil {
+				return fmt.Errorf("Failed to create temporary file (%s): %w", imgUploadPath, err)
+			}
+
+			// Remove uploaded image regardless of image conversion success.
+			defer file.Close()
+			defer os.Remove(imgUploadPath)
+		}
+
+		args.ConversionFilePath = imgUploadPath
+
+		// Receive/upload image.
+		err = b.driver.CreateVolumeFromMigration(drivers.NewVolumeCopy(vol), conn, args, nil, op)
+		if err != nil {
+			return err
+		}
+
 		revert.Add(func() { _ = b.DeleteInstance(inst, op) })
+
+		// Mount volume and get disk path.
+		err = b.driver.MountVolume(vol, op)
+		if err != nil {
+			return err
+		}
+
+		revert.Add(func() { _, _ = b.driver.UnmountVolume(vol, false, op) })
+
+		diskPath, err := b.driver.GetVolumeDiskPath(vol)
+		if err != nil {
+			return fmt.Errorf("Failed getting instance volume disk path: %v", err)
+		}
+
+		// If imgUploadPath is empty, it means that the image was uploaded directly into the instance
+		// volume. For example, if image conversion is not requested. In such case, use diskPath as
+		// imgUploadPath.
+		if imgUploadPath == "" {
+			imgUploadPath = diskPath
+		}
+
+		// Extract image format and size.
+		cmd := []string{"qemu-img", "info", imgUploadPath, "--output", "json"}
+		out, err := apparmor.QemuImg(b.state.OS, cmd, imgUploadPath, "")
+		if err != nil {
+			return fmt.Errorf("qemu-img info: %v", err)
+		}
+
+		imgInfo := struct {
+			Format string `json:"format"`
+			Bytes  int64  `json:"virtual-size"`
+		}{}
+
+		err = json.Unmarshal([]byte(out), &imgInfo)
+		if err != nil {
+			return fmt.Errorf("Failed to parse image information: %v", err)
+		}
+
+		// Parse volume size into bytes, so that we can compare them.
+		volBytes, err := units.ParseByteSizeString(vol.ConfigSize())
+		if err != nil {
+			return fmt.Errorf("Failed parsing instance volume size")
+		}
+
+		// Ensure image conversion will fit into the instance volume.
+		if volBytes < imgInfo.Bytes {
+			// Convert to IEC format for nicer error.
+			imgSize := units.GetByteSizeStringIEC(imgInfo.Bytes, 2)
+			volSize := units.GetByteSizeStringIEC(volBytes, 2)
+
+			return fmt.Errorf("Volume size (%s) is lower then raw image size (%s)", volSize, imgSize)
+		}
+
+		// Ensure conversion supports the uploaded image format.
+		supportedImageFormats := []string{"raw", "qcow2", "vmdk"}
+		if !shared.ValueInSlice(imgInfo.Format, supportedImageFormats) {
+			return fmt.Errorf("Unsupported image format %q, allowed formats are [%s]", imgInfo.Format, strings.Join(supportedImageFormats, ", "))
+		}
+
+		// Convert uploaded image from backups directory into RAW format on the instance volume.
+		if slices.Contains(args.ConversionOptions, "format") {
+			cmd = []string{
+				"nice", "-n19", // Run with low priority to reduce CPU impact on other processes.
+				"qemu-img", "convert", "-f", imgInfo.Format, "-O", "raw", imgUploadPath, diskPath,
+			}
+
+			out, err = apparmor.QemuImg(b.state.OS, cmd, imgUploadPath, diskPath)
+			if err != nil {
+				l.Debug("Image conversion failed", logger.Ctx{"error": out})
+				return fmt.Errorf("qemu-img convert: failed to convert image from %q to %q format: %v", imgInfo.Format, "raw", err)
+			}
+		}
 	}
 
 	err = b.ensureInstanceSymlink(inst.Type(), inst.Project().Name, inst.Name(), vol.MountPath())
