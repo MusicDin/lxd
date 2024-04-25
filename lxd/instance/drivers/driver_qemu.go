@@ -7288,6 +7288,7 @@ func (d *qemu) MigrateReceive(args instance.MigrateReceiveArgs) error {
 			Name:                  d.Name(),
 			MigrationType:         respTypes[0],
 			Refresh:               args.Refresh,                // Indicate to receiver volume should exist.
+			Convert:               args.Convert,                // Indicate that input image needs conversion.
 			TrackProgress:         true,                        // Use a progress tracker on receiver to get in-cluster progress information.
 			Live:                  false,                       // Indicates we won't get a final rootfs sync.
 			VolumeSize:            offerHeader.GetVolumeSize(), // Block size setting override.
@@ -7349,6 +7350,41 @@ func (d *qemu) MigrateReceive(args instance.MigrateReceiveArgs) error {
 					snapOps = append(snapOps, snapInstOp)
 				}
 			}
+		}
+
+		if args.Convert && len(args.ConvertOptions) >= 1 {
+			// When migration type is conversion, set the file path where image should be uploaded.
+			// First check whether storage.backups_volume is configured. In such case set the file
+			// path to a file within that volume. Otherwise use plain backups directory.
+			conversionID := fmt.Sprintf("conversion_%s_%s", d.project.Name, d.name)
+			srcImagePath := filepath.Join(shared.VarPath("backups"), conversionID)
+
+			backupsVol := d.state.LocalConfig.StorageBackupsVolume()
+			if backupsVol != "" {
+				fields := strings.Split(backupsVol, "/")
+				if len(fields) != 2 {
+					return fmt.Errorf("Invalid backups volume format, must be <pool>/<volume>")
+				}
+
+				poolName := fields[0]
+				volumeName := fields[1]
+
+				// Load pool where volume is located.
+				pool, err := storagePools.LoadByName(d.state, poolName)
+				if err != nil {
+					return err
+				}
+
+				// Mount custom volume to get its path.
+				mount, err := pool.MountCustomVolume(d.project.Name, volumeName, nil)
+				if err != nil {
+					return fmt.Errorf("Failed to mount storage volume %q: %w", backupsVol, err)
+				}
+
+				srcImagePath = filepath.Join(mount.DiskPath, conversionID)
+			}
+
+			volTargetArgs.ConvertFilePath = srcImagePath
 		}
 
 		err = pool.CreateInstanceFromMigration(d, filesystemConn, volTargetArgs, d.op)
