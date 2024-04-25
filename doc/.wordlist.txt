@@ -199,6 +199,7 @@ preseed
 proxied
 proxying
 PTS
+QCow
 qdisc
 qdiscs
 QEMU
@@ -314,6 +315,7 @@ virtualized
 VLAN
 VLANs
 VM
+VMDK
 VMs
 VPD
 VPN
