@@ -25,7 +25,7 @@ import (
 	"github.com/canonical/lxd/shared/ws"
 )
 
-func transferRootfs(ctx context.Context, op lxd.Operation, rootfs string, rsyncArgs string, instanceType api.InstanceType) error {
+func transferRootfs(ctx context.Context, op lxd.Operation, rootfs string, rsyncArgs string, instanceType api.InstanceType, blockOnly bool) error {
 	opAPI := op.Get()
 
 	// Connect to the websockets
@@ -95,9 +95,11 @@ func transferRootfs(ctx context.Context, op lxd.Operation, rootfs string, rsyncA
 	}
 
 	// Send the filesystem
-	err = rsyncSend(ctx, wsFs, rootfs, rsyncArgs, instanceType)
-	if err != nil {
-		return abort(fmt.Errorf("Failed sending filesystem volume: %w", err))
+	if !blockOnly {
+		err = rsyncSend(ctx, wsFs, rootfs, rsyncArgs, instanceType)
+		if err != nil {
+			return abort(fmt.Errorf("Failed sending filesystem volume: %w", err))
+		}
 	}
 
 	// Send block volume
