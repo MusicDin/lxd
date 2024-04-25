@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 
@@ -30,7 +31,8 @@ import (
 type cmdMigrate struct {
 	global *cmdGlobal
 
-	flagRsyncArgs string
+	flagRsyncArgs      string
+	flagConversionOpts []string
 }
 
 func (c *cmdMigrate) command() *cobra.Command {
@@ -51,6 +53,7 @@ func (c *cmdMigrate) command() *cobra.Command {
 `
 	cmd.RunE = c.run
 	cmd.Flags().StringVar(&c.flagRsyncArgs, "rsync-args", "", "Extra arguments to pass to rsync"+"``")
+	cmd.Flags().StringSliceVar(&c.flagConversionOpts, "conversion", []string{"format"}, "List of conversion opts. Allowed values are: [format]")
 
 	return cmd
 }
@@ -248,9 +251,20 @@ func (c *cmdMigrate) runInteractive(server lxd.InstanceServer) (cmdMigrateData, 
 
 	config.InstanceArgs = api.InstancesPost{
 		Source: api.InstanceSource{
-			Type: "migration",
-			Mode: "push",
+			Type:              "conversion",
+			Mode:              "push",
+			ConversionOptions: c.flagConversionOpts,
 		},
+	}
+
+	// If server does not support conversion, fallback to migration.
+	// Migration will move the image to the server and import it as
+	// LXD instance. This means that images of different formats,
+	// such as VMDK and QCow2, will not work.
+	if !server.HasExtension("instance_import_conversion") {
+		fmt.Println(`Server does not support image conversion. Expecting input image in "raw" format.`)
+		config.InstanceArgs.Source.Type = "migration"
+		config.InstanceArgs.Source.ConversionOptions = []string{}
 	}
 
 	config.InstanceArgs.Config = map[string]string{}
@@ -429,6 +443,14 @@ func (c *cmdMigrate) run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("This tool must be run as root")
+	}
+
+	// Check conversion options.
+	supportedConversionOptions := []string{"format"}
+	for _, opt := range c.flagConversionOpts {
+		if !slices.Contains(supportedConversionOptions, opt) {
+			return fmt.Errorf("Unsupported conversion option %q, supported conversion options are %v", opt, supportedConversionOptions)
+		}
 	}
 
 	_, err := exec.LookPath("rsync")
