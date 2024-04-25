@@ -458,7 +458,14 @@ func genericVFSCreateVolumeFromMigration(d Driver, initVolume func(vol Volume) (
 		}
 
 		// Receive the block volume next (if needed).
-		if vol.IsVMBlock() || (IsContentBlock(vol.contentType) && vol.volType == VolumeTypeCustom) {
+		if volTargetArgs.Convert {
+			// If we are receiving block volume for conversion, store it into a backups directory,
+			// as it will be converted into the instance volume later.
+			err = recvBlockVol(vol.name, conn, volTargetArgs.ConvertFilePath)
+			if err != nil {
+				return err
+			}
+		} else if vol.IsVMBlock() || (IsContentBlock(vol.contentType) && vol.volType == VolumeTypeCustom) {
 			err = recvBlockVol(vol.name, conn, pathBlock)
 			if err != nil {
 				return err
