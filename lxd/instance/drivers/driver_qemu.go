@@ -7364,7 +7364,13 @@ func (d *qemu) MigrateReceive(args instance.MigrateReceiveArgs) error {
 			}
 		}
 
-		err = pool.CreateInstanceFromMigration(d, filesystemConn, volTargetArgs, d.op)
+		if args.Conversion {
+			d.logger.Error("CALLING: CreateInstanceFromConversion")
+			err = pool.CreateInstanceFromConversion(d, filesystemConn, volTargetArgs, d.op)
+		} else {
+			d.logger.Error("CALLING: CreateInstanceFromMigration")
+			err = pool.CreateInstanceFromMigration(d, filesystemConn, volTargetArgs, d.op)
+		}
 		if err != nil {
 			return fmt.Errorf("Failed creating instance on target: %w", err)
 		}

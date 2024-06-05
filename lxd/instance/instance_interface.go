@@ -241,5 +241,6 @@ type MigrateReceiveArgs struct {
 
 	InstanceOperation *operationlock.InstanceOperation
 	Refresh           bool
+	Conversion        bool
 	ConversionOptions []string
 }

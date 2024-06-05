@@ -169,6 +169,7 @@ func newMigrationSink(args *migrationSinkArgs) (*migrationSink, error) {
 		clusterMoveSourceName: args.ClusterMoveSourceName,
 		push:                  args.Push,
 		refresh:               args.Refresh,
+		conversion:            args.Conversion,
 		conversionOptions:     args.ConversionOptions,
 	}
 
@@ -281,6 +282,7 @@ func (c *migrationSink) Do(state *state.State, instOp *operationlock.InstanceOpe
 		},
 		InstanceOperation: instOp,
 		Refresh:           c.refresh,
+		Conversion:        c.conversion,
 		ConversionOptions: c.conversionOptions,
 	})
 	if err != nil {

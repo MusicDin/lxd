@@ -524,6 +524,7 @@ func createFromConversion(s *state.State, r *http.Request, projectName string, p
 		Live:              false,
 		InstanceOnly:      true,
 		Refresh:           false,
+		Conversion:        true,
 		ConversionOptions: conversionOptions,
 	}
 

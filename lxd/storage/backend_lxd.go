@@ -2121,9 +2121,196 @@ func (b *lxdBackend) CreateInstanceFromMigration(inst instance.Instance, conn io
 	args.Config = vol.Config()
 	args.Name = inst.Name()
 
-	if len(args.ConversionOptions) == 0 {
-		projectName := inst.Project().Name
+	projectName := inst.Project().Name
 
+	// If migration header supplies a volume size, then use that as block volume size instead of pool default.
+	// This way if the volume being received is larger than the pool default size, the block volume created
+	// will still be able to accommodate it.
+	if args.VolumeSize > 0 && contentType == drivers.ContentTypeBlock {
+		l.Debug("Setting volume size from offer header", logger.Ctx{"size": args.VolumeSize})
+		args.Config["size"] = fmt.Sprintf("%d", args.VolumeSize)
+	} else if args.Config["size"] != "" {
+		l.Debug("Using volume size from root disk config", logger.Ctx{"size": args.Config["size"]})
+	}
+
+	var preFiller drivers.VolumeFiller
+
+	if !args.Refresh && !isRemoteClusterMove {
+		// If the negotiated migration method is rsync and the instance's base image is
+		// already on the host then setup a pre-filler that will unpack the local image
+		// to try and speed up the rsync of the incoming volume by avoiding the need to
+		// transfer the base image files too.
+		if args.MigrationType.FSType == migration.MigrationFSType_RSYNC {
+			fingerprint := inst.ExpandedConfig()["volatile.base_image"]
+			imageExists := false
+
+			if fingerprint != "" {
+				err = b.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
+					// Confirm that the image is present in the project.
+					_, _, err = tx.GetImage(ctx, fingerprint, cluster.ImageFilter{Project: &projectName})
+
+					return err
+				})
+				if err != nil && !response.IsNotFoundError(err) {
+					return err
+				}
+
+				// Make sure that the image is available locally too (not guaranteed in clusters).
+				imageExists = err == nil && shared.PathExists(shared.VarPath("images", fingerprint))
+			}
+
+			if imageExists {
+				l.Debug("Using optimised migration from existing image", logger.Ctx{"fingerprint": fingerprint})
+
+				// Populate the volume filler with the fingerprint and image filler
+				// function that can be used by the driver to pre-populate the
+				// volume with the contents of the image.
+				preFiller = drivers.VolumeFiller{
+					Fingerprint: fingerprint,
+					Fill:        b.imageFiller(fingerprint, op),
+				}
+
+				// Ensure if the image doesn't yet exist on a driver which supports
+				// optimized storage, then it gets created first.
+				err = b.EnsureImage(preFiller.Fingerprint, op)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	// Retrieve a list of target volume snapshots.
+	// Afterwards load the volume from the snapshot to ensure the right ordering.
+	instSnapshots, err := inst.Snapshots()
+	if err != nil {
+		return err
+	}
+
+	targetSnapshots := make([]drivers.Volume, 0, len(instSnapshots))
+	for _, instSnapshot := range instSnapshots {
+		snap, err := VolumeDBGet(b, inst.Project().Name, instSnapshot.Name(), volType)
+		if err != nil {
+			return err
+		}
+
+		snapshotStorageName := project.Instance(inst.Project().Name, instSnapshot.Name())
+		targetSnapshots = append(targetSnapshots, b.GetVolume(volType, contentType, snapshotStorageName, snap.Config))
+	}
+
+	volCopy := drivers.NewVolumeCopy(vol, targetSnapshots...)
+
+	err = b.driver.CreateVolumeFromMigration(volCopy, conn, args, &preFiller, op)
+	if err != nil {
+		return err
+	}
+
+	if !isRemoteClusterMove {
+		revert.Add(func() { _ = b.DeleteInstance(inst, op) })
+	}
+
+	err = b.ensureInstanceSymlink(inst.Type(), inst.Project().Name, inst.Name(), vol.MountPath())
+	if err != nil {
+		return err
+	}
+
+	if len(args.Snapshots) > 0 {
+		err = b.ensureInstanceSnapshotSymlink(inst.Type(), inst.Project().Name, inst.Name())
+		if err != nil {
+			return err
+		}
+	}
+
+	revert.Success()
+	return nil
+}
+
+// CreateInstanceFromConversion receives an image and creates and instance from it.
+// Depending on provided conversionOptions, the image is also converted into the
+// raw format.
+func (b *lxdBackend) CreateInstanceFromConversion(inst instance.Instance, conn io.ReadWriteCloser, args migration.VolumeTargetArgs, op *operations.Operation) error {
+	l := b.logger.AddContext(logger.Ctx{"project": inst.Project().Name, "instance": inst.Name(), "args": fmt.Sprintf("%+v", args)})
+	l.Debug("CreateInstanceFromConversion started")
+	defer l.Debug("CreateInstanceFromConversion finished")
+
+	err := b.isStatusReady()
+	if err != nil {
+		return err
+	}
+
+	if args.Config != nil {
+		return fmt.Errorf("VolumeTargetArgs.Config cannot be set during conversion")
+	}
+
+	if args.Refresh {
+		return fmt.Errorf("Conversion cannot be used to refresh volume")
+	}
+
+	isRemoteClusterMove := args.ClusterMoveSourceName != "" && b.driver.Info().Remote
+	if isRemoteClusterMove {
+		return fmt.Errorf("Conversion cannot be used for moving instances between members")
+	}
+
+	contentType := InstanceContentType(inst)
+	volType, err := InstanceTypeToVolumeType(inst.Type())
+	if err != nil {
+		return err
+	}
+
+	volStorageName := project.Instance(inst.Project().Name, inst.Name())
+	volConfig := make(map[string]string)
+	vol := b.GetNewVolume(volType, contentType, volStorageName, volConfig)
+
+	// Ensure storage volume settings are honored when doing migration.
+	vol.SetHasSource(false)
+	err = b.driver.FillVolumeConfig(vol)
+	if err != nil {
+		return fmt.Errorf("Failed filling volume config: %w", err)
+	}
+
+	// Check if the volume exists in database
+	dbVol, err := VolumeDBGet(b, inst.Project().Name, inst.Name(), volType)
+	if err != nil && !response.IsNotFoundError(err) {
+		return err
+	}
+
+	if dbVol != nil {
+		return fmt.Errorf("Volume for instance %q already exists in database", inst.Name())
+	}
+
+	// Check if the volume exists on storage.
+	volExists, err := b.driver.HasVolume(vol)
+	if err != nil {
+		return err
+	}
+
+	if volExists {
+		return fmt.Errorf("Volume already exists on storage but not in database")
+	}
+
+	revert := revert.New()
+	defer revert.Fail()
+
+	// Validate config and create database entry for new storage volume if not refreshing.
+	// Strip unsupported config keys (in case the export was made from a different type of storage pool).
+	err = VolumeDBCreate(b, inst.Project().Name, inst.Name(), args.Description, volType, false, vol.Config(), inst.CreationDate(), time.Time{}, contentType, false, true)
+	if err != nil {
+		return err
+	}
+
+	revert.Add(func() { _ = VolumeDBDelete(b, inst.Project().Name, inst.Name(), volType) })
+
+	// Generate the effective root device volume for instance.
+	err = b.applyInstanceRootDiskOverrides(inst, &vol)
+	if err != nil {
+		return err
+	}
+
+	// Override args.Name and args.Config to ensure volume is created based on instance.
+	args.Config = vol.Config()
+	args.Name = inst.Name()
+
+	if len(args.ConversionOptions) == 0 {
 		// If migration header supplies a volume size, then use that as block volume size instead of pool default.
 		// This way if the volume being received is larger than the pool default size, the block volume created
 		// will still be able to accommodate it.
@@ -2134,80 +2321,11 @@ func (b *lxdBackend) CreateInstanceFromMigration(inst instance.Instance, conn io
 			l.Debug("Using volume size from root disk config", logger.Ctx{"size": args.Config["size"]})
 		}
 
-		var preFiller drivers.VolumeFiller
+		volCopy := drivers.NewVolumeCopy(vol)
 
-		if !args.Refresh && !isRemoteClusterMove {
-			// If the negotiated migration method is rsync and the instance's base image is
-			// already on the host then setup a pre-filler that will unpack the local image
-			// to try and speed up the rsync of the incoming volume by avoiding the need to
-			// transfer the base image files too.
-			if args.MigrationType.FSType == migration.MigrationFSType_RSYNC {
-				fingerprint := inst.ExpandedConfig()["volatile.base_image"]
-				imageExists := false
-
-				if fingerprint != "" {
-					err = b.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-						// Confirm that the image is present in the project.
-						_, _, err = tx.GetImage(ctx, fingerprint, cluster.ImageFilter{Project: &projectName})
-
-						return err
-					})
-					if err != nil && !response.IsNotFoundError(err) {
-						return err
-					}
-
-					// Make sure that the image is available locally too (not guaranteed in clusters).
-					imageExists = err == nil && shared.PathExists(shared.VarPath("images", fingerprint))
-				}
-
-				if imageExists {
-					l.Debug("Using optimised migration from existing image", logger.Ctx{"fingerprint": fingerprint})
-
-					// Populate the volume filler with the fingerprint and image filler
-					// function that can be used by the driver to pre-populate the
-					// volume with the contents of the image.
-					preFiller = drivers.VolumeFiller{
-						Fingerprint: fingerprint,
-						Fill:        b.imageFiller(fingerprint, op),
-					}
-
-					// Ensure if the image doesn't yet exist on a driver which supports
-					// optimized storage, then it gets created first.
-					err = b.EnsureImage(preFiller.Fingerprint, op)
-					if err != nil {
-						return err
-					}
-				}
-			}
-		}
-
-		// Retrieve a list of target volume snapshots.
-		// Afterwards load the volume from the snapshot to ensure the right ordering.
-		instSnapshots, err := inst.Snapshots()
+		err = b.driver.CreateVolumeFromMigration(volCopy, conn, args, nil, op)
 		if err != nil {
 			return err
-		}
-
-		targetSnapshots := make([]drivers.Volume, 0, len(instSnapshots))
-		for _, instSnapshot := range instSnapshots {
-			snap, err := VolumeDBGet(b, inst.Project().Name, instSnapshot.Name(), volType)
-			if err != nil {
-				return err
-			}
-
-			snapshotStorageName := project.Instance(inst.Project().Name, instSnapshot.Name())
-			targetSnapshots = append(targetSnapshots, b.GetVolume(volType, contentType, snapshotStorageName, snap.Config))
-		}
-
-		volCopy := drivers.NewVolumeCopy(vol, targetSnapshots...)
-
-		err = b.driver.CreateVolumeFromMigration(volCopy, conn, args, &preFiller, op)
-		if err != nil {
-			return err
-		}
-
-		if !isRemoteClusterMove {
-			revert.Add(func() { _ = b.DeleteInstance(inst, op) })
 		}
 	} else {
 		var imgUploadPath string

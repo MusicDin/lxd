@@ -189,6 +189,7 @@ type migrationSink struct {
 	push                  bool
 	clusterMoveSourceName string
 	refresh               bool
+	conversion            bool
 	conversionOptions     []string
 }
 
@@ -210,6 +211,7 @@ type migrationSinkArgs struct {
 	Snapshots             []*migration.Snapshot
 
 	// Conversion specific fields
+	Conversion        bool
 	ConversionOptions []string
 
 	// Storage specific fields
