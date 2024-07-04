@@ -346,6 +346,18 @@ func (c *cmdMigrate) runInteractive(server lxd.InstanceServer) (cmdMigrateData, 
 			return errors.New("Path does not exist")
 		}
 
+		if config.InstanceArgs.Type == api.InstanceTypeVM && config.InstanceArgs.Source.Mode == "migration" {
+			isImageTypeRaw, err := isImageTypeRaw(config.SourcePath)
+			if err != nil {
+				return err
+			}
+
+			// If mode is migration and image type is not raw, the migration will fail.
+			if !isImageTypeRaw {
+				return fmt.Errorf(`Server does not support image conversion. Expecting input image in "raw" format`)
+			}
+		}
+
 		_, err := os.Stat(s)
 		if err != nil {
 			return err
