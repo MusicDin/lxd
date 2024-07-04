@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -363,4 +364,16 @@ func parseURL(URL string) (string, error) {
 	}
 
 	return u.String(), nil
+}
+
+// isImageTypeRaw checks whether the th file on a given path represents an
+// image in raw format.
+func isImageTypeRaw(path string) (bool, error) {
+	cmd := exec.Command("file", "--brief", path)
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("Failed to extract image file type: %v", err)
+	}
+
+	return strings.HasPrefix(string(out), "DOS/MBR boot sector"), nil
 }
