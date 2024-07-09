@@ -552,7 +552,11 @@ func (c *cmdMigrate) run(cmd *cobra.Command, args []string) error {
 	}(path)
 
 	var fullPath string
-	var transferImageOnly bool
+
+	// The migration API expects to first receive the filesystem, and then the block volume if instance type
+	// is virtual machine. Since there is no filesystem to be sent for virtual machines (only partition/image),
+	// if the server supports conversion API, send the block volume directly.
+	var transferBlockVolOnly bool
 
 	if config.InstanceArgs.Type == api.InstanceTypeContainer {
 		// Create the rootfs directory
@@ -569,30 +573,26 @@ func (c *cmdMigrate) run(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("Failed to setup the source: %w", err)
 		}
 	} else {
-		if config.InstanceArgs.Source.Type == "conversion" && slices.Contains(config.InstanceArgs.Source.ConversionOptions, "format") {
-			// Check the image type using file.
-			cmd := exec.Command("file", "--brief", config.SourcePath)
-			out, err := cmd.Output()
-			if err != nil {
-				return fmt.Errorf("Failed to extract file type of the VM image: %v", err)
-			}
+		// If server supports conversion API, transfer only block volume (image/partition).
+		if config.InstanceArgs.Source.Type == "conversion" {
+			transferBlockVolOnly = true
+		}
 
-			// If image type is raw, formatting is not required.
-			if strings.HasPrefix(string(out), "DOS/MBR boot sector") {
-				fmt.Println(`Formatting is not required for images of type raw. Ignoring conversion option "format".`)
-				config.InstanceArgs.Source.ConversionOptions = shared.RemoveElementsFromSlice(config.InstanceArgs.Source.ConversionOptions, "format")
-			}
+		// If image type is raw, formatting is not required.
+		isImageTypeRaw, err := isImageTypeRaw(config.SourcePath)
+		if err != nil {
+			return err
+		}
 
-			// If image formatting is required, transfer only the image.
-			if slices.Contains(config.InstanceArgs.Source.ConversionOptions, "format") {
-				transferImageOnly = true
-			}
+		if isImageTypeRaw {
+			fmt.Println(`Formatting is not required for images of type raw. Ignoring conversion option "format".`)
+			config.InstanceArgs.Source.ConversionOptions = shared.RemoveElementsFromSlice(config.InstanceArgs.Source.ConversionOptions, "format")
 		}
 
 		fullPath = path
 		target := filepath.Join(path, "root.img")
 
-		err := os.WriteFile(target, nil, 0644)
+		err = os.WriteFile(target, nil, 0644)
 		if err != nil {
 			return fmt.Errorf("Failed to create %q: %w", target, err)
 		}
@@ -638,7 +638,7 @@ func (c *cmdMigrate) run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	err = transferRootfs(ctx, op, fullPath, c.flagRsyncArgs, config.InstanceArgs.Type, transferImageOnly)
+	err = transferRootfs(ctx, op, fullPath, c.flagRsyncArgs, config.InstanceArgs.Type, transferBlockVolOnly)
 	if err != nil {
 		return err
 	}
