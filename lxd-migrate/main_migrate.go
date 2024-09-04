@@ -335,7 +335,11 @@ func (c *cmdMigrate) askServer() (lxd.InstanceServer, string, error) {
 	return c.connectTarget(serverURL, certPath, keyPath, authType, token)
 }
 
-func (c *cmdMigrate) runInteractive(server lxd.InstanceServer) (cmdMigrateData, error) {
+// configure populates the migration request from the provided flags. Any missing flags, such as
+// instance type and name, are requested interactively. In the non-interactive mode, the an error
+// is returned instead. Regardless of the mode (interactive/non-interactive), an error is returned
+// if the flag contains an invalid value.
+func (c *cmdMigrate) configure(server lxd.InstanceServer) (cmdMigrateData, error) {
 	var err error
 
 	config := cmdMigrateData{}
@@ -619,6 +623,19 @@ func (c *cmdMigrate) runInteractive(server lxd.InstanceServer) (cmdMigrateData, 
 		return cmdMigrateData{}, fmt.Errorf("Additional mount paths are supported only for containers")
 	}
 
+	// In non-interactive mode, print the instance to be created and continue with the migration.
+	if c.flagNonInteractive {
+		fmt.Println("\nInstance to be created:")
+
+		scanner := bufio.NewScanner(strings.NewReader(config.render()))
+		for scanner.Scan() {
+			fmt.Printf("  %s\n", scanner.Text())
+		}
+
+		return config, nil
+	}
+
+	// In ineractive mode, allow user to review and modify the instance configuration.
 	for {
 		fmt.Println("\nInstance to be created:")
 
@@ -714,7 +731,7 @@ func (c *cmdMigrate) run(cmd *cobra.Command, args []string) error {
 		defer func() { _ = server.DeleteCertificate(clientFingerprint) }()
 	}
 
-	config, err := c.runInteractive(server)
+	config, err := c.configure(server)
 	if err != nil {
 		return err
 	}
