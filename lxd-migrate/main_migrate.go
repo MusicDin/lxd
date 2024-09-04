@@ -33,6 +33,11 @@ import (
 type cmdMigrate struct {
 	global *cmdGlobal
 
+	// Instance options.
+	flagProfiles   []string
+	flagNoProfiles bool
+
+	// Other.
 	flagRsyncArgs      string
 	flagConversionOpts []string
 }
@@ -54,6 +59,12 @@ func (c *cmdMigrate) command() *cobra.Command {
   The same set of options as ` + "`lxc launch`" + ` are also supported.
 `
 	cmd.RunE = c.run
+
+	// Instance flags.
+	cmd.Flags().StringSliceVar(&c.flagProfiles, "profiles", []string{"default"}, "Profiles to apply on the new instance"+"``")
+	cmd.Flags().BoolVar(&c.flagNoProfiles, "no-profiles", false, "Create the instance with no profiles applied"+"``")
+
+	// Other flags.
 	cmd.Flags().StringVar(&c.flagRsyncArgs, "rsync-args", "", "Extra arguments to pass to rsync"+"``")
 	cmd.Flags().StringSliceVar(&c.flagConversionOpts, "conversion", []string{"format"}, "Comma-separated list of conversion options to apply. Allowed values are: [format, virtio]")
 
@@ -281,6 +292,24 @@ func (c *cmdMigrate) runInteractive(server lxd.InstanceServer) (cmdMigrateData, 
 
 	config.InstanceArgs.Config = map[string]string{}
 	config.InstanceArgs.Devices = map[string]map[string]string{}
+
+	// Configure profiles from flags.
+	if c.flagNoProfiles {
+		config.InstanceArgs.Profiles = []string{}
+	} else if len(c.flagProfiles) > 0 {
+		profileNames, err := server.GetProfileNames()
+		if err != nil {
+			return cmdMigrateData{}, err
+		}
+
+		for _, profile := range c.flagProfiles {
+			if !shared.ValueInSlice(profile, profileNames) {
+				return cmdMigrateData{}, fmt.Errorf("Profile %q not found", profile)
+			}
+		}
+
+		config.InstanceArgs.Profiles = c.flagProfiles
+	}
 
 	// Provide instance type
 	instanceType, err := c.global.asker.AskInt("Would you like to create a container (1) or virtual-machine (2)?: ", 1, 2, "1", nil)
