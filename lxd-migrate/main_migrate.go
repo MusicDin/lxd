@@ -34,14 +34,16 @@ type cmdMigrate struct {
 	global *cmdGlobal
 
 	// Instance options.
-	flagProject     string
-	flagProfiles    []string
-	flagNoProfiles  bool
-	flagStorage     string
-	flagStorageSize string
-	flagNetwork     string
-	flagConfig      []string
-	flagSource      string
+	flagInstanceName string
+	flagInstanceType string
+	flagProject      string
+	flagProfiles     []string
+	flagNoProfiles   bool
+	flagStorage      string
+	flagStorageSize  string
+	flagNetwork      string
+	flagConfig       []string
+	flagSource       string
 
 	// Target server.
 	flagServer string
@@ -72,6 +74,8 @@ func (c *cmdMigrate) command() *cobra.Command {
 	cmd.RunE = c.run
 
 	// Instance flags.
+	cmd.Flags().StringVar(&c.flagInstanceName, "instance-name", "", "Name of the new instance"+"``")
+	cmd.Flags().StringVar(&c.flagInstanceType, "instance-type", "", "Type of the instance to create (container or vm)"+"``")
 	cmd.Flags().StringVar(&c.flagProject, "project", "", "Project name"+"``")
 	cmd.Flags().StringSliceVar(&c.flagProfiles, "profiles", []string{"default"}, "Profiles to apply on the new instance"+"``")
 	cmd.Flags().BoolVar(&c.flagNoProfiles, "no-profiles", false, "Create the instance with no profiles applied"+"``")
@@ -434,15 +438,30 @@ func (c *cmdMigrate) runInteractive(server lxd.InstanceServer) (cmdMigrateData, 
 	}
 
 	// Provide instance type
-	instanceType, err := c.global.asker.AskInt("Would you like to create a container (1) or virtual-machine (2)?: ", 1, 2, "1", nil)
-	if err != nil {
-		return cmdMigrateData{}, err
-	}
+	if c.flagInstanceType != "" {
+		switch c.flagInstanceType {
+		case "container":
+			config.InstanceArgs.Type = api.InstanceTypeContainer
+		case "vm":
+			config.InstanceArgs.Type = api.InstanceTypeVM
+		default:
+			return cmdMigrateData{}, fmt.Errorf("Invalid instance type %q: Valid values are [%s]", c.flagInstanceType, strings.Join([]string{"container", "vm"}, ", "))
+		}
+	} else {
+		if c.flagNonInteractive {
+			return cmdMigrateData{}, fmt.Errorf("Instance type is required and cannot be empty")
+		}
 
-	if instanceType == 1 {
-		config.InstanceArgs.Type = api.InstanceTypeContainer
-	} else if instanceType == 2 {
-		config.InstanceArgs.Type = api.InstanceTypeVM
+		instanceType, err := c.global.asker.AskInt("Would you like to create a container (1) or virtual-machine (2)?: ", 1, 2, "1", nil)
+		if err != nil {
+			return cmdMigrateData{}, err
+		}
+
+		if instanceType == 1 {
+			config.InstanceArgs.Type = api.InstanceTypeContainer
+		} else if instanceType == 2 {
+			config.InstanceArgs.Type = api.InstanceTypeVM
+		}
 	}
 
 	// Project
@@ -476,19 +495,31 @@ func (c *cmdMigrate) runInteractive(server lxd.InstanceServer) (cmdMigrateData, 
 		return cmdMigrateData{}, err
 	}
 
-	for {
-		instanceName, err := c.global.asker.AskString("Name of the new instance: ", "", nil)
-		if err != nil {
-			return cmdMigrateData{}, err
+	if c.flagInstanceName != "" {
+		if shared.ValueInSlice(c.flagInstanceName, instanceNames) {
+			return cmdMigrateData{}, fmt.Errorf("Instance %q already exists", c.flagInstanceName)
 		}
 
-		if shared.ValueInSlice(instanceName, instanceNames) {
-			fmt.Printf("Instance %q already exists\n", instanceName)
-			continue
+		config.InstanceArgs.Name = c.flagInstanceName
+	} else {
+		if c.flagNonInteractive {
+			return cmdMigrateData{}, fmt.Errorf("Instance name is required and cannot be empty")
 		}
 
-		config.InstanceArgs.Name = instanceName
-		break
+		for {
+			instanceName, err := c.global.asker.AskString("Name of the new instance: ", "", nil)
+			if err != nil {
+				return cmdMigrateData{}, err
+			}
+
+			if shared.ValueInSlice(instanceName, instanceNames) {
+				fmt.Printf("Instance %q already exists\n", instanceName)
+				continue
+			}
+
+			config.InstanceArgs.Name = instanceName
+			break
+		}
 	}
 
 	var question string
