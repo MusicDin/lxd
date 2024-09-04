@@ -36,6 +36,7 @@ type cmdMigrate struct {
 	// Instance options.
 	flagProfiles   []string
 	flagNoProfiles bool
+	flagNetwork    string
 
 	// Other.
 	flagRsyncArgs      string
@@ -63,6 +64,7 @@ func (c *cmdMigrate) command() *cobra.Command {
 	// Instance flags.
 	cmd.Flags().StringSliceVar(&c.flagProfiles, "profiles", []string{"default"}, "Profiles to apply on the new instance"+"``")
 	cmd.Flags().BoolVar(&c.flagNoProfiles, "no-profiles", false, "Create the instance with no profiles applied"+"``")
+	cmd.Flags().StringVar(&c.flagNetwork, "network", "", "Network name"+"``")
 
 	// Other flags.
 	cmd.Flags().StringVar(&c.flagRsyncArgs, "rsync-args", "", "Extra arguments to pass to rsync"+"``")
@@ -309,6 +311,25 @@ func (c *cmdMigrate) runInteractive(server lxd.InstanceServer) (cmdMigrateData, 
 		}
 
 		config.InstanceArgs.Profiles = c.flagProfiles
+	}
+
+	// Read instance network from flags.
+	if c.flagNetwork != "" {
+		networks, err := server.GetNetworkNames()
+		if err != nil {
+			return cmdMigrateData{}, err
+		}
+
+		if !shared.ValueInSlice(c.flagNetwork, networks) {
+			return cmdMigrateData{}, fmt.Errorf("Network %q not found", c.flagNetwork)
+		}
+
+		config.InstanceArgs.Devices["eth0"] = map[string]string{
+			"type":    "nic",
+			"nictype": "bridged",
+			"parent":  c.flagNetwork,
+			"name":    "eth0",
+		}
 	}
 
 	// Provide instance type
