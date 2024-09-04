@@ -42,6 +42,7 @@ type cmdMigrate struct {
 	flagStorage      string
 	flagStorageSize  string
 	flagNetwork      string
+	flagMountPaths   []string
 	flagConfig       []string
 	flagSource       string
 
@@ -82,6 +83,7 @@ func (c *cmdMigrate) command() *cobra.Command {
 	cmd.Flags().StringVar(&c.flagStorage, "storage", "", "Storage pool name"+"``")
 	cmd.Flags().StringVar(&c.flagStorageSize, "storage-size", "", "Size of the instance's storage volume"+"``")
 	cmd.Flags().StringVar(&c.flagNetwork, "network", "", "Network name"+"``")
+	cmd.Flags().StringArrayVar(&c.flagMountPaths, "mount-path", nil, "Additional container mount paths"+"``")
 	cmd.Flags().StringArrayVarP(&c.flagConfig, "config", "c", nil, "Config key/value to apply to the new instance"+"``")
 	cmd.Flags().StringVar(&c.flagSource, "source", "", "Path to the root filesystem for containers, or to the disk, image or partition for virtual machines"+"``")
 
@@ -566,41 +568,55 @@ func (c *cmdMigrate) runInteractive(server lxd.InstanceServer) (cmdMigrateData, 
 		}
 	}
 
-	var mounts []string
-
 	// Additional mounts for containers
 	if config.InstanceArgs.Type == api.InstanceTypeContainer {
-		addMounts, err := c.global.asker.AskBool("Do you want to add additional filesystem mounts? [default=no]: ", "no")
-		if err != nil {
-			return cmdMigrateData{}, err
-		}
+		var mounts []string
 
-		if addMounts {
-			for {
-				path, err := c.global.asker.AskString("Please provide a path the filesystem mount path [empty value to continue]: ", "", func(s string) error {
-					if s != "" {
-						if shared.PathExists(s) {
-							return nil
-						}
-
-						return errors.New("Path does not exist")
-					}
-
-					return nil
-				})
-				if err != nil {
-					return cmdMigrateData{}, err
-				}
-
-				if path == "" {
-					break
+		if len(c.flagMountPaths) > 0 {
+			for _, path := range c.flagMountPaths {
+				if !shared.PathExists(path) {
+					return cmdMigrateData{}, fmt.Errorf("Invalid mount path %q: Path does not exist", path)
 				}
 
 				mounts = append(mounts, path)
 			}
+		} else if !c.flagNonInteractive {
+			addMounts, err := c.global.asker.AskBool("Do you want to add additional filesystem mounts? [default=no]: ", "no")
+			if err != nil {
+				return cmdMigrateData{}, err
+			}
 
+			if addMounts {
+				for {
+					path, err := c.global.asker.AskString("Please provide the filesystem mount path [empty value to continue]: ", "", func(s string) error {
+						if s != "" {
+							if shared.PathExists(s) {
+								return nil
+							}
+
+							return errors.New("Path does not exist")
+						}
+
+						return nil
+					})
+					if err != nil {
+						return cmdMigrateData{}, err
+					}
+
+					if path == "" {
+						break
+					}
+
+					mounts = append(mounts, path)
+				}
+			}
+		}
+
+		if len(mounts) > 0 {
 			config.Mounts = append(config.Mounts, mounts...)
 		}
+	} else if len(c.flagMountPaths) > 0 {
+		return cmdMigrateData{}, fmt.Errorf("Additional mount paths are supported only for containers")
 	}
 
 	for {
