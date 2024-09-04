@@ -34,6 +34,7 @@ type cmdMigrate struct {
 	global *cmdGlobal
 
 	// Instance options.
+	flagProject     string
 	flagProfiles    []string
 	flagNoProfiles  bool
 	flagStorage     string
@@ -65,6 +66,7 @@ func (c *cmdMigrate) command() *cobra.Command {
 	cmd.RunE = c.run
 
 	// Instance flags.
+	cmd.Flags().StringVar(&c.flagProject, "project", "", "Project name"+"``")
 	cmd.Flags().StringSliceVar(&c.flagProfiles, "profiles", []string{"default"}, "Profiles to apply on the new instance"+"``")
 	cmd.Flags().BoolVar(&c.flagNoProfiles, "no-profiles", false, "Create the instance with no profiles applied"+"``")
 	cmd.Flags().StringVar(&c.flagStorage, "storage", "", "Storage pool name"+"``")
@@ -399,7 +401,14 @@ func (c *cmdMigrate) runInteractive(server lxd.InstanceServer) (cmdMigrateData, 
 		return cmdMigrateData{}, err
 	}
 
-	if len(projectNames) > 1 {
+	if c.flagProject != "" {
+		if !shared.ValueInSlice(c.flagProject, projectNames) {
+			return cmdMigrateData{}, fmt.Errorf("Project %q does not exist", c.flagProject)
+		}
+
+		config.Project = c.flagProject
+		server = server.UseProject(config.Project)
+	} else if !c.flagNonInteractive && len(projectNames) > 1 {
 		project, err := c.global.asker.AskChoice("Project to create the instance in [default=default]: ", projectNames, "default")
 		if err != nil {
 			return cmdMigrateData{}, err
