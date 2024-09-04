@@ -34,9 +34,11 @@ type cmdMigrate struct {
 	global *cmdGlobal
 
 	// Instance options.
-	flagProfiles   []string
-	flagNoProfiles bool
-	flagNetwork    string
+	flagProfiles    []string
+	flagNoProfiles  bool
+	flagStorage     string
+	flagStorageSize string
+	flagNetwork     string
 
 	// Other.
 	flagRsyncArgs      string
@@ -64,6 +66,8 @@ func (c *cmdMigrate) command() *cobra.Command {
 	// Instance flags.
 	cmd.Flags().StringSliceVar(&c.flagProfiles, "profiles", []string{"default"}, "Profiles to apply on the new instance"+"``")
 	cmd.Flags().BoolVar(&c.flagNoProfiles, "no-profiles", false, "Create the instance with no profiles applied"+"``")
+	cmd.Flags().StringVar(&c.flagStorage, "storage", "", "Storage pool name"+"``")
+	cmd.Flags().StringVar(&c.flagStorageSize, "storage-size", "", "Size of the instance's storage volume"+"``")
 	cmd.Flags().StringVar(&c.flagNetwork, "network", "", "Network name"+"``")
 
 	// Other flags.
@@ -311,6 +315,37 @@ func (c *cmdMigrate) runInteractive(server lxd.InstanceServer) (cmdMigrateData, 
 		}
 
 		config.InstanceArgs.Profiles = c.flagProfiles
+	}
+
+	// Read storage from flags.
+	if c.flagStorage != "" {
+		storagePools, err := server.GetStoragePoolNames()
+		if err != nil {
+			return cmdMigrateData{}, err
+		}
+
+		if len(storagePools) == 0 {
+			return cmdMigrateData{}, fmt.Errorf("No storage pools available")
+		}
+
+		if !shared.ValueInSlice(c.flagStorage, storagePools) {
+			return cmdMigrateData{}, fmt.Errorf("Storage pool %q not found", c.flagStorage)
+		}
+
+		config.InstanceArgs.Devices["root"] = map[string]string{
+			"type": "disk",
+			"pool": c.flagStorage,
+			"path": "/",
+		}
+
+		if c.flagStorageSize != "" {
+			_, err := units.ParseByteSizeString(c.flagStorageSize)
+			if err != nil {
+				return cmdMigrateData{}, err
+			}
+
+			config.InstanceArgs.Devices["root"]["size"] = c.flagStorageSize
+		}
 	}
 
 	// Read instance network from flags.
