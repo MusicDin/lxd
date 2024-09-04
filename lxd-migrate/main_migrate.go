@@ -41,6 +41,7 @@ type cmdMigrate struct {
 	flagStorageSize string
 	flagNetwork     string
 	flagConfig      []string
+	flagSource      string
 
 	// Target server.
 	flagServer string
@@ -78,6 +79,7 @@ func (c *cmdMigrate) command() *cobra.Command {
 	cmd.Flags().StringVar(&c.flagStorageSize, "storage-size", "", "Size of the instance's storage volume"+"``")
 	cmd.Flags().StringVar(&c.flagNetwork, "network", "", "Network name"+"``")
 	cmd.Flags().StringArrayVarP(&c.flagConfig, "config", "c", nil, "Config key/value to apply to the new instance"+"``")
+	cmd.Flags().StringVar(&c.flagSource, "source", "", "Path to the root filesystem for containers, or to the disk, image or partition for virtual machines"+"``")
 
 	// Target server.
 	cmd.Flags().StringVar(&c.flagServer, "server", "", "Unix or HTTPS URL of the target server"+"``")
@@ -492,45 +494,30 @@ func (c *cmdMigrate) runInteractive(server lxd.InstanceServer) (cmdMigrateData, 
 	var question string
 
 	// Provide source path
-	if config.InstanceArgs.Type == api.InstanceTypeVM {
-		question = "Please provide the path to a disk, partition, or image file: "
-	} else {
-		question = "Please provide the path to a root filesystem: "
-	}
-
-	config.SourcePath, err = c.global.asker.AskString(question, "", func(s string) error {
-		if !shared.PathExists(s) {
-			return errors.New("Path does not exist")
-		}
-
-		if config.InstanceArgs.Type == api.InstanceTypeVM && config.InstanceArgs.Source.Type == "migration" {
-			isImageTypeRaw, err := isImageTypeRaw(s)
-			if err != nil {
-				return err
-			}
-
-			if !isImageTypeRaw {
-				return fmt.Errorf(`Source disk format cannot be converted by server. Source disk should be in raw format`)
-			}
-		}
-
-		file, err := os.Open(s)
+	if c.flagSource != "" {
+		err := c.checkSource(c.flagSource, &config)
 		if err != nil {
-			return err
+			return cmdMigrateData{}, fmt.Errorf("Invalid source path %q: %w", c.flagSource, err)
 		}
 
-		defer file.Close()
-
-		// Ensure the source file is not a tarball.
-		_, err = tar.NewReader(file).Next()
-		if err == nil {
-			return fmt.Errorf("Source cannot be a tar archive or OVA file")
+		config.SourcePath = c.flagSource
+	} else {
+		if c.flagNonInteractive {
+			return cmdMigrateData{}, fmt.Errorf("Source path is required and cannot be empty")
 		}
 
-		return nil
-	})
-	if err != nil {
-		return cmdMigrateData{}, err
+		if config.InstanceArgs.Type == api.InstanceTypeVM {
+			question = "Please provide the path to a disk, partition, or image file: "
+		} else {
+			question = "Please provide the path to a root filesystem: "
+		}
+
+		config.SourcePath, err = c.global.asker.AskString(question, "", func(s string) error {
+			return c.checkSource(s, &config)
+		})
+		if err != nil {
+			return cmdMigrateData{}, err
+		}
 	}
 
 	if config.InstanceArgs.Type == api.InstanceTypeVM {
@@ -952,6 +939,40 @@ func (c *cmdMigrate) askNetwork(server lxd.InstanceServer, config *cmdMigrateDat
 		"nictype": "bridged",
 		"parent":  network,
 		"name":    "eth0",
+	}
+
+	return nil
+}
+
+// checkSource checks if the source path is valid and can be used for migration.
+// Source path can represent a disk, image, or partition.
+func (c *cmdMigrate) checkSource(path string, config *cmdMigrateData) error {
+	if !shared.PathExists(path) {
+		return errors.New("Path does not exist")
+	}
+
+	if config.InstanceArgs.Type == api.InstanceTypeVM && config.InstanceArgs.Source.Type == "migration" {
+		isImageTypeRaw, err := isImageTypeRaw(path)
+		if err != nil {
+			return err
+		}
+
+		if !isImageTypeRaw {
+			return fmt.Errorf(`Source disk format cannot be converted by server. Source disk should be in raw format`)
+		}
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+
+	defer file.Close()
+
+	// Ensure the source file is not a tarball.
+	_, err = tar.NewReader(file).Next()
+	if err == nil {
+		return fmt.Errorf("Source cannot be a tar archive or OVA file")
 	}
 
 	return nil
