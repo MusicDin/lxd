@@ -248,16 +248,34 @@ func (c *cmdRemoteAdd) addRemoteFromToken(addr string, server string, token stri
 		return api.StatusErrorf(http.StatusServiceUnavailable, "%s: %w", i18n.G("Unavailable remote server"), err)
 	}
 
-	req := api.CertificatesPost{}
-	if d.HasExtension("explicit_trust_token") {
-		req.TrustToken = token
-	} else {
-		req.Password = token
+	srv, _, err := d.GetServer()
+	if err != nil {
+		return err
 	}
 
-	err = d.CreateCertificate(req)
-	if err != nil {
-		return fmt.Errorf(i18n.G("Failed to create certificate: %w"), err)
+	if srv.Auth != "trusted" {
+		req := api.CertificatesPost{}
+		if d.HasExtension("explicit_trust_token") {
+			req.TrustToken = token
+		} else {
+			req.Password = token
+		}
+
+		// Add client certificate to trust store.
+		err = d.CreateCertificate(req)
+		if err != nil {
+			return fmt.Errorf(i18n.G("Failed to create certificate: %w"), err)
+		}
+
+		// And check if trusted now.
+		srv, _, err = d.GetServer()
+		if err != nil {
+			return err
+		}
+
+		if srv.Auth != "trusted" {
+			return errors.New(i18n.G("Server doesn't trust us after authentication"))
+		}
 	}
 
 	// Handle project.
