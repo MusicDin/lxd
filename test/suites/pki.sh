@@ -189,9 +189,8 @@ test_pki() {
     # Remove remote
     lxc_remote remote remove pki-lxd
 
-    # Add the remote again using an incorrect token.
-    # This should succeed as is the same as the test above but with an incorrect token rather than no token.
-    lxc_remote remote add pki-lxd "${LXD5_ADDR}" --token=bar
+    # Ensure remote can be added without the token, as we are already trusted by the remote.
+    lxc_remote remote add pki-lxd "${LXD5_ADDR}" --accept-certificate
 
     # Client cert should not be present in trust store.
     ! lxc_remote config trust ls pki-lxd: | grep -wF ca-trusted || false
