@@ -7,6 +7,7 @@ import (
 	"github.com/canonical/lxd/lxd/operations"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
+	"github.com/canonical/lxd/shared/logger"
 	"github.com/canonical/lxd/shared/validate"
 )
 
@@ -31,6 +32,9 @@ type pure struct {
 	// Holds the low level HTTP client for the PureStorage API.
 	// Use pure.client() to retrieve the client struct.
 	httpClient *pureClient
+
+	// apiVersion indicates the PureStorage API version.
+	apiVersion string
 }
 
 // load is used initialize the driver. It should be used only once.
@@ -96,7 +100,7 @@ func (d *pure) Info() Info {
 
 // FillConfig populates the storage pool's configuration file with the default values.
 func (d *pure) FillConfig() error {
-	// Use NVMe/tcp by default.
+	// Use iSCSI by default.
 	if d.config["pure.mode"] == "" {
 		d.config["pure.mode"] = pureModeISCSI
 	}
@@ -116,7 +120,7 @@ func (d *pure) Validate(config map[string]string) error {
 		//
 		// ---
 		//  type: string
-		//  defaultdesc: `admin`
+		//  defaultdesc: `pureuser`
 		//  shortdesc: User for PureStorage gateway authentication
 		"pure.user.name": validate.IsAny,
 		// lxdmeta:generate(entities=storage-pure; group=pool-conf; key=pure.user.password)
@@ -125,12 +129,18 @@ func (d *pure) Validate(config map[string]string) error {
 		//  type: string
 		//  shortdesc: Password for PureStorage gateway authentication
 		"pure.user.password": validate.IsAny,
+		// lxdmeta:generate(entities=storage-pure; group=pool-conf; key=pure.user.password)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: API token for PureStorage gateway authentication
+		"pure.api.token": validate.IsNotEmpty,
 		// lxdmeta:generate(entities=storage-pure; group=pool-conf; key=pure.gateway)
 		//
 		// ---
 		//  type: string
 		//  shortdesc: Address of the PureStorage Gateway
-		"pure.gateway": validate.Optional(validate.IsRequestURL),
+		"pure.gateway": validate.IsRequestURL,
 		// lxdmeta:generate(entities=storage-pure; group=pool-conf; key=pure.gateway.verify)
 		//
 		// ---
@@ -182,19 +192,19 @@ func (d *pure) Create() error {
 	}
 
 	// Ensure pool name is set.
-	if d.config["pure.pool"] == "" {
-		return fmt.Errorf("The pure.pool cannot be empty")
-	}
+	// if d.config["pure.pool"] == "" {
+	// 	return fmt.Errorf("The pure.pool cannot be empty")
+	// }
 
 	// Ensure PureStorage gateway address is set.
-	if d.config["pure.gateway"] == "" {
-		return fmt.Errorf("The pure.gateway cannot be empty")
-	}
+	// if d.config["pure.gateway"] == "" {
+	// 	return fmt.Errorf("The pure.gateway cannot be empty")
+	// }
 
-	// Ensure PureStorage API token is provided.
-	if d.config["pure.api.token"] == "" {
-		return fmt.Errorf("PureStorage API token cannot be empty")
-	}
+	// // Ensure PureStorage API token is provided.
+	// if d.config["pure.api.token"] == "" {
+	// 	return fmt.Errorf("The pure.api.token cannot be empty")
+	// }
 
 	// client := d.client()
 
@@ -225,6 +235,13 @@ func (d *pure) Create() error {
 	default:
 		return fmt.Errorf("Unsupported PureStorage mode %q", d.config["pure.mode"])
 	}
+
+	id, err := d.client().createStoragePool(d.name)
+	if err != nil {
+		return fmt.Errorf("Failed to create storage pool: %w", err)
+	}
+
+	logger.Info("Storage pool successfully created", logger.Ctx{"name": d.name, "id": id, "api_version": d.apiVersion})
 
 	return nil
 }

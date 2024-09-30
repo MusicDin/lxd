@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/canonical/lxd/lxd/util"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
+	"github.com/canonical/lxd/shared/logger"
 )
 
 // loadISCSIModules loads the iSCSI kernel modules.
@@ -34,49 +36,66 @@ var pureVolTypePrefixes = map[VolumeType]string{
 	VolumeTypeCustom:    "u",
 }
 
-// pureError contains arbitrary error responses from PureStorage. The maps values can be of various types.
-// Reading of the actual values is performed by specific receiver functions which are implemented on the
-// type itself.
-type pureError map[string]any
+// pureError represents an error responses from PureStorage API.
+type pureError struct {
+	// List of errors returned by the PureStorage API.
+	Errors []struct {
+		Context string `json:"context"`
+		Message string `json:"message"`
+	} `json:"errors"`
 
-// Error tries to return all kinds of errors from the PureStorage API in a nicely formatted way.
-func (p *pureError) Error() string {
+	// StatusCode is not part of the response body but is used
+	// to store the HTTP status code.
+	StatusCode int `json:"-"`
+}
+
+// AllErrors tries to return all kinds of errors from the PureStorage API in a nicely formatted way.
+func (p *pureError) AllErrors() string {
 	var errorStrings []string
-
-	for k, v := range *p {
-		errorStrings = append(errorStrings, fmt.Sprintf("%s: %v", k, v))
+	for _, err := range p.Errors {
+		errorStrings = append(errorStrings, err.Message)
 	}
 
 	return strings.Join(errorStrings, ", ")
 }
 
+// Error returns the first error message from the PureStorage API error.
+func (p *pureError) Error() string {
+	if p == nil || len(p.Errors) == 0 {
+		return ""
+	}
+
+	// Return the first error message without the trailing dot.
+	return strings.TrimSuffix(p.Errors[0].Message, ".")
+}
+
 // ErrorCode extracts the errorCode value from a PureStorage response.
-func (p *pureError) ErrorCode() float64 {
-	// In case the errorCode value is returned from the PureStorage API,
-	// the respective integer value gets unmarshalled as float64.
-	// See https://pkg.go.dev/encoding/json#Unmarshal for JSON numbers.
-	code, ok := (*p)["errorCode"].(float64)
-	if !ok {
-		return 0
-	}
+// func (p *pureError) ErrorCode() float64 {
+// 	// In case the errorCode value is returned from the PureStorage API,
+// 	// the respective integer value gets unmarshalled as float64.
+// 	// See https://pkg.go.dev/encoding/json#Unmarshal for JSON numbers.
+// 	code, ok := (*p)["errorCode"].(float64)
+// 	if !ok {
+// 		return 0
+// 	}
 
-	// TODO: Convert float number into integer
+// 	// TODO: Convert float number into integer
 
-	return code
-}
+// 	return code
+// }
 
-// HTTPStatusCode extracts the httpStatusCode value from a PureStorage response.
-func (p *pureError) HTTPStatusCode() float64 {
-	// In case the httpStatusCode value is returned from the PureStorage API,
-	// the respective integer value gets unmarshalled as float64.
-	// See https://pkg.go.dev/encoding/json#Unmarshal for JSON numbers.
-	code, ok := (*p)["httpStatusCode"].(float64)
-	if !ok {
-		return 0
-	}
+// // HTTPStatusCode extracts the httpStatusCode value from a PureStorage response.
+// func (p *pureError) HTTPStatusCode() float64 {
+// 	// In case the httpStatusCode value is returned from the PureStorage API,
+// 	// the respective integer value gets unmarshalled as float64.
+// 	// See https://pkg.go.dev/encoding/json#Unmarshal for JSON numbers.
+// 	code, ok := (*p)["httpStatusCode"].(float64)
+// 	if !ok {
+// 		return 0
+// 	}
 
-	return code
-}
+// 	return code
+// }
 
 // pureProtectionDomain represents a protection domain in PureStorage.
 type pureProtectionDomain struct {
@@ -140,25 +159,42 @@ func (p *pureClient) createBodyReader(contents map[string]any) (io.Reader, error
 }
 
 // request issues a HTTP request against the PureStorage gateway. The request
-func (p *pureClient) request(method string, path string, body io.Reader, headers map[string]string, response any) error {
-	url := fmt.Sprintf("%s%s", p.driver.config["pure.gateway"], path)
-	req, err := http.NewRequest(method, url, body)
+func (p *pureClient) request(method string, path string, reqBody io.Reader, reqHeaders map[string]string, respBody any, respHeaders map[string]string) error {
+	var url string
+
+	// Construct the request URL.
+	if strings.HasPrefix(path, "/api") {
+		// If the provided path starts with "/api", simply append it to the gateway URL.
+		url = fmt.Sprintf("%s%s", p.driver.config["pure.gateway"], path)
+	} else {
+		// Otherwise, prefix the path with "/api/<api_version>" and then append it to the gateway URL.
+		// If API version is not known yet, retrieve and cache it first.
+		if p.driver.apiVersion == "" {
+			apiVersions, err := p.getAPIVersions()
+			if err != nil {
+				return fmt.Errorf("Failed to retrieve supported PureStorage API versions: %w", err)
+			}
+
+			// Use the latest available API version.
+			p.driver.apiVersion = apiVersions[len(apiVersions)-1]
+		}
+
+		url = fmt.Sprintf("%s/api/%s%s", p.driver.config["pure.gateway"], p.driver.apiVersion, path)
+	}
+
+	req, err := http.NewRequest(method, url, reqBody)
 	if err != nil {
 		return fmt.Errorf("Failed to create request: %w", err)
 	}
 
-	// Set custom headers.
-	for k, v := range headers {
+	// Set custom request headers.
+	for k, v := range reqHeaders {
 		req.Header.Add(k, v)
 	}
 
 	req.Header.Add("Accept", "application/json")
-	if body != nil {
+	if reqBody != nil {
 		req.Header.Add("Content-Type", "application/json")
-	}
-
-	if p.accessToken != "" {
-		req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", p.accessToken))
 	}
 
 	client := &http.Client{
@@ -176,31 +212,34 @@ func (p *pureClient) request(method string, path string, body io.Reader, headers
 
 	defer resp.Body.Close()
 
-	// TODO: Verify this comment holds (second line)!
-	// Exit right away if not authorized.
-	// We cannot parse the returned body since it's not in JSON format.
-	if resp.StatusCode == http.StatusUnauthorized && resp.Header.Get("Content-Type") != "application/json" {
-		return api.StatusErrorf(http.StatusUnauthorized, "Unauthorized request")
-	}
-
 	// Overwrite the response data type if an error is detected.
 	// Both HTTP status code and PowerFlex error code get mapped to the
 	// custom error struct from the response body.
 	if resp.StatusCode != http.StatusOK {
-		response = &pureError{}
+		respBody = &pureError{}
 	}
 
-	if response != nil {
+	// Extract the response body if requested.
+	if respBody != nil {
 		decoder := json.NewDecoder(resp.Body)
-		err = decoder.Decode(response)
+		err = decoder.Decode(respBody)
 		if err != nil {
 			return fmt.Errorf("Failed to read response body: %s: %w", path, err)
 		}
 	}
 
+	// Extract the response headers if requested.
+	if respHeaders != nil {
+		for k, v := range resp.Header {
+			respHeaders[k] = strings.Join(v, ",")
+			logger.Warn("Response header", logger.Ctx{"key": k, "value": respHeaders[k]})
+		}
+	}
+
 	// Return the formatted error from the body
-	pureErr, ok := response.(*pureError)
+	pureErr, ok := respBody.(*pureError)
 	if ok {
+		pureErr.StatusCode = resp.StatusCode
 		return pureErr
 	}
 
@@ -209,7 +248,7 @@ func (p *pureClient) request(method string, path string, body io.Reader, headers
 
 // requestAuthenticated issues an authenticated HTTP request against the PureStorage gateway. In case
 // the access token is expired, the function will try to obtain a new one.
-func (p *pureClient) requestAuthenticated(method string, path string, body io.Reader, response any) error {
+func (p *pureClient) requestAuthenticated(method string, path string, reqBody io.Reader, respBody any) error {
 	retries := 1
 	for {
 		// Ensure we are logged into the PureStorage.
@@ -219,12 +258,12 @@ func (p *pureClient) requestAuthenticated(method string, path string, body io.Re
 		}
 
 		// Set access token as request header.
-		headers := map[string]string{
+		reqHeaders := map[string]string{
 			"X-Auth-Token": p.accessToken,
 		}
 
 		// Initiate request.
-		err = p.request(method, path, body, headers, response)
+		err = p.request(method, path, reqBody, reqHeaders, respBody, nil)
 		if err != nil {
 			if api.StatusErrorCheck(err, http.StatusUnauthorized) && retries > 0 {
 				// Access token seems to be expired.
@@ -243,6 +282,24 @@ func (p *pureClient) requestAuthenticated(method string, path string, body io.Re
 	}
 }
 
+// getAPIVersion returns the list of API version that are supported by the PureStorage.
+func (p *pureClient) getAPIVersions() ([]string, error) {
+	var resp struct {
+		APIVersions []string `json:"version"`
+	}
+
+	err := p.request(http.MethodGet, "/api/api_version", nil, nil, &resp, nil)
+	if err != nil {
+		return nil, fmt.Errorf("Failed retrieve available API versions from PureStorage: %w", err)
+	}
+
+	if len(resp.APIVersions) == 0 {
+		return nil, fmt.Errorf("PureStorage does not support any API version")
+	}
+
+	return resp.APIVersions, nil
+}
+
 // login initiates an authentication request against the PureStorage using the API token. If successful,
 // an access token is retrieved and stored within a client. The access token is then used for futher
 // authentication.
@@ -252,59 +309,81 @@ func (p *pureClient) login() error {
 		return nil
 	}
 
-	headers := map[string]string{
-		"api-token": p.driver.config["pure.api_token"],
+	reqHeaders := map[string]string{
+		"Api-Token": p.driver.config["pure.api.token"],
 	}
 
-	var actualResponse struct {
-		AccessToken string `json:"x-auth-token"`
-	}
+	respHeaders := make(map[string]string)
 
-	err := p.request(http.MethodPost, "/login", nil, headers, &actualResponse)
+	err := p.request(http.MethodPost, "/login", nil, reqHeaders, nil, respHeaders)
 	if err != nil {
 		return fmt.Errorf("Failed to login: %w", err)
 	}
 
-	p.accessToken = actualResponse.AccessToken
+	p.accessToken = respHeaders["X-Auth-Token"]
+	if p.accessToken == "" {
+		return errors.New("Failed to obtain access token")
+
+	}
 	return nil
 }
 
 // getVolumeID returns the volume ID for the given name.
-func (p *pureClient) getVolumeID(name string) (string, error) {
-	body, err := p.createBodyReader(map[string]any{
-		"name": name,
-	})
-	if err != nil {
-		return "", err
-	}
+// func (p *pureClient) getVolumeID(name string) (string, error) {
+// 	body, err := p.createBodyReader(map[string]any{
+// 		"name": name,
+// 	})
+// 	if err != nil {
+// 		return "", err
+// 	}
 
-	var actualResponse string
-	err = p.requestAuthenticated(http.MethodPost, "/api/types/Volume/instances/action/queryIdByKey", body, &actualResponse)
-	if err != nil {
-		powerFlexError, ok := err.(*powerFlexError)
-		if ok {
-			// API returns 500 if the volume does not exist.
-			// To not confuse it with other 500 that might occur check the error code too.
-			if powerFlexError.HTTPStatusCode() == http.StatusInternalServerError && powerFlexError.ErrorCode() == powerFlexCodeVolumeNotFound {
-				return "", api.StatusErrorf(http.StatusNotFound, "PowerFlex volume not found: %q", name)
-			}
-		}
+// 	var actualResponse string
+// 	err = p.requestAuthenticated(http.MethodPost, "/api/types/Volume/instances/action/queryIdByKey", body, &actualResponse)
+// 	if err != nil {
+// 		powerFlexError, ok := err.(*powerFlexError)
+// 		if ok {
+// 			// API returns 500 if the volume does not exist.
+// 			// To not confuse it with other 500 that might occur check the error code too.
+// 			if powerFlexError.HTTPStatusCode() == http.StatusInternalServerError && powerFlexError.ErrorCode() == powerFlexCodeVolumeNotFound {
+// 				return "", api.StatusErrorf(http.StatusNotFound, "PowerFlex volume not found: %q", name)
+// 			}
+// 		}
 
-		return "", fmt.Errorf("Failed to get volume ID: %q: %w", name, err)
-	}
+// 		return "", fmt.Errorf("Failed to get volume ID: %q: %w", name, err)
+// 	}
 
-	return actualResponse, nil
-}
+// 	return actualResponse, nil
+// }
 
 // getStoragePool returns the storage pool behind poolID.
-func (p *pureClient) getStoragePool(poolID string) (*powerFlexStoragePool, error) {
-	var actualResponse powerFlexStoragePool
-	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/api/instances/StoragePool::%s", poolID), nil, &actualResponse)
+func (p *pureClient) getStoragePool(name string) (*pureStoragePool, error) {
+	var actualResponse pureStoragePool
+	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/pods?names=%s", name), nil, &actualResponse)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to get storage pool: %q: %w", poolID, err)
+		return nil, fmt.Errorf("Failed to get storage pool %q: %w", name, err)
 	}
 
 	return &actualResponse, nil
+}
+
+// createStoragePool creates a storage pool (PureStorage Pod) and returns it's ID.
+func (p *pureClient) createStoragePool(name string) (string, error) {
+	var resp struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+
+	err := p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/pods?names=%s", name), nil, &resp)
+	if err != nil {
+		return "", fmt.Errorf("Failed to create storage pool %q: %w", name, err)
+	}
+
+	if len(resp.Items) == 0 || resp.Items[0].ID == "" {
+		return "", fmt.Errorf(`Failed to create storage pool %q: Response does not contain field "id"`, name)
+	}
+
+	return resp.Items[0].ID, nil
 }
 
 // resolvePool looks up the selected storage pool.
@@ -312,7 +391,7 @@ func (p *pureClient) getStoragePool(poolID string) (*powerFlexStoragePool, error
 // In case both pool and domain are set, the pool will get looked up
 // by name within the domain.
 func (d *pure) resolvePool() (*powerFlexStoragePool, error) {
-	return d.client().getStoragePool(d.config["powerflex.pool"])
+	return nil, nil
 }
 
 // getPowerFlexVolumeName returns the fully qualified name derived from the volume.
