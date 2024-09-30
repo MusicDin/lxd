@@ -19,6 +19,9 @@ type pure struct {
 	// Holds the low level HTTP client for the PureStorage API.
 	// Use pure.client() to retrieve the client struct.
 	httpClient *pureClient
+
+	// apiVersion indicates the PureStorage API version.
+	apiVersion string
 }
 
 // load is used initialize the driver. It should be used only once.
@@ -90,7 +93,7 @@ func (d *pure) Validate(config map[string]string) error {
 		// ---
 		//  type: string
 		//  shortdesc: Address of the PureStorage Gateway
-		"pure.gateway": validate.Optional(validate.IsRequestURL),
+		"pure.gateway": validate.IsRequestURL,
 		// lxdmeta:generate(entities=storage-pure; group=pool-conf; key=pure.gateway.verify)
 		//
 		// ---
