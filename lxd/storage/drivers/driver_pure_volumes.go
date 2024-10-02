@@ -3,6 +3,8 @@ package drivers
 import (
 	"fmt"
 	"io"
+	"net/http"
+	"os"
 
 	"golang.org/x/sys/unix"
 
@@ -11,6 +13,8 @@ import (
 	"github.com/canonical/lxd/lxd/migration"
 	"github.com/canonical/lxd/lxd/operations"
 	"github.com/canonical/lxd/lxd/storage/filesystem"
+	"github.com/canonical/lxd/shared"
+	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/revert"
 	"github.com/canonical/lxd/shared/units"
 	"github.com/canonical/lxd/shared/validate"
@@ -50,6 +54,110 @@ func (d *pure) commonVolumeRules() map[string]func(value string) error {
 func (d *pure) CreateVolume(vol Volume, filler *VolumeFiller, op *operations.Operation) error {
 	revert := revert.New()
 	defer revert.Fail()
+
+	// Get raw the volume size in GiB.
+	// PowerFlex accepts values without unit only.
+	sizeBytes, err := units.ParseByteSizeString(vol.ConfigSize())
+	if err != nil {
+		return err
+	}
+
+	client := d.client()
+
+	_, err = client.createVolume(vol.pool, vol.name, sizeBytes)
+	if err != nil {
+		return err
+	}
+
+	revert.Add(func() { _ = client.deleteVolume(vol.pool, vol.name) })
+
+	// volumeFilesystem := vol.ConfigBlockFilesystem()
+	// if vol.contentType == ContentTypeFS {
+	// 	devPath, cleanup, err := d.getMappedDevPath(vol, true)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+
+	// 	revert.Add(cleanup)
+
+	// 	_, err = makeFSType(devPath, volumeFilesystem, nil)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// }
+
+	// For VMs, also create the filesystem volume.
+	// if vol.IsVMBlock() {
+	// 	fsVol := vol.NewVMBlockFilesystemVolume()
+
+	// 	err := d.CreateVolume(fsVol, nil, op)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+
+	// 	revert.Add(func() { _ = d.DeleteVolume(fsVol, op) })
+	// }
+
+	err = vol.MountTask(func(mountPath string, op *operations.Operation) error {
+		// Run the volume filler function if supplied.
+		// if filler != nil && filler.Fill != nil {
+		// 	var err error
+		// 	var devPath string
+
+		// 	if IsContentBlock(vol.contentType) {
+		// 		// Get the device path.
+		// 		devPath, err = d.GetVolumeDiskPath(vol)
+		// 		if err != nil {
+		// 			return err
+		// 		}
+		// 	}
+
+		// 	allowUnsafeResize := false
+		// 	if vol.volType == VolumeTypeImage {
+		// 		// Allow filler to resize initial image volume as needed.
+		// 		// Some storage drivers don't normally allow image volumes to be resized due to
+		// 		// them having read-only snapshots that cannot be resized. However when creating
+		// 		// the initial image volume and filling it before the snapshot is taken resizing
+		// 		// can be allowed and is required in order to support unpacking images larger than
+		// 		// the default volume size. The filler function is still expected to obey any
+		// 		// volume size restrictions configured on the pool.
+		// 		// Unsafe resize is also needed to disable filesystem resize safety checks.
+		// 		// This is safe because if for some reason an error occurs the volume will be
+		// 		// discarded rather than leaving a corrupt filesystem.
+		// 		allowUnsafeResize = true
+		// 	}
+
+		// 	// Run the filler.
+		// 	err = d.runFiller(vol, devPath, filler, allowUnsafeResize)
+		// 	if err != nil {
+		// 		return err
+		// 	}
+
+		// 	// Move the GPT alt header to end of disk if needed.
+		// 	if vol.IsVMBlock() {
+		// 		err = d.moveGPTAltHeader(devPath)
+		// 		if err != nil {
+		// 			return err
+		// 		}
+		// 	}
+		// }
+
+		// if vol.contentType == ContentTypeFS {
+		// 	// Run EnsureMountPath again after mounting and filling to ensure the mount directory has
+		// 	// the correct permissions set.
+		// 	err = vol.EnsureMountPath()
+		// 	if err != nil {
+		// 		return err
+		// 	}
+		// }
+
+		return nil
+	}, op)
+	if err != nil {
+		return err
+	}
+
+	revert.Success()
 	return nil
 }
 
@@ -96,11 +204,57 @@ func (d *pure) RefreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots
 // DeleteVolume deletes a volume of the storage device.
 // If any snapshots of the volume remain then this function will return an error.
 func (d *pure) DeleteVolume(vol Volume, op *operations.Operation) error {
+	volExists, err := d.HasVolume(vol)
+	if err != nil {
+		return err
+	}
+
+	if !volExists {
+		return nil
+	}
+
+	err = d.client().deleteVolume(vol.pool, vol.name)
+	if err != nil {
+		return err
+	}
+
+	if vol.IsVMBlock() {
+		fsVol := vol.NewVMBlockFilesystemVolume()
+
+		err := d.DeleteVolume(fsVol, op)
+		if err != nil {
+			return err
+		}
+	}
+
+	mountPath := vol.MountPath()
+
+	if vol.contentType == ContentTypeFS && shared.PathExists(mountPath) {
+		err := wipeDirectory(mountPath)
+		if err != nil {
+			return err
+		}
+
+		err = os.Remove(mountPath)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("Failed to remove '%s': %w", mountPath, err)
+		}
+	}
+
 	return nil
 }
 
 // HasVolume indicates whether a specific volume exists on the storage pool.
 func (d *pure) HasVolume(vol Volume) (bool, error) {
+	_, err := d.client().getVolume(vol.pool, vol.name)
+	if err != nil {
+		if api.StatusErrorCheck(err, http.StatusNotFound) {
+			return false, nil
+		}
+
+		return false, err
+	}
+
 	return true, nil
 }
 

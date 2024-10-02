@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/tls"
 	"encoding/base64"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/google/uuid"
@@ -17,6 +19,7 @@ import (
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/logger"
+	"github.com/canonical/lxd/shared/revert"
 )
 
 // loadISCSIModules loads the iSCSI kernel modules.
@@ -69,33 +72,26 @@ func (p *pureError) Error() string {
 	return strings.TrimSuffix(p.Errors[0].Message, ".")
 }
 
-// ErrorCode extracts the errorCode value from a PureStorage response.
-// func (p *pureError) ErrorCode() float64 {
-// 	// In case the errorCode value is returned from the PureStorage API,
-// 	// the respective integer value gets unmarshalled as float64.
-// 	// See https://pkg.go.dev/encoding/json#Unmarshal for JSON numbers.
-// 	code, ok := (*p)["errorCode"].(float64)
-// 	if !ok {
-// 		return 0
-// 	}
+// HTTPStatusCode returns the HTTP status code from the PureStorage API error.
+func (p *pureError) HTTPStatusCode() int {
+	return p.StatusCode
+}
 
-// 	// TODO: Convert float number into integer
+// pureResponse wraps the response from the PureStorage API. In most cases, the response
+// contains a list of items, even if only one item is returned.
+type pureResponse[T any] struct {
+	Items []T `json:"items"`
+}
 
-// 	return code
-// }
+// pureID represents a generic ID response from the PureStorage API.
+type pureID struct {
+	ID string `json:"id"`
+}
 
-// // HTTPStatusCode extracts the httpStatusCode value from a PureStorage response.
-// func (p *pureError) HTTPStatusCode() float64 {
-// 	// In case the httpStatusCode value is returned from the PureStorage API,
-// 	// the respective integer value gets unmarshalled as float64.
-// 	// See https://pkg.go.dev/encoding/json#Unmarshal for JSON numbers.
-// 	code, ok := (*p)["httpStatusCode"].(float64)
-// 	if !ok {
-// 		return 0
-// 	}
-
-// 	return code
-// }
+type pureHost struct {
+	ID   string   `json:"id"`
+	IQNs []string `json:"iqns"`
+}
 
 // pureProtectionDomain represents a protection domain in PureStorage.
 type pureProtectionDomain struct {
@@ -106,8 +102,9 @@ type pureProtectionDomain struct {
 
 // pureStoragePool represents a storage pool (Pod) in PureStorage.
 type pureStoragePool struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Destroyed bool   `json:"destroyed"`
 	// ProtectionDomainID string `json:"protectionDomainId"`
 }
 
@@ -211,6 +208,11 @@ func (p *pureClient) request(method string, path string, reqBody io.Reader, reqH
 	}
 
 	defer resp.Body.Close()
+
+	// Wrap unauthorized requests into an API status error.
+	if resp.StatusCode == http.StatusUnauthorized {
+		return api.StatusErrorf(http.StatusUnauthorized, "Unauthorized request")
+	}
 
 	// Overwrite the response data type if an error is detected.
 	// Both HTTP status code and PowerFlex error code get mapped to the
@@ -356,34 +358,232 @@ func (p *pureClient) login() error {
 // }
 
 // getStoragePool returns the storage pool behind poolID.
-func (p *pureClient) getStoragePool(name string) (*pureStoragePool, error) {
+func (p *pureClient) getStoragePool(poolName string) (*pureStoragePool, error) {
 	var actualResponse pureStoragePool
-	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/pods?names=%s", name), nil, &actualResponse)
+	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/pods?names=%s", poolName), nil, &actualResponse)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to get storage pool %q: %w", name, err)
+		return nil, fmt.Errorf("Failed to get storage pool %q: %w", poolName, err)
 	}
 
 	return &actualResponse, nil
 }
 
 // createStoragePool creates a storage pool (PureStorage Pod) and returns it's ID.
-func (p *pureClient) createStoragePool(name string) (string, error) {
-	var resp struct {
-		Items []struct {
-			ID string `json:"id"`
-		} `json:"items"`
-	}
+func (p *pureClient) createStoragePool(poolName string) (string, error) {
+	var resp pureResponse[pureID]
 
-	err := p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/pods?names=%s", name), nil, &resp)
+	err := p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/pods?names=%s", poolName), nil, &resp)
 	if err != nil {
-		return "", fmt.Errorf("Failed to create storage pool %q: %w", name, err)
+		return "", fmt.Errorf("Failed to create storage pool %q: %w", poolName, err)
 	}
 
 	if len(resp.Items) == 0 || resp.Items[0].ID == "" {
-		return "", fmt.Errorf(`Failed to create storage pool %q: Response does not contain field "id"`, name)
+		return "", fmt.Errorf(`Failed to create storage pool %q: Response does not contain field "id"`, poolName)
 	}
 
 	return resp.Items[0].ID, nil
+}
+
+// deleteStoragePool deletes a storage pool (PureStorage Pod).
+func (p *pureClient) deleteStoragePool(poolName string) error {
+	req, err := p.createBodyReader(map[string]any{
+		"destroyed": true,
+	})
+	if err != nil {
+		return err
+	}
+
+	// To destroy the storage pool, we need to first destroy it by setting the destroyed to true.
+	// In addition, destroy all of its contents to allow the pool to be deleted.
+	err = p.requestAuthenticated(http.MethodPatch, fmt.Sprintf("/pods?names=%s&destroy_contents=true", poolName), req, nil)
+	if err != nil {
+		return fmt.Errorf("Failed to destroy storage pool %q: %w", poolName, err)
+	}
+
+	// Afterwards, the storage pool and all of its contents can be deleted (eradicated).
+	err = p.requestAuthenticated(http.MethodDelete, fmt.Sprintf("/pods?names=%s&eradicate_contents=true", poolName), nil, nil)
+	if err != nil {
+		return fmt.Errorf("Failed to delete storage pool %q: %w", poolName, err)
+	}
+
+	return nil
+}
+
+// getVolume returns the volume behind volumeID.
+func (p *pureClient) getVolume(poolName string, volName string) (*pureVolume, error) {
+	var resp pureResponse[pureVolume]
+
+	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/volumes?names=%s::%s", poolName, volName), nil, &resp)
+	if err != nil {
+		// Error code 400 is returned when object is not found.
+		// Check error message to determine if the volume is not found.
+		perr, ok := err.(*pureError)
+		if ok && perr.StatusCode == http.StatusBadRequest && strings.Contains(err.Error(), "Volume does not exist") {
+			return nil, api.StatusErrorf(http.StatusNotFound, "Volume %q not found", volName)
+		}
+
+		return nil, fmt.Errorf("Failed to get volume %q: %w", volName, err)
+	}
+
+	// TODO: Is this check required + if it is, should we return http.StatusNotFound?
+	if len(resp.Items) == 0 {
+		return nil, fmt.Errorf("Failed to get volume %q: Volume not found", volName)
+	}
+
+	return &resp.Items[0], nil
+}
+
+// createVolume creates a new volume in the given storage pool. The volume is created with supplied size in bytes.
+// Upon successful creation, volume's ID is returned.
+func (p *pureClient) createVolume(poolName string, volName string, sizeBytes int64) (string, error) {
+	req, err := p.createBodyReader(map[string]any{
+		"provisioned": sizeBytes,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	var resp pureResponse[pureID]
+
+	err = p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/volumes?names=%s::%s", poolName, volName), req, &resp)
+	if err != nil {
+		return "", fmt.Errorf("Failed to create volume %q in storage pool %q: %w", volName, poolName, err)
+	}
+
+	if len(resp.Items) == 0 {
+		return "", fmt.Errorf("Failed to create volume %q in storage pool %q: Volume ID not found", volName, poolName)
+	}
+
+	return resp.Items[0].ID, nil
+}
+
+// deleteVolume deletes an exisiting volume in the given storage pool.
+func (p *pureClient) deleteVolume(poolName string, volName string) error {
+	req, err := p.createBodyReader(map[string]any{
+		"destroyed": true,
+	})
+	if err != nil {
+		return err
+	}
+
+	// To destroy the volume, we need to patch it by setting the destroyed to true.
+	err = p.requestAuthenticated(http.MethodPatch, fmt.Sprintf("/volumes?names=%s::%s", poolName, volName), req, nil)
+	if err != nil {
+		return fmt.Errorf("Failed to destroy volume %q in storage pool %q: %w", volName, poolName, err)
+	}
+
+	// Afterwards, we can eradicate the volume. If this operation fails, the volume will remain
+	// in the destroyed state.
+	// TODO: Should we revert it from the destroyed state if eradication fails?
+	err = p.requestAuthenticated(http.MethodDelete, fmt.Sprintf("/volumes?names=%s::%s", poolName, volName), nil, nil)
+	if err != nil {
+		return fmt.Errorf("Failed to delete volume %q in storage pool %q: %w", volName, poolName, err)
+	}
+
+	return nil
+}
+
+// getHost retrieves an existing PureStorage host.
+func (p *pureClient) getHost(hostName string) (*pureHost, error) {
+	var resp pureResponse[pureHost]
+
+	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/hosts?names=%s", hostName), nil, &resp)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to get host %q: %w", hostName, err)
+	}
+
+	if len(resp.Items) == 0 {
+		return nil, api.StatusErrorf(http.StatusNotFound, "Host %q not found", hostName)
+	}
+
+	return &resp.Items[0], nil
+}
+
+// createHost creates a new host that can be associated with specific volumes.
+func (p *pureClient) createHost(hostName string, iqns []string) error {
+	req, err := p.createBodyReader(map[string]any{
+		"iqns": iqns,
+	})
+	if err != nil {
+		return err
+	}
+
+	// To destroy the volume, we need to patch it by setting the destroyed to true.
+	err = p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/hosts?names=%s", hostName), req, nil)
+	if err != nil {
+		return fmt.Errorf("Failed to create host %q: %w", hostName, err)
+	}
+
+	return nil
+}
+
+// updateHost updates an existing host.
+func (p *pureClient) updateHost(hostName string, iqns []string) error {
+	req, err := p.createBodyReader(map[string]any{
+		"iqns": iqns,
+	})
+	if err != nil {
+		return err
+	}
+
+	// To destroy the volume, we need to patch it by setting the destroyed to true.
+	err = p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/hosts?names=%s", hostName), req, nil)
+	if err != nil {
+		return fmt.Errorf("Failed to update host %q: %w", hostName, err)
+	}
+
+	return nil
+}
+
+// deleteHost deletes an existing host.
+func (p *pureClient) deleteHost(hostName string) error {
+	err := p.requestAuthenticated(http.MethodDelete, fmt.Sprintf("/hosts?names=%s", hostName), nil, nil)
+	if err != nil {
+		return fmt.Errorf("Failed to delete host %q: %w", hostName, err)
+	}
+
+	return nil
+}
+
+// hostName returns the name of the host prefixed with "lxd".
+func (d *pure) hostName() (string, error) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return "", fmt.Errorf("Failed to get hostname: %w", err)
+	}
+
+	return fmt.Sprintf("lxd-%s", hostname), nil
+}
+
+// hostIQN returns the iSCSI Qualified Name (IQN) of the host.
+func (d *pure) hostIQN() (string, error) {
+	filename := "/etc/iscsi/initiatorname.iscsi"
+
+	// Open initiatorname.iscsi file to read the IQN.
+	file, err := os.Open(filename)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	// Read the file line by line to find the IQN.
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Check if the line contains "InitiatorName"
+		if strings.HasPrefix(line, "InitiatorName=") {
+			iqn := strings.TrimPrefix(line, "InitiatorName=")
+			return iqn, nil
+		}
+	}
+
+	err = scanner.Err()
+	if err != nil {
+		return "", err
+	}
+
+	return "", fmt.Errorf("Failed to find IQN in %q", filename)
 }
 
 // resolvePool looks up the selected storage pool.
@@ -424,4 +624,10 @@ func (d *pure) getVolumeName(vol Volume) (string, error) {
 	}
 
 	return fmt.Sprintf("%s%s%s", volumeTypePrefix, volName, suffix), nil
+}
+
+// getMappedDevPath returns the local device path for the given volume.
+// Indicate with mapVolume if the volume should get mapped to the system if it isn't present.
+func (d *pure) getMappedDevPath(vol Volume, mapVolume bool) (string, revert.Hook, error) {
+	return "", func() {}, nil
 }

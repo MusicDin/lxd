@@ -2,6 +2,9 @@ package drivers
 
 import (
 	"fmt"
+	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/canonical/lxd/lxd/migration"
 	"github.com/canonical/lxd/lxd/operations"
@@ -46,15 +49,15 @@ func (d *pure) load() error {
 
 	// Detect and record the version of the iSCSI CLI.
 	// The iSCSI CLI is shipped with the snap.
-	// out, err := shared.RunCommand("iscsiadm", "--version")
-	// if err != nil {
-	// 	return fmt.Errorf("Failed to get iscsiadm version: %w", err)
-	// }
+	out, err := shared.RunCommand("iscsiadm", "--version")
+	if err != nil {
+		return fmt.Errorf("Failed to get iscsiadm version: %w", err)
+	}
 
-	// fields := strings.Split(strings.TrimSpace(out), " ")
-	// if strings.HasPrefix(out, "iscsiadm version ") && len(fields) > 2 {
-	// 	pureVersion = fmt.Sprintf("%s (iscsiadm)", fields[2])
-	// }
+	fields := strings.Split(strings.TrimSpace(out), " ")
+	if strings.HasPrefix(out, "iscsiadm version ") && len(fields) > 2 {
+		pureVersion = fmt.Sprintf("%s (iscsiadm)", fields[2])
+	}
 
 	// Load the iSCSI kernel modules, ignoring those that cannot be loaded.
 	// Support for the iSCSI mode is checked during pool creation. However,
@@ -185,6 +188,9 @@ func (d *pure) Validate(config map[string]string) error {
 
 // Create is called during pool creation and is effectively using an empty driver struct.
 // WARNING: The Create() function cannot rely on any of the struct attributes being set.
+//
+// Creation process encompasses creation of storage pool and host. The host is created on each
+// cluster member (if LXD is clustered) and is used to access all volumes on a remote PureStorage.
 func (d *pure) Create() error {
 	err := d.FillConfig()
 	if err != nil {
@@ -206,39 +212,48 @@ func (d *pure) Create() error {
 	// 	return fmt.Errorf("The pure.api.token cannot be empty")
 	// }
 
-	// client := d.client()
-
-	switch d.config["pure.mode"] {
-	case pureModeISCSI:
-		// Discover one of the storage pools SDT services.
-		// if d.config["powerflex.sdt"] == "" {
-		// 	pool, err := d.resolvePool()
-		// 	if err != nil {
-		// 		return err
-		// 	}
-
-		// 	relations, err := client.getProtectionDomainSDTRelations(pool.ProtectionDomainID)
-		// 	if err != nil {
-		// 		return err
-		// 	}
-
-		// 	if len(relations) == 0 {
-		// 		return fmt.Errorf("Failed to retrieve at least one SDT for the given storage pool: %q", pool.ID)
-		// 	}
-
-		// 	if len(relations[0].IPList) == 0 {
-		// 		return fmt.Errorf("Failed to retrieve IP from SDT: %q", relations[0].Name)
-		// 	}
-
-		// 	d.config["powerflex.sdt"] = relations[0].IPList[0].IP
-		// }
-	default:
-		return fmt.Errorf("Unsupported PureStorage mode %q", d.config["pure.mode"])
-	}
-
+	// Create the storage pool.
 	id, err := d.client().createStoragePool(d.name)
 	if err != nil {
 		return fmt.Errorf("Failed to create storage pool: %w", err)
+	}
+
+	switch d.config["pure.mode"] {
+	case pureModeISCSI:
+		hostname, err := d.hostName()
+		if err != nil {
+			return err
+		}
+
+		iqn, err := d.hostIQN()
+		if err != nil {
+			return err
+		}
+
+		// Ensure PureStorage host is created.
+		host, err := d.client().getHost(hostname)
+		if err != nil {
+			if api.StatusErrorCheck(err, http.StatusNotFound) {
+				// If the host does not exist, create it.
+				err = d.client().createHost(hostname, []string{iqn})
+				if err != nil {
+					return err
+				}
+			} else {
+				// Otherwise error out.
+				return err
+			}
+		} else {
+			// If the host exists, ensure our IQN is present in the list.
+			if !slices.Contains(host.IQNs, iqn) {
+				err = d.client().updateHost(hostname, append(host.IQNs, iqn))
+				if err != nil {
+					return err
+				}
+			}
+		}
+	default:
+		return fmt.Errorf("Unsupported PureStorage mode %q", d.config["pure.mode"])
 	}
 
 	logger.Info("Storage pool successfully created", logger.Ctx{"name": d.name, "id": id, "api_version": d.apiVersion})
@@ -251,8 +266,15 @@ func (d *pure) Update(changedConfig map[string]string) error {
 	return nil
 }
 
-// Delete removes the storage pool from the storage device.
+// Delete removes the storage pool (PureStorage Pod).
 func (d *pure) Delete(op *operations.Operation) error {
+	// First delete the storage pool on PureStorage.
+	err := d.client().deleteStoragePool(d.name)
+	if err != nil {
+		// TODO: Ignore not found error.
+		return err
+	}
+
 	// If the user completely destroyed it, call it done.
 	if !shared.PathExists(GetPoolMountPath(d.name)) {
 		return nil
