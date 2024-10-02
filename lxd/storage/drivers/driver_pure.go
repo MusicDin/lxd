@@ -11,6 +11,7 @@ import (
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/logger"
+	"github.com/canonical/lxd/shared/revert"
 	"github.com/canonical/lxd/shared/validate"
 )
 
@@ -212,11 +213,16 @@ func (d *pure) Create() error {
 	// 	return fmt.Errorf("The pure.api.token cannot be empty")
 	// }
 
+	revert := revert.New()
+	defer revert.Fail()
+
 	// Create the storage pool.
 	id, err := d.client().createStoragePool(d.name)
 	if err != nil {
 		return fmt.Errorf("Failed to create storage pool: %w", err)
 	}
+
+	revert.Add(func() { _ = d.client().deleteStoragePool(d.name) })
 
 	switch d.config["pure.mode"] {
 	case pureModeISCSI:
@@ -258,6 +264,7 @@ func (d *pure) Create() error {
 
 	logger.Info("Storage pool successfully created", logger.Ctx{"name": d.name, "id": id, "api_version": d.apiVersion})
 
+	revert.Success()
 	return nil
 }
 
