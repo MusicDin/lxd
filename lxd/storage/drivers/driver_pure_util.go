@@ -117,6 +117,13 @@ type pureStoragePool struct {
 	IsDestroyed bool   `json:"destroyed"`
 }
 
+// pureVolume represents a volume in PureStorage.
+type pureVolume struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	IsDestroyed bool   `json:"destroyed"`
+}
+
 // pureHost represents a host in PureStorage.
 type pureHost struct {
 	Name            string   `json:"name"`
@@ -440,6 +447,72 @@ func (p *pureClient) deleteStoragePool(poolName string) error {
 		}
 
 		return fmt.Errorf("Failed to delete storage pool %q: %w", poolName, err)
+	}
+
+	return nil
+}
+
+// getVolume returns the volume behind volumeID.
+func (p *pureClient) getVolume(poolName string, volName string) (*pureVolume, error) {
+	var resp pureResponse[pureVolume]
+
+	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/volumes?names=%s::%s", poolName, volName), nil, &resp)
+	if err != nil {
+		perr, ok := err.(*pureError)
+		if ok && perr.IsNotFoundError() {
+			return nil, api.StatusErrorf(http.StatusNotFound, "Volume %q not found", volName)
+		}
+
+		return nil, fmt.Errorf("Failed to get volume %q: %w", volName, err)
+	}
+
+	if len(resp.Items) == 0 {
+		return nil, api.StatusErrorf(http.StatusNotFound, "Volume %q not found", volName)
+	}
+
+	return &resp.Items[0], nil
+}
+
+// createVolume creates a new volume in the given storage pool. The volume is created with
+// supplied size in bytes. Upon successful creation, volume's ID is returned.
+func (p *pureClient) createVolume(poolName string, volName string, sizeBytes int64) error {
+	req, err := p.createBodyReader(map[string]any{
+		"provisioned": sizeBytes,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Prevent default protection groups to be applied on the new volume, which can
+	// prevent us from eradicating the volume once deleted.
+	err = p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/volumes?names=%s::%s&with_default_protection=false", poolName, volName), req, nil)
+	if err != nil {
+		return fmt.Errorf("Failed to create volume %q in storage pool %q: %w", volName, poolName, err)
+	}
+
+	return nil
+}
+
+// deleteVolume deletes an exisiting volume in the given storage pool.
+func (p *pureClient) deleteVolume(poolName string, volName string) error {
+	req, err := p.createBodyReader(map[string]any{
+		"destroyed": true,
+	})
+	if err != nil {
+		return err
+	}
+
+	// To destroy the volume, we need to patch it by setting the destroyed to true.
+	err = p.requestAuthenticated(http.MethodPatch, fmt.Sprintf("/volumes?names=%s::%s", poolName, volName), req, nil)
+	if err != nil {
+		return fmt.Errorf("Failed to destroy volume %q in storage pool %q: %w", volName, poolName, err)
+	}
+
+	// Afterwards, we can eradicate the volume. If this operation fails, the volume will remain
+	// in the destroyed state.
+	err = p.requestAuthenticated(http.MethodDelete, fmt.Sprintf("/volumes?names=%s::%s", poolName, volName), nil, nil)
+	if err != nil {
+		return fmt.Errorf("Failed to delete volume %q in storage pool %q: %w", volName, poolName, err)
 	}
 
 	return nil
