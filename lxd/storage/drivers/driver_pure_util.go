@@ -1,20 +1,24 @@
 package drivers
 
 import (
-	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
+	"time"
 
-	"github.com/google/uuid"
+	"golang.org/x/sys/unix"
 
+	"github.com/canonical/lxd/lxd/locking"
+	"github.com/canonical/lxd/lxd/resources"
 	"github.com/canonical/lxd/lxd/util"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
@@ -52,6 +56,11 @@ type pureError struct {
 	StatusCode int `json:"-"`
 }
 
+// HTTPStatusCode returns the HTTP status code from the PureStorage API error.
+func (p *pureError) HTTPStatusCode() int {
+	return p.StatusCode
+}
+
 // AllErrors tries to return all kinds of errors from the PureStorage API in a nicely formatted way.
 func (p *pureError) AllErrors() string {
 	var errorStrings []string
@@ -72,9 +81,36 @@ func (p *pureError) Error() string {
 	return strings.TrimSuffix(p.Errors[0].Message, ".")
 }
 
-// HTTPStatusCode returns the HTTP status code from the PureStorage API error.
-func (p *pureError) HTTPStatusCode() int {
-	return p.StatusCode
+// Is returns true if the error status code is equal to the provided status code and the error message
+// contains the provided substring.
+func (p *pureError) Is(statusCode int, substring string) bool {
+	if p.StatusCode != statusCode {
+		return false
+	}
+
+	for _, err := range p.Errors {
+		if strings.Contains(err.Message, substring) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// IsNotFoundError returns true if the error status code is 400 (bad request)
+// and the message contains "does not exist".
+func (p *pureError) IsNotFoundError() bool {
+	if p.StatusCode != http.StatusBadRequest {
+		return false
+	}
+
+	for _, err := range p.Errors {
+		if strings.Contains(err.Message, "does not exist") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // pureResponse wraps the response from the PureStorage API. In most cases, the response
@@ -88,9 +124,11 @@ type pureID struct {
 	ID string `json:"id"`
 }
 
+// pureHost represents a host in PureStorage.
 type pureHost struct {
-	ID   string   `json:"id"`
-	IQNs []string `json:"iqns"`
+	Name            string   `json:"name"`
+	IQNs            []string `json:"iqns"`
+	ConnectionCount int      `json:"connection_count"`
 }
 
 // pureProtectionDomain represents a protection domain in PureStorage.
@@ -223,10 +261,9 @@ func (p *pureClient) request(method string, path string, reqBody io.Reader, reqH
 
 	// Extract the response body if requested.
 	if respBody != nil {
-		decoder := json.NewDecoder(resp.Body)
-		err = decoder.Decode(respBody)
+		err = json.NewDecoder(resp.Body).Decode(respBody)
 		if err != nil {
-			return fmt.Errorf("Failed to read response body: %s: %w", path, err)
+			return fmt.Errorf("Failed to read response body from %q: %w", path, err)
 		}
 	}
 
@@ -234,7 +271,6 @@ func (p *pureClient) request(method string, path string, reqBody io.Reader, reqH
 	if respHeaders != nil {
 		for k, v := range resp.Header {
 			respHeaders[k] = strings.Join(v, ",")
-			logger.Warn("Response header", logger.Ctx{"key": k, "value": respHeaders[k]})
 		}
 	}
 
@@ -362,6 +398,11 @@ func (p *pureClient) getStoragePool(poolName string) (*pureStoragePool, error) {
 	var actualResponse pureStoragePool
 	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/pods?names=%s", poolName), nil, &actualResponse)
 	if err != nil {
+		perr, ok := err.(*pureError)
+		if ok && perr.IsNotFoundError() {
+			return nil, api.StatusErrorf(http.StatusNotFound, "Storage pool %q not found", poolName)
+		}
+
 		return nil, fmt.Errorf("Failed to get storage pool %q: %w", poolName, err)
 	}
 
@@ -397,12 +438,22 @@ func (p *pureClient) deleteStoragePool(poolName string) error {
 	// In addition, destroy all of its contents to allow the pool to be deleted.
 	err = p.requestAuthenticated(http.MethodPatch, fmt.Sprintf("/pods?names=%s&destroy_contents=true", poolName), req, nil)
 	if err != nil {
+		perr, ok := err.(*pureError)
+		if ok && perr.IsNotFoundError() {
+			return api.StatusErrorf(http.StatusNotFound, "Storage pool %q not found", poolName)
+		}
+
 		return fmt.Errorf("Failed to destroy storage pool %q: %w", poolName, err)
 	}
 
 	// Afterwards, the storage pool and all of its contents can be deleted (eradicated).
 	err = p.requestAuthenticated(http.MethodDelete, fmt.Sprintf("/pods?names=%s&eradicate_contents=true", poolName), nil, nil)
 	if err != nil {
+		perr, ok := err.(*pureError)
+		if ok && perr.IsNotFoundError() {
+			return api.StatusErrorf(http.StatusNotFound, "Storage pool %q not found", poolName)
+		}
+
 		return fmt.Errorf("Failed to delete storage pool %q: %w", poolName, err)
 	}
 
@@ -415,19 +466,17 @@ func (p *pureClient) getVolume(poolName string, volName string) (*pureVolume, er
 
 	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/volumes?names=%s::%s", poolName, volName), nil, &resp)
 	if err != nil {
-		// Error code 400 is returned when object is not found.
-		// Check error message to determine if the volume is not found.
 		perr, ok := err.(*pureError)
-		if ok && perr.StatusCode == http.StatusBadRequest && strings.Contains(err.Error(), "Volume does not exist") {
+		if ok && perr.IsNotFoundError() {
 			return nil, api.StatusErrorf(http.StatusNotFound, "Volume %q not found", volName)
 		}
 
 		return nil, fmt.Errorf("Failed to get volume %q: %w", volName, err)
 	}
 
-	// TODO: Is this check required + if it is, should we return http.StatusNotFound?
+	// TODO: Is this check required
 	if len(resp.Items) == 0 {
-		return nil, fmt.Errorf("Failed to get volume %q: Volume not found", volName)
+		return nil, api.StatusErrorf(http.StatusNotFound, "Volume %q not found", volName)
 	}
 
 	return &resp.Items[0], nil
@@ -483,12 +532,45 @@ func (p *pureClient) deleteVolume(poolName string, volName string) error {
 	return nil
 }
 
-// getHost retrieves an existing PureStorage host.
+// getHosts retrieves an existing PureStorage host.
+func (p *pureClient) getHosts() ([]pureHost, error) {
+	var resp pureResponse[pureHost]
+
+	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/hosts"), nil, &resp)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to get hosts: %w", err)
+	}
+
+	return resp.Items, nil
+}
+
+// getHostByIQN retrieves an existing host that is configured with the given IQN.
+func (p *pureClient) getHostByIQN(iqn string) (*pureHost, error) {
+	hosts, err := p.getHosts()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, host := range hosts {
+		if slices.Contains(host.IQNs, iqn) {
+			return &host, nil
+		}
+	}
+
+	return nil, api.StatusErrorf(http.StatusNotFound, "Host with IQN %q not found", iqn)
+}
+
+// getHost retrieves an existing host with the given name.
 func (p *pureClient) getHost(hostName string) (*pureHost, error) {
 	var resp pureResponse[pureHost]
 
 	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/hosts?names=%s", hostName), nil, &resp)
 	if err != nil {
+		perr, ok := err.(*pureError)
+		if ok && perr.IsNotFoundError() {
+			return nil, api.StatusErrorf(http.StatusNotFound, "Host %q not found", hostName)
+		}
+
 		return nil, fmt.Errorf("Failed to get host %q: %w", hostName, err)
 	}
 
@@ -508,9 +590,13 @@ func (p *pureClient) createHost(hostName string, iqns []string) error {
 		return err
 	}
 
-	// To destroy the volume, we need to patch it by setting the destroyed to true.
 	err = p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/hosts?names=%s", hostName), req, nil)
 	if err != nil {
+		perr, ok := err.(*pureError)
+		if ok && perr.Is(http.StatusBadRequest, "Host already exists.") {
+			return api.StatusErrorf(http.StatusConflict, "Host %q already exists", hostName)
+		}
+
 		return fmt.Errorf("Failed to create host %q: %w", hostName, err)
 	}
 
@@ -527,9 +613,41 @@ func (p *pureClient) updateHost(hostName string, iqns []string) error {
 	}
 
 	// To destroy the volume, we need to patch it by setting the destroyed to true.
-	err = p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/hosts?names=%s", hostName), req, nil)
+	err = p.requestAuthenticated(http.MethodPatch, fmt.Sprintf("/hosts?names=%s", hostName), req, nil)
 	if err != nil {
 		return fmt.Errorf("Failed to update host %q: %w", hostName, err)
+	}
+
+	return nil
+}
+
+// connectHostToVolume creates a connection beween a host and volume. It returns true if the connection
+// was created, and false if it already existed.
+func (p *pureClient) connectHostToVolume(poolName string, volName string, hostName string) (bool, error) {
+	err := p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/connections?host_names=%s&volume_names=%s::%s", hostName, poolName, volName), nil, nil)
+	if err != nil {
+		perr, ok := err.(*pureError)
+		if ok && perr.Is(http.StatusBadRequest, "Connection already exists.") {
+			// Do not error out if connection already exists.
+			return false, nil
+		}
+
+		return false, fmt.Errorf("Failed to connect volume %q with host %q: %w", volName, hostName, err)
+	}
+
+	return true, nil
+}
+
+// disconnectHostFromVolume deletes a connection beween a host and volume.
+func (p *pureClient) disconnectHostFromVolume(poolName string, volName string, hostName string) error {
+	err := p.requestAuthenticated(http.MethodDelete, fmt.Sprintf("/connections?host_names=%s&volume_names=%s::%s", hostName, poolName, volName), nil, nil)
+	if err != nil {
+		perr, ok := err.(*pureError)
+		if ok && perr.IsNotFoundError() {
+			return api.StatusErrorf(http.StatusNotFound, "Connection between host %q and volume %q not found", volName, hostName)
+		}
+
+		return fmt.Errorf("Failed to disconnect volume %q from host %q: %w", volName, hostName, err)
 	}
 
 	return nil
@@ -545,89 +663,488 @@ func (p *pureClient) deleteHost(hostName string) error {
 	return nil
 }
 
-// hostName returns the name of the host prefixed with "lxd".
-func (d *pure) hostName() (string, error) {
-	hostname, err := os.Hostname()
+// ensureISCSIHost returns a name of the host that is configured with a given IQN. If such host
+// does not exist, a new one is created.
+func (d *pure) ensureISCSIHost() (hostName string, cleanup revert.Hook, err error) {
+	var hostname string
+
+	revert := revert.New()
+	defer revert.Fail()
+
+	iqn, err := d.hostIQN()
 	if err != nil {
-		return "", fmt.Errorf("Failed to get hostname: %w", err)
+		return "", nil, err
 	}
 
-	return fmt.Sprintf("lxd-%s", hostname), nil
+	// Fetch the host by IQN.
+	host, err := d.client().getHostByIQN(iqn)
+	if err != nil {
+		if !api.StatusErrorCheck(err, http.StatusNotFound) {
+			return "", nil, err
+		}
+
+		// The host with a given IQN does not exist, therefore, create a new one.
+		hostname, err = d.serverName()
+		if err != nil {
+			return "", nil, err
+		}
+
+		err = d.client().createHost(hostname, []string{iqn})
+		if err != nil {
+			if !api.StatusErrorCheck(err, http.StatusConflict) {
+				return "", nil, err
+			}
+
+			// The host with the given name already exists, update it instead.
+			err = d.client().updateHost(hostname, []string{iqn})
+			if err != nil {
+				return "", nil, err
+			}
+		} else {
+			revert.Add(func() { _ = d.client().deleteHost(hostname) })
+		}
+	} else {
+		hostname = host.Name
+	}
+
+	logger.Error("Hostname", logger.Ctx{"hostname": hostname, "iqn": iqn})
+
+	cleanup = revert.Clone().Fail
+	revert.Success()
+	return hostname, cleanup, nil
 }
 
-// hostIQN returns the iSCSI Qualified Name (IQN) of the host.
-func (d *pure) hostIQN() (string, error) {
-	filename := "/etc/iscsi/initiatorname.iscsi"
+// iscsiDiscover returns PureStorage array IQN discovered on the provided iscsi host.
+func (d *pure) iscsiDiscover() (string, error) {
+	iscsiAddr := d.config["pure.iscsi.address"]
 
-	// Open initiatorname.iscsi file to read the IQN.
-	file, err := os.Open(filename)
+	// Ensure the iSCSI directory exists.
+	// TODO: This is temporary workaround.
+	err := os.MkdirAll("/run/lock/iscsi", 0755)
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
 
-	// Read the file line by line to find the IQN.
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
+	out, err := shared.RunCommand("iscsiadm", "--mode", "discovery", "--type", "sendtargets", "--portal", iscsiAddr)
+	if err != nil {
+		return "", fmt.Errorf("Failed to discover any iSCSI target on address %q: %w", iscsiAddr, err)
+	}
 
-		// Check if the line contains "InitiatorName"
-		if strings.HasPrefix(line, "InitiatorName=") {
-			iqn := strings.TrimPrefix(line, "InitiatorName=")
-			return iqn, nil
+	lines := strings.Split(out, "\n")
+	iqns := make([]string, 0, len(lines))
+
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+
+		iqn := fields[1]
+		if !slices.Contains(iqns, iqn) {
+			iqns = append(iqns, iqn)
 		}
 	}
 
-	err = scanner.Err()
-	if err != nil {
-		return "", err
+	if len(iqns) == 0 {
+		return "", fmt.Errorf("Failed to discover any iSCSI target on address %q", iscsiAddr)
 	}
 
-	return "", fmt.Errorf("Failed to find IQN in %q", filename)
+	// TODO: Temporary return just a single IQN.
+	return iqns[0], nil
 }
 
-// resolvePool looks up the selected storage pool.
-// If only the pool is provided, it's expected to be the ID of the pool.
-// In case both pool and domain are set, the pool will get looked up
-// by name within the domain.
-func (d *pure) resolvePool() (*powerFlexStoragePool, error) {
-	return nil, nil
+// iscsiConnect connects this host to the iSCSI subsystem configured in the storage pool.
+// The connection can only be established after the first volume is mapped to this host.
+// The operation is idempotent and returns nil if already connected to the subsystem.
+func (d *pure) iscsiConnect() (revert.Hook, error) {
+	// Base path for iSCSI sessions.
+	basePath := "/sys/class/iscsi_session"
+
+	// Retrieve list of existing iSCSI sessions.
+	sessions, err := os.ReadDir(basePath)
+	if err != nil {
+		return nil, fmt.Errorf("Failed getting a list of existing iSCSI sessions: %w", err)
+	}
+
+	revert := revert.New()
+	defer revert.Fail()
+
+	// Discover the target IQN for the PureStorage array.
+	iscsiTarget, err := d.iscsiDiscover()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, session := range sessions {
+		// Get the target IQN of the iSCSI session.
+		iqnBytes, err := os.ReadFile(filepath.Join(basePath, session.Name(), "targetname"))
+		if err != nil {
+			return nil, fmt.Errorf("Failed getting the target IQN for session %q: %w", session, err)
+		}
+
+		logger.Warn("Session", logger.Ctx{"session": session.Name(), "iqn": string(iqnBytes)})
+
+		if iscsiTarget == strings.TrimSpace(string(iqnBytes)) {
+			// Already connected to the PureStorage array via iSCSI.
+			cleanup := revert.Clone().Fail
+			revert.Success()
+			return cleanup, nil
+		}
+	}
+
+	iscsiAddr := d.config["pure.iscsi.address"]
+
+	// Attempt to login into discovered iSCSI targets.
+	stdout, stderr, err := shared.RunCommandSplit(d.state.ShutdownCtx, nil, nil, "iscsiadm", "--mode", "node", "--targetname", iscsiTarget, "--portal", iscsiAddr, "--login", "--debug=8")
+	if err != nil {
+		logger.Warn("Output", logger.Ctx{"stdout": stdout, "error": err})
+		return nil, fmt.Errorf("Failed to connect to PureStorage host %q via iSCSI: %s\n%v", iscsiAddr, stderr, err)
+	}
+
+	revert.Add(func() { _ = d.iscsiDisconnect(iscsiTarget) })
+
+	cleanup := revert.Clone().Fail
+	revert.Success()
+	return cleanup, nil
 }
 
-// getPowerFlexVolumeName returns the fully qualified name derived from the volume.
-func (d *pure) getVolumeName(vol Volume) (string, error) {
-	volUUID, err := uuid.Parse(vol.config["volatile.uuid"])
+// iscsiDisconnect disconnects this host from the given iSCSI target.
+func (d *pure) iscsiDisconnect(iqn string) error {
+	_, err := shared.RunCommand("iscsiadm", "--mode", "node", "--targetname", iqn, "--logout")
 	if err != nil {
-		return "", fmt.Errorf(`Failed parsing "volatile.uuid" from volume %q: %w`, vol.name, err)
+		return fmt.Errorf("Failed disconnecting from PureStorage iSCSI target %q: %w", iqn, err)
 	}
 
-	binUUID, err := volUUID.MarshalBinary()
+	return nil
+}
+
+// iscsiDisconnect disconnects this host from all iSCSI sessions.
+func (d *pure) iscsiDisconnectAll() error {
+	_, err := shared.RunCommand("iscsiadm", "--mode", "session", "--logout")
 	if err != nil {
-		return "", fmt.Errorf(`Failed marshalling the "volatile.uuid" of volume %q to binary format: %w`, vol.name, err)
+		return fmt.Errorf("Failed disconnecting from iSCSI sessions: %w", err)
 	}
 
-	// The volume's name in base64 encoded format.
-	volName := base64.StdEncoding.EncodeToString(binUUID)
+	return nil
+}
 
-	var suffix string
-	if vol.contentType == ContentTypeBlock {
-		suffix = powerFlexBlockVolSuffix
-	} else if vol.contentType == ContentTypeISO {
-		suffix = powerFlexISOVolSuffix
+// mapVolume maps the given volume onto this host.
+func (d *pure) mapVolume(vol Volume) (revert.Hook, error) {
+	revert := revert.New()
+	defer revert.Fail()
+
+	var hostname string
+
+	switch d.config["pure.mode"] {
+	case pureModeISCSI:
+		unlock, err := locking.Lock(d.state.ShutdownCtx, "iscsi")
+		if err != nil {
+			return nil, err
+		}
+
+		defer unlock()
+
+		// Ensure the host exists and is configured with the correct IQN.
+		hostName, cleanup, err := d.ensureISCSIHost()
+		if err != nil {
+			return nil, err
+		}
+
+		hostname = hostName
+		revert.Add(cleanup)
 	}
 
-	// Use storage volume prefix from powerFlexVolTypePrefixes depending on type.
-	// If the volume's type is unknown, don't put any prefix to accommodate the volume name size constraint.
-	volumeTypePrefix, ok := powerFlexVolTypePrefixes[vol.volType]
-	if ok {
-		volumeTypePrefix = fmt.Sprintf("%s_", volumeTypePrefix)
+	client := d.client()
+
+	// Ensure the volume is connected to the host.
+	connCreated, err := client.connectHostToVolume(vol.pool, vol.name, hostname)
+	if err != nil {
+		return nil, err
 	}
 
-	return fmt.Sprintf("%s%s%s", volumeTypePrefix, volName, suffix), nil
+	if connCreated {
+		revert.Add(func() { _ = client.disconnectHostFromVolume(vol.pool, vol.name, hostname) })
+	}
+
+	if d.config["pure.mode"] == pureModeISCSI {
+		// Connect to the array using iscsi. Connection can be established only
+		// when at least one volume is connected to the host.
+		cleanup, err := d.iscsiConnect()
+		if err != nil {
+			return nil, err
+		}
+
+		revert.Add(cleanup)
+	}
+
+	cleanup := revert.Clone().Fail
+	revert.Success()
+	return cleanup, nil
+}
+
+// unmapVolume unmaps the given volume from this host.
+func (d *pure) unmapVolume(vol Volume) error {
+	var host *pureHost
+	var iqn string
+	var err error
+
+	switch d.config["pure.mode"] {
+	case pureModeISCSI:
+		iqn, err = d.hostIQN()
+		if err != nil {
+			return err
+		}
+
+		host, err = d.client().getHostByIQN(iqn)
+		if err != nil {
+			return err
+		}
+
+		unlock, err := locking.Lock(d.state.ShutdownCtx, "iscsi")
+		if err != nil {
+			return err
+		}
+
+		defer unlock()
+	}
+
+	err = d.client().disconnectHostFromVolume(vol.pool, vol.name, host.Name)
+	if err != nil {
+		return err
+	}
+
+	// Wait until the volume has disappeared.
+	volumePath, _, _ := d.getMappedDevPath(vol, false)
+	if volumePath != "" {
+		ctx, cancel := context.WithTimeout(d.state.ShutdownCtx, 10*time.Second)
+		defer cancel()
+
+		if !waitGone(ctx, volumePath) {
+			return fmt.Errorf("Timeout whilst waiting for PureStorage volume to disappear: %q", vol.name)
+		}
+	}
+
+	// If this was the last volume being unmapped from this system, terminate iSCSI session
+	// and remove the host from PureStorage.
+	if d.config["pure.mode"] == pureModeISCSI && host.ConnectionCount == 1 {
+		err := d.iscsiDisconnect(iqn)
+		if err != nil {
+			return err
+		}
+
+		err = d.client().deleteHost(host.Name)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // getMappedDevPath returns the local device path for the given volume.
 // Indicate with mapVolume if the volume should get mapped to the system if it isn't present.
 func (d *pure) getMappedDevPath(vol Volume, mapVolume bool) (string, revert.Hook, error) {
-	return "", func() {}, nil
+	revert := revert.New()
+	defer revert.Fail()
+
+	defer func() {
+		// Show mapped volumes from iSCSI:
+		out, err := shared.RunCommandContext(d.state.ShutdownCtx, "iscsiadm", "--mode", "session", "--print", "3" /* 3 = print level */)
+		logger.Error("iSCSI session (AFTER VOLUME MAP)", logger.Ctx{"out": out, "error": err})
+	}()
+
+	if mapVolume {
+		cleanup, err := d.mapVolume(vol)
+		if err != nil {
+			return "", nil, err
+		}
+
+		revert.Add(cleanup)
+	}
+
+	// findDevPathFunc has to be called in a loop with a set timeout to ensure
+	// all the necessary directories and devices can be discovered.
+	findDevPathFunc := func(diskPrefix string, volumeName string) (string, error) {
+		var diskPaths []string
+
+		// If there are no other disks on the system by id, the directory might not even be there.
+		// Returns ENOENT in case the by-id/ directory does not exist.
+		diskPaths, err := resources.GetDisksByID(diskPrefix)
+		if err != nil {
+			return "", err
+		}
+
+		for _, diskPath := range diskPaths {
+			// Skip the disk if it is only a partition of the actual volume.
+			if strings.Contains(diskPath, "-part") {
+				continue
+			}
+
+			// Skip volumes that do not have volume's pool and name suffix.
+			if !strings.HasSuffix(diskPath, volumeName) {
+				continue
+			}
+
+			// The actual device might not already be created.
+			// Returns ENOENT in case the device does not exist.
+			devPath, err := filepath.EvalSymlinks(diskPath)
+			if err != nil {
+				return "", err
+			}
+
+			return devPath, nil
+		}
+
+		return "", nil
+	}
+
+	volumeFullName := fmt.Sprintf("%s::%s", vol.pool, vol.name)
+	timeout := time.Now().Add(30 * time.Second) // TODO: Adjust to 5 or 10 seconds!
+	logger.Warn("Looking for device", logger.Ctx{"volume": volumeFullName, "timeout": "30s"})
+
+	var volumeDevPath string
+
+	// It might take a while to create the local disk.
+	// Retry until it can be found.
+	for {
+		if time.Now().After(timeout) {
+			diskPaths, _ := resources.GetDisksByID("scsi-")
+			return "", nil, fmt.Errorf("Failed to locate device for volume %q: Timeout exceeded\nList of devices: \n%s", vol.name, strings.Join(diskPaths, "\n"))
+		}
+
+		var diskPrefix string
+		switch d.config["pure.mode"] {
+		case pureModeISCSI:
+			diskPrefix = "scsi-"
+		}
+
+		devPath, err := findDevPathFunc(diskPrefix, volumeFullName)
+		if err != nil {
+			// Try again if on of the directories cannot be found.
+			if errors.Is(err, unix.ENOENT) {
+				continue
+			}
+
+			return "", nil, err
+		}
+
+		if devPath != "" {
+			volumeDevPath = devPath
+			break
+		}
+
+		// Exit if the volume wasn't explicitly mapped.
+		// Doing a retry would run into the timeout when the device isn't mapped.
+		if !mapVolume {
+			break
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if volumeDevPath == "" {
+		return "", nil, fmt.Errorf("Failed to locate device for volume %q", vol.name)
+	}
+
+	cleanup := revert.Clone().Fail
+	revert.Success()
+	return volumeDevPath, cleanup, nil
 }
+
+// serverName returns the hostname of this host. It prefers the value from the daemons state
+// in case LXD is clustered.
+func (d *pure) serverName() (string, error) {
+	if d.state.ServerName != "none" {
+		return d.state.ServerName, nil
+	}
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		return "", fmt.Errorf("Failed to get hostname: %w", err)
+	}
+
+	return hostname, nil
+}
+
+// hostIQN returns the unique iSCSI Qualified Name (IQN) of the host. A custom one is generated
+// from the servers UUID since getting the IQN from /etc/iscsi/initiatorname.iscsi would require
+// the iscsiadm to be installed on the host.
+func (d *pure) hostIQN() (string, error) {
+	// filename := "/etc/iscsi/initiatorname.iscsi"
+	filename := shared.HostPath("/etc/iscsi/initiatorname.iscsi")
+	// filename := shared.VarPath("/iscsi/initiatorname.iscsi")
+
+	if !shared.PathExists(filename) {
+		// Ensure parent directories exist.
+		err := os.MkdirAll(filepath.Dir(filename), 0755)
+		if err != nil {
+			return "", err
+		}
+
+		iqn := fmt.Sprintf("iqn.1996-07.com.example:01:%s", d.state.ServerUUID)
+
+		// Create initiatorname.iscsi file with the generated IQN.
+		err = os.WriteFile(filename, []byte("InitiatorName="+iqn), 0600)
+		if err != nil {
+			return "", err
+		}
+
+		return iqn, nil
+	}
+
+	// Read the existing IQN from the file.
+	content, err := os.ReadFile(filename)
+	if err != nil {
+		return "", err
+	}
+
+	// Find the IQN line in the file.
+	lines := strings.Split(string(content), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "InitiatorName=") {
+			return strings.TrimPrefix(line, "InitiatorName="), nil
+		}
+	}
+
+	return "", fmt.Errorf("Failed to extract host IQN from %q", filename)
+}
+
+// // resolvePool looks up the selected storage pool.
+// // If only the pool is provided, it's expected to be the ID of the pool.
+// // In case both pool and domain are set, the pool will get looked up
+// // by name within the domain.
+// func (d *pure) resolvePool() (*powerFlexStoragePool, error) {
+// 	return nil, nil
+// }
+
+// // getPowerFlexVolumeName returns the fully qualified name derived from the volume.
+// func (d *pure) getVolumeName(vol Volume) (string, error) {
+// 	volUUID, err := uuid.Parse(vol.config["volatile.uuid"])
+// 	if err != nil {
+// 		return "", fmt.Errorf(`Failed parsing "volatile.uuid" from volume %q: %w`, vol.name, err)
+// 	}
+
+// 	binUUID, err := volUUID.MarshalBinary()
+// 	if err != nil {
+// 		return "", fmt.Errorf(`Failed marshalling the "volatile.uuid" of volume %q to binary format: %w`, vol.name, err)
+// 	}
+
+// 	// The volume's name in base64 encoded format.
+// 	volName := base64.StdEncoding.EncodeToString(binUUID)
+
+// 	var suffix string
+// 	if vol.contentType == ContentTypeBlock {
+// 		suffix = powerFlexBlockVolSuffix
+// 	} else if vol.contentType == ContentTypeISO {
+// 		suffix = powerFlexISOVolSuffix
+// 	}
+
+// 	// Use storage volume prefix from powerFlexVolTypePrefixes depending on type.
+// 	// If the volume's type is unknown, don't put any prefix to accommodate the volume name size constraint.
+// 	volumeTypePrefix, ok := powerFlexVolTypePrefixes[vol.volType]
+// 	if ok {
+// 		volumeTypePrefix = fmt.Sprintf("%s_", volumeTypePrefix)
+// 	}
+
+// 	return fmt.Sprintf("%s%s%s", volumeTypePrefix, volName, suffix), nil
+// }

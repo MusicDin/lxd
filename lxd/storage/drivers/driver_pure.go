@@ -3,7 +3,6 @@ package drivers
 import (
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/canonical/lxd/lxd/migration"
@@ -160,6 +159,13 @@ func (d *pure) Validate(config map[string]string) error {
 		//  defaultdesc: the discovered mode
 		//  shortdesc: How volumes are mapped to the local server
 		"pure.mode": validate.Optional(validate.IsOneOf(pureModeISCSI)),
+		// lxdmeta:generate(entities=storage-pure; group=pool-conf; key=pure.iscsi.address)
+		//
+		// ---
+		//  type: string
+		//  defaultdesc: the IP address of the iSCSI host
+		//  shortdesc: The IP address of the PureStorage FlashArray iSCSI host.
+		"pure.iscsi.address": validate.Optional(validate.IsNetworkAddress),
 		// lxdmeta:generate(entities=storage-pure; group=pool-conf; key=volume.size)
 		// Default PureStorage volume size rounded to 512B. The minimum size is 1MiB.
 		// ---
@@ -180,8 +186,14 @@ func (d *pure) Validate(config map[string]string) error {
 	// on the other cluster members too. This can be done here since Validate
 	// gets executed on every cluster member when receiving the cluster
 	// notification to finally create the pool.
-	if d.config["pure.mode"] == pureModeISCSI && !d.loadISCSIModules() {
-		return fmt.Errorf("iSCSI is not supported")
+	if d.config["pure.mode"] == pureModeISCSI {
+		if !d.loadISCSIModules() {
+			return fmt.Errorf("iSCSI is not supported")
+		}
+
+		if d.config["pure.iscsi.address"] == "" {
+			return fmt.Errorf("The pure.iscsi.address must be set when mode is set to iSCSI")
+		}
 	}
 
 	return nil
@@ -216,6 +228,15 @@ func (d *pure) Create() error {
 	revert := revert.New()
 	defer revert.Fail()
 
+	switch d.config["pure.mode"] {
+	case pureModeISCSI:
+		if d.config["pure.iscsi.address"] == "" {
+			return fmt.Errorf("The pure.iscsi.address must be set when mode is set to iSCSI")
+		}
+	default:
+		return fmt.Errorf("Unsupported PureStorage mode %q", d.config["pure.mode"])
+	}
+
 	// Create the storage pool.
 	id, err := d.client().createStoragePool(d.name)
 	if err != nil {
@@ -223,44 +244,6 @@ func (d *pure) Create() error {
 	}
 
 	revert.Add(func() { _ = d.client().deleteStoragePool(d.name) })
-
-	switch d.config["pure.mode"] {
-	case pureModeISCSI:
-		hostname, err := d.hostName()
-		if err != nil {
-			return err
-		}
-
-		iqn, err := d.hostIQN()
-		if err != nil {
-			return err
-		}
-
-		// Ensure PureStorage host is created.
-		host, err := d.client().getHost(hostname)
-		if err != nil {
-			if api.StatusErrorCheck(err, http.StatusNotFound) {
-				// If the host does not exist, create it.
-				err = d.client().createHost(hostname, []string{iqn})
-				if err != nil {
-					return err
-				}
-			} else {
-				// Otherwise error out.
-				return err
-			}
-		} else {
-			// If the host exists, ensure our IQN is present in the list.
-			if !slices.Contains(host.IQNs, iqn) {
-				err = d.client().updateHost(hostname, append(host.IQNs, iqn))
-				if err != nil {
-					return err
-				}
-			}
-		}
-	default:
-		return fmt.Errorf("Unsupported PureStorage mode %q", d.config["pure.mode"])
-	}
 
 	logger.Info("Storage pool successfully created", logger.Ctx{"name": d.name, "id": id, "api_version": d.apiVersion})
 
@@ -277,8 +260,7 @@ func (d *pure) Update(changedConfig map[string]string) error {
 func (d *pure) Delete(op *operations.Operation) error {
 	// First delete the storage pool on PureStorage.
 	err := d.client().deleteStoragePool(d.name)
-	if err != nil {
-		// TODO: Ignore not found error.
+	if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
 		return err
 	}
 
