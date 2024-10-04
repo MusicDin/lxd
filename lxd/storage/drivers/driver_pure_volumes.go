@@ -59,15 +59,6 @@ func (d *pure) CreateVolume(vol Volume, filler *VolumeFiller, op *operations.Ope
 	revert := revert.New()
 	defer revert.Fail()
 
-	// Ensure PureStorage host exists for the current server.
-	hostname, cleanup, err := d.ensureISCSIHost()
-	if err != nil {
-		return err
-	}
-
-	revert.Add(cleanup)
-	logger.Error("CreateVolume Hostname", logger.Ctx{"hostname": hostname})
-
 	sizeBytes, err := units.ParseByteSizeString(vol.ConfigSize())
 	if err != nil {
 		return err
@@ -236,7 +227,7 @@ func (d *pure) DeleteVolume(vol Volume, op *operations.Operation) error {
 	} else {
 		// Dicsconnect the volume from the host.
 		err = d.client().disconnectHostFromVolume(vol.pool, vol.name, host.Name)
-		if err != nil {
+		if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
 			return err
 		}
 	}

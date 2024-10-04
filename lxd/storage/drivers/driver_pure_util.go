@@ -707,7 +707,7 @@ func (d *pure) ensureISCSIHost() (hostName string, cleanup revert.Hook, err erro
 		hostname = host.Name
 	}
 
-	logger.Error("Hostname", logger.Ctx{"hostname": hostname, "iqn": iqn})
+	logger.Warn("Ensured iSCSI host exists", logger.Ctx{"hostname": hostname, "iqn": iqn})
 
 	cleanup = revert.Clone().Fail
 	revert.Success()
@@ -753,10 +753,53 @@ func (d *pure) iscsiDiscover() (string, error) {
 	return iqns[0], nil
 }
 
+func iscsiHasConnection(iqn string) (bool, error) {
+	// Base path for iSCSI sessions.
+	basePath := "/sys/class/iscsi_session"
+
+	// Retrieve list of existing iSCSI sessions.
+	sessions, err := os.ReadDir(basePath)
+	if err != nil {
+		return false, fmt.Errorf("Failed getting a list of existing iSCSI sessions: %w", err)
+	}
+
+	for _, session := range sessions {
+		// Get the target IQN of the iSCSI session.
+		iqnBytes, err := os.ReadFile(filepath.Join(basePath, session.Name(), "targetname"))
+		if err != nil {
+			return false, fmt.Errorf("Failed getting the target IQN for session %q: %w", session, err)
+		}
+
+		sessionIQN := strings.TrimSpace(string(iqnBytes))
+
+		logger.Warn("Found session", logger.Ctx{"session": session.Name(), "iqn": sessionIQN})
+
+		if iqn == sessionIQN {
+			// Already connected to the PureStorage array via iSCSI.
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 // iscsiConnect connects this host to the iSCSI subsystem configured in the storage pool.
 // The connection can only be established after the first volume is mapped to this host.
 // The operation is idempotent and returns nil if already connected to the subsystem.
 func (d *pure) iscsiConnect() (revert.Hook, error) {
+	revert := revert.New()
+	defer revert.Fail()
+
+	// Find the array's IQN if connecting for the first time.
+	if d.targetIQN == "" {
+		targetIQN, err := d.iscsiDiscover()
+		if err != nil {
+			return nil, err
+		}
+
+		d.targetIQN = targetIQN
+	}
+
 	// Base path for iSCSI sessions.
 	basePath := "/sys/class/iscsi_session"
 
@@ -766,15 +809,6 @@ func (d *pure) iscsiConnect() (revert.Hook, error) {
 		return nil, fmt.Errorf("Failed getting a list of existing iSCSI sessions: %w", err)
 	}
 
-	revert := revert.New()
-	defer revert.Fail()
-
-	// Discover the target IQN for the PureStorage array.
-	iscsiTarget, err := d.iscsiDiscover()
-	if err != nil {
-		return nil, err
-	}
-
 	for _, session := range sessions {
 		// Get the target IQN of the iSCSI session.
 		iqnBytes, err := os.ReadFile(filepath.Join(basePath, session.Name(), "targetname"))
@@ -782,26 +816,51 @@ func (d *pure) iscsiConnect() (revert.Hook, error) {
 			return nil, fmt.Errorf("Failed getting the target IQN for session %q: %w", session, err)
 		}
 
-		logger.Warn("Session", logger.Ctx{"session": session.Name(), "iqn": string(iqnBytes)})
+		sessionIQN := strings.TrimSpace(string(iqnBytes))
+		sessionID := strings.TrimPrefix(session.Name(), "session")
 
-		if iscsiTarget == strings.TrimSpace(string(iqnBytes)) {
+		logger.Warn("Found session", logger.Ctx{"session": session.Name(), "id": sessionID, "iqn": sessionIQN})
+
+		if d.targetIQN == sessionIQN {
 			// Already connected to the PureStorage array via iSCSI.
+			// Rescan the session to ensure new volumes are detected.
+			_, err := shared.RunCommand("iscsiadm", "--mode", "session", "--sid", sessionID, "--rescan")
+			if err != nil {
+				return nil, err
+			}
+
 			cleanup := revert.Clone().Fail
 			revert.Success()
 			return cleanup, nil
 		}
 	}
 
+	// Check if the host is already connected to the PureStorage array via iSCSI.
+	// hasConn, err := iscsiHasConnection(d.targetIQN)
+	// if err != nil {
+	// 	// Rescan the session to ensure new volumes are detected.
+	// 	_, err := shared.RunCommand("iscsiadm", "--mode", "session", "--sid", "--rescan")
+
+	// 	return nil, err
+	// }
+
+	// if hasConn {
+	// 	// Already connected to the PureStorage array via iSCSI.
+	// 	cleanup := revert.Clone().Fail
+	// 	revert.Success()
+	// 	return cleanup, nil
+	// }
+
 	iscsiAddr := d.config["pure.iscsi.address"]
 
 	// Attempt to login into discovered iSCSI targets.
-	stdout, stderr, err := shared.RunCommandSplit(d.state.ShutdownCtx, nil, nil, "iscsiadm", "--mode", "node", "--targetname", iscsiTarget, "--portal", iscsiAddr, "--login", "--debug=8")
+	stdout, stderr, err := shared.RunCommandSplit(d.state.ShutdownCtx, nil, nil, "iscsiadm", "--mode", "node", "--targetname", d.targetIQN, "--portal", iscsiAddr, "--login", "--debug=8")
 	if err != nil {
 		logger.Warn("Output", logger.Ctx{"stdout": stdout, "error": err})
 		return nil, fmt.Errorf("Failed to connect to PureStorage host %q via iSCSI: %s\n%v", iscsiAddr, stderr, err)
 	}
 
-	revert.Add(func() { _ = d.iscsiDisconnect(iscsiTarget) })
+	revert.Add(func() { _ = d.iscsiDisconnect(d.targetIQN) })
 
 	cleanup := revert.Clone().Fail
 	revert.Success()
@@ -810,9 +869,17 @@ func (d *pure) iscsiConnect() (revert.Hook, error) {
 
 // iscsiDisconnect disconnects this host from the given iSCSI target.
 func (d *pure) iscsiDisconnect(iqn string) error {
-	_, err := shared.RunCommand("iscsiadm", "--mode", "node", "--targetname", iqn, "--logout")
+	hasConn, err := iscsiHasConnection(d.targetIQN)
 	if err != nil {
-		return fmt.Errorf("Failed disconnecting from PureStorage iSCSI target %q: %w", iqn, err)
+		return err
+	}
+
+	if hasConn {
+		// Disconnect from the iSCSI target.
+		_, err := shared.RunCommand("iscsiadm", "--mode", "node", "--targetname", iqn, "--logout")
+		if err != nil {
+			return fmt.Errorf("Failed disconnecting from PureStorage iSCSI target %q: %w", iqn, err)
+		}
 	}
 
 	return nil
@@ -908,33 +975,57 @@ func (d *pure) unmapVolume(vol Volume) error {
 		defer unlock()
 	}
 
+	// Disconnect the volume from the host and ignore error if connection does not exist.
 	err = d.client().disconnectHostFromVolume(vol.pool, vol.name, host.Name)
-	if err != nil {
+	if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
 		return err
 	}
 
 	// Wait until the volume has disappeared.
 	volumePath, _, _ := d.getMappedDevPath(vol, false)
 	if volumePath != "" {
+		if d.config["pure.mode"] == pureModeISCSI {
+			// TODO: This is more like a workaround, but I cannot find a better way to remove the device, since
+			// iSCSI does not do that when volume is disconnected from the host.
+			//
+			// When volume is disconnected from the host, the device will remain on the system.
+			//
+			// To remove the device, we need to either logout from the iSCSI session or remove the device manually.
+			// Logging out of the session is not desired as it would disconnect all the volumes from the array.
+			// Therefore, we need to manually remove the device.
+			split := strings.Split(filepath.Base(volumePath), "/")
+			devName := split[len(split)-1]
+
+			path := fmt.Sprintf("/sys/block/%s/device/delete", devName)
+			if shared.PathExists(path) {
+				err := os.WriteFile(path, []byte("1"), 0400)
+				if err != nil {
+					return fmt.Errorf("Failed to unmap volume %q: Failed to remove device %q: %w", vol.name, devName, err)
+				}
+			}
+		}
+
 		ctx, cancel := context.WithTimeout(d.state.ShutdownCtx, 10*time.Second)
 		defer cancel()
 
 		if !waitGone(ctx, volumePath) {
-			return fmt.Errorf("Timeout whilst waiting for PureStorage volume to disappear: %q", vol.name)
+			return fmt.Errorf("Timeout exceeded waiting for PureStorage volume %q to disappear on path %q", vol.name, volumePath)
 		}
 	}
 
-	// If this was the last volume being unmapped from this system, terminate iSCSI session
-	// and remove the host from PureStorage.
-	if d.config["pure.mode"] == pureModeISCSI && host.ConnectionCount == 1 {
-		err := d.iscsiDisconnect(iqn)
-		if err != nil {
-			return err
-		}
+	if d.config["pure.mode"] == pureModeISCSI {
+		// If this was the last volume being unmapped from this system, terminate iSCSI session
+		// and remove the host from PureStorage.
+		if host.ConnectionCount == 1 {
+			err := d.iscsiDisconnect(d.targetIQN)
+			if err != nil {
+				return err
+			}
 
-		err = d.client().deleteHost(host.Name)
-		if err != nil {
-			return err
+			err = d.client().deleteHost(host.Name)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -950,7 +1041,7 @@ func (d *pure) getMappedDevPath(vol Volume, mapVolume bool) (string, revert.Hook
 	defer func() {
 		// Show mapped volumes from iSCSI:
 		out, err := shared.RunCommandContext(d.state.ShutdownCtx, "iscsiadm", "--mode", "session", "--print", "3" /* 3 = print level */)
-		logger.Error("iSCSI session (AFTER VOLUME MAP)", logger.Ctx{"out": out, "error": err})
+		logger.Debug("Active iSCSI session", logger.Ctx{"out": out, "error": err})
 	}()
 
 	if mapVolume {
@@ -1045,6 +1136,8 @@ func (d *pure) getMappedDevPath(vol Volume, mapVolume bool) (string, revert.Hook
 	if volumeDevPath == "" {
 		return "", nil, fmt.Errorf("Failed to locate device for volume %q", vol.name)
 	}
+
+	logger.Warn("Located device for volume", logger.Ctx{"pool": vol.pool, "volume": vol.name, "device": volumeDevPath})
 
 	cleanup := revert.Clone().Fail
 	revert.Success()

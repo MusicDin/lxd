@@ -38,6 +38,10 @@ type pure struct {
 
 	// apiVersion indicates the PureStorage API version.
 	apiVersion string
+
+	// targetIQN represents the IQN of the PureStorage array. It is used
+	// to avoid unnecessary discovery.
+	targetIQN string
 }
 
 // load is used initialize the driver. It should be used only once.
@@ -210,26 +214,12 @@ func (d *pure) Create() error {
 		return err
 	}
 
-	// Ensure pool name is set.
-	// if d.config["pure.pool"] == "" {
-	// 	return fmt.Errorf("The pure.pool cannot be empty")
-	// }
-
-	// Ensure PureStorage gateway address is set.
-	// if d.config["pure.gateway"] == "" {
-	// 	return fmt.Errorf("The pure.gateway cannot be empty")
-	// }
-
-	// // Ensure PureStorage API token is provided.
-	// if d.config["pure.api.token"] == "" {
-	// 	return fmt.Errorf("The pure.api.token cannot be empty")
-	// }
-
 	revert := revert.New()
 	defer revert.Fail()
 
 	switch d.config["pure.mode"] {
 	case pureModeISCSI:
+		// Ensure iSCSI address is configured.
 		if d.config["pure.iscsi.address"] == "" {
 			return fmt.Errorf("The pure.iscsi.address must be set when mode is set to iSCSI")
 		}
