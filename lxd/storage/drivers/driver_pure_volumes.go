@@ -59,18 +59,23 @@ func (d *pure) CreateVolume(vol Volume, filler *VolumeFiller, op *operations.Ope
 	revert := revert.New()
 	defer revert.Fail()
 
+	volName, err := d.getVolumeName(vol)
+	if err != nil {
+		return err
+	}
+
 	sizeBytes, err := units.ParseByteSizeString(vol.ConfigSize())
 	if err != nil {
 		return err
 	}
 
 	// Create the volume.
-	_, err = client.createVolume(vol.pool, vol.name, sizeBytes)
+	_, err = client.createVolume(vol.pool, volName, sizeBytes)
 	if err != nil {
 		return err
 	}
 
-	revert.Add(func() { _ = client.deleteVolume(vol.pool, vol.name) })
+	revert.Add(func() { _ = client.deleteVolume(vol.pool, volName) })
 
 	volumeFilesystem := vol.ConfigBlockFilesystem()
 	if vol.contentType == ContentTypeFS {
@@ -214,6 +219,11 @@ func (d *pure) DeleteVolume(vol Volume, op *operations.Operation) error {
 		return nil
 	}
 
+	volName, err := d.getVolumeName(vol)
+	if err != nil {
+		return err
+	}
+
 	iqn, err := d.hostIQN()
 	if err != nil {
 		return err
@@ -226,13 +236,13 @@ func (d *pure) DeleteVolume(vol Volume, op *operations.Operation) error {
 		}
 	} else {
 		// Dicsconnect the volume from the host.
-		err = d.client().disconnectHostFromVolume(vol.pool, vol.name, host.Name)
+		err = d.client().disconnectHostFromVolume(vol.pool, volName, host.Name)
 		if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
 			return err
 		}
 	}
 
-	err = d.client().deleteVolume(vol.pool, vol.name)
+	err = d.client().deleteVolume(vol.pool, volName)
 	if err != nil {
 		return err
 	}
@@ -266,7 +276,12 @@ func (d *pure) DeleteVolume(vol Volume, op *operations.Operation) error {
 
 // HasVolume indicates whether a specific volume exists on the storage pool.
 func (d *pure) HasVolume(vol Volume) (bool, error) {
-	_, err := d.client().getVolume(vol.pool, vol.name)
+	volName, err := d.getVolumeName(vol)
+	if err != nil {
+		return false, err
+	}
+
+	_, err = d.client().getVolume(vol.pool, volName)
 	if err != nil {
 		if api.StatusErrorCheck(err, http.StatusNotFound) {
 			return false, nil

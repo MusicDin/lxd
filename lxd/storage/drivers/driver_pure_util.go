@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
 
 	"github.com/canonical/lxd/lxd/locking"
@@ -900,6 +902,11 @@ func (d *pure) mapVolume(vol Volume) (revert.Hook, error) {
 	revert := revert.New()
 	defer revert.Fail()
 
+	volName, err := d.getVolumeName(vol)
+	if err != nil {
+		return nil, err
+	}
+
 	var hostname string
 
 	switch d.config["pure.mode"] {
@@ -924,13 +931,13 @@ func (d *pure) mapVolume(vol Volume) (revert.Hook, error) {
 	client := d.client()
 
 	// Ensure the volume is connected to the host.
-	connCreated, err := client.connectHostToVolume(vol.pool, vol.name, hostname)
+	connCreated, err := client.connectHostToVolume(vol.pool, volName, hostname)
 	if err != nil {
 		return nil, err
 	}
 
 	if connCreated {
-		revert.Add(func() { _ = client.disconnectHostFromVolume(vol.pool, vol.name, hostname) })
+		revert.Add(func() { _ = client.disconnectHostFromVolume(vol.pool, volName, hostname) })
 	}
 
 	if d.config["pure.mode"] == pureModeISCSI {
@@ -955,6 +962,11 @@ func (d *pure) unmapVolume(vol Volume) error {
 	var iqn string
 	var err error
 
+	volName, err := d.getVolumeName(vol)
+	if err != nil {
+		return err
+	}
+
 	switch d.config["pure.mode"] {
 	case pureModeISCSI:
 		iqn, err = d.hostIQN()
@@ -976,7 +988,7 @@ func (d *pure) unmapVolume(vol Volume) error {
 	}
 
 	// Disconnect the volume from the host and ignore error if connection does not exist.
-	err = d.client().disconnectHostFromVolume(vol.pool, vol.name, host.Name)
+	err = d.client().disconnectHostFromVolume(vol.pool, volName, host.Name)
 	if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
 		return err
 	}
@@ -1210,34 +1222,43 @@ func (d *pure) hostIQN() (string, error) {
 // 	return nil, nil
 // }
 
-// // getPowerFlexVolumeName returns the fully qualified name derived from the volume.
-// func (d *pure) getVolumeName(vol Volume) (string, error) {
-// 	volUUID, err := uuid.Parse(vol.config["volatile.uuid"])
-// 	if err != nil {
-// 		return "", fmt.Errorf(`Failed parsing "volatile.uuid" from volume %q: %w`, vol.name, err)
-// 	}
+// getVolumeName returns the fully qualified name derived from the volume.
+func (d *pure) getVolumeName(vol Volume) (string, error) {
+	volUUID, err := uuid.Parse(vol.config["volatile.uuid"])
+	if err != nil {
+		return "", fmt.Errorf(`Failed parsing "volatile.uuid" from volume %q: %w`, vol.name, err)
+	}
 
-// 	binUUID, err := volUUID.MarshalBinary()
-// 	if err != nil {
-// 		return "", fmt.Errorf(`Failed marshalling the "volatile.uuid" of volume %q to binary format: %w`, vol.name, err)
-// 	}
+	binUUID, err := volUUID.MarshalBinary()
+	if err != nil {
+		return "", fmt.Errorf(`Failed marshalling the "volatile.uuid" of volume %q to binary format: %w`, vol.name, err)
+	}
 
-// 	// The volume's name in base64 encoded format.
-// 	volName := base64.StdEncoding.EncodeToString(binUUID)
+	// The volume's name in base64 encoded format.
+	volName := base64.StdEncoding.EncodeToString(binUUID)
 
-// 	var suffix string
-// 	if vol.contentType == ContentTypeBlock {
-// 		suffix = powerFlexBlockVolSuffix
-// 	} else if vol.contentType == ContentTypeISO {
-// 		suffix = powerFlexISOVolSuffix
-// 	}
+	var suffix string
+	if vol.contentType == ContentTypeBlock {
+		suffix = powerFlexBlockVolSuffix
+	} else if vol.contentType == ContentTypeISO {
+		suffix = powerFlexISOVolSuffix
+	}
 
-// 	// Use storage volume prefix from powerFlexVolTypePrefixes depending on type.
-// 	// If the volume's type is unknown, don't put any prefix to accommodate the volume name size constraint.
-// 	volumeTypePrefix, ok := powerFlexVolTypePrefixes[vol.volType]
-// 	if ok {
-// 		volumeTypePrefix = fmt.Sprintf("%s_", volumeTypePrefix)
-// 	}
+	// PureStorage volume name cannot contain some base64 characters, such as equal sign (=),
+	// plus (+), and slash (/). Therefore, remove equal signs as they are just filler ensure
+	// string is a multiple of 4. Additionally, replace plus and slash with underscore and
+	// hypen respectivelly.
+	volName = strings.TrimRight(volName, "=")
+	volName = strings.ReplaceAll(volName, "/", "-")
+	volName = strings.ReplaceAll(volName, "+", "_")
 
-// 	return fmt.Sprintf("%s%s%s", volumeTypePrefix, volName, suffix), nil
-// }
+	// Use storage volume prefix from powerFlexVolTypePrefixes depending on type.
+	// If the volume's type is unknown, don't put any prefix to accommodate the volume name size constraint.
+	volumeTypePrefix, ok := powerFlexVolTypePrefixes[vol.volType]
+	if ok {
+		volumeTypePrefix = fmt.Sprintf("%s_", volumeTypePrefix)
+	}
+
+	logger.Error("Volume name", logger.Ctx{"volName": volName, "volType": vol.volType, "suffix": suffix})
+	return fmt.Sprintf("%s%s%s", volumeTypePrefix, volName, suffix), nil
+}
