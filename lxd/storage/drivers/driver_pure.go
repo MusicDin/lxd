@@ -39,9 +39,9 @@ type pure struct {
 	// apiVersion indicates the PureStorage API version.
 	apiVersion string
 
-	// targetIQN represents the IQN of the PureStorage array. It is used
-	// to avoid unnecessary discovery.
-	targetIQN string
+	// iscsiTargets represents the list of PureStorage array iSCSI targets.
+	// It is used to avoid unnecessary discovery.
+	iscsiTargets []pureISCSITarget
 }
 
 // load is used initialize the driver. It should be used only once.
@@ -190,7 +190,7 @@ func (d *pure) Validate(config map[string]string) error {
 	// on the other cluster members too. This can be done here since Validate
 	// gets executed on every cluster member when receiving the cluster
 	// notification to finally create the pool.
-	if d.config["pure.mode"] == pureModeISCSI {
+	if d.config["pure.mode"] == pureModeISCSI || d.config["pure.mode"] == "" {
 		if !d.loadISCSIModules() {
 			return fmt.Errorf("iSCSI is not supported")
 		}

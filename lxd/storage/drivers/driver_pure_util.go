@@ -34,15 +34,33 @@ func (d *pure) loadISCSIModules() bool {
 	return util.LoadModule("iscsi_tcp") == nil
 }
 
-// TODO: This should be unified with PowerFlex for consistency (most likely, some of the new drivers will rely on that as well).
-//
 // pureVolTypePrefixes maps volume type to storage volume name prefix.
-// Use smallest possible prefixes since PowerFlex volume names are limited to 31 characters.
+// Use smallest possible prefixes since PureStorage volume names are limited to 63 characters.
 var pureVolTypePrefixes = map[VolumeType]string{
 	VolumeTypeContainer: "c",
 	VolumeTypeVM:        "v",
 	VolumeTypeImage:     "i",
 	VolumeTypeCustom:    "u",
+}
+
+// pureContentTypeSuffixes maps volume's content type to storage volume name suffix.
+var pureContentTypeSuffixes = map[ContentType]string{
+	// Suffix used for block content type volumes.
+	ContentTypeBlock: "b",
+
+	// Suffix used for ISO content type volumes.
+	ContentTypeISO: "i",
+}
+
+type pureISCSITarget struct {
+	// IP address of the iSCSI target.
+	Portal string
+
+	// Group tag of the iSCSI target.
+	GroupTag string
+
+	// Target iSCSI qualified name (IQN).
+	IQN string
 }
 
 // pureError represents an error responses from PureStorage API.
@@ -717,42 +735,52 @@ func (d *pure) ensureISCSIHost() (hostName string, cleanup revert.Hook, err erro
 }
 
 // iscsiDiscover returns PureStorage array IQN discovered on the provided iscsi host.
-func (d *pure) iscsiDiscover() (string, error) {
+func (d *pure) iscsiDiscover() ([]pureISCSITarget, error) {
 	iscsiAddr := d.config["pure.iscsi.address"]
 
 	// Ensure the iSCSI directory exists.
 	// TODO: This is temporary workaround.
 	err := os.MkdirAll("/run/lock/iscsi", 0755)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	out, err := shared.RunCommand("iscsiadm", "--mode", "discovery", "--type", "sendtargets", "--portal", iscsiAddr)
 	if err != nil {
-		return "", fmt.Errorf("Failed to discover any iSCSI target on address %q: %w", iscsiAddr, err)
+		return nil, fmt.Errorf("Failed to discover any iSCSI target on address %q: %w", iscsiAddr, err)
 	}
 
-	lines := strings.Split(out, "\n")
-	iqns := make([]string, 0, len(lines))
-
-	for _, line := range lines {
+	var targets []pureISCSITarget
+	for _, line := range strings.Split(out, "\n") {
+		// Each output line is the format "Portal,GroupTag Target".
+		//
+		// For example:
+		// 10.0.0.10:3260,0 iqn.1992-04.com.example:600009700bcbb70e3287017400000001
 		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		if len(fields) != 2 {
 			continue
 		}
 
+		addr := strings.Split(fields[0], ",")[0]
+		tag := strings.Split(fields[0], ",")[1]
 		iqn := fields[1]
-		if !slices.Contains(iqns, iqn) {
-			iqns = append(iqns, iqn)
+
+		logger.Warn("Discovered iSCSI target", logger.Ctx{"portal": addr, "tag": tag, "iqn": iqn})
+
+		target := pureISCSITarget{
+			Portal:   addr,
+			GroupTag: tag,
+			IQN:      iqn,
 		}
+
+		targets = append(targets, target)
 	}
 
-	if len(iqns) == 0 {
-		return "", fmt.Errorf("Failed to discover any iSCSI target on address %q", iscsiAddr)
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("Failed to discover any iSCSI target on address %q", iscsiAddr)
 	}
 
-	// TODO: Temporary return just a single IQN.
-	return iqns[0], nil
+	return targets, nil
 }
 
 func iscsiHasConnection(iqn string) (bool, error) {
@@ -793,13 +821,13 @@ func (d *pure) iscsiConnect() (revert.Hook, error) {
 	defer revert.Fail()
 
 	// Find the array's IQN if connecting for the first time.
-	if d.targetIQN == "" {
-		targetIQN, err := d.iscsiDiscover()
+	if len(d.iscsiTargets) == 0 {
+		targets, err := d.iscsiDiscover()
 		if err != nil {
 			return nil, err
 		}
 
-		d.targetIQN = targetIQN
+		d.iscsiTargets = targets
 	}
 
 	// Base path for iSCSI sessions.
@@ -810,6 +838,9 @@ func (d *pure) iscsiConnect() (revert.Hook, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Failed getting a list of existing iSCSI sessions: %w", err)
 	}
+
+	// TODO: Temporary use just the first target.
+	targetIQN := d.iscsiTargets[0].IQN
 
 	for _, session := range sessions {
 		// Get the target IQN of the iSCSI session.
@@ -823,7 +854,7 @@ func (d *pure) iscsiConnect() (revert.Hook, error) {
 
 		logger.Warn("Found session", logger.Ctx{"session": session.Name(), "id": sessionID, "iqn": sessionIQN})
 
-		if d.targetIQN == sessionIQN {
+		if targetIQN == sessionIQN {
 			// Already connected to the PureStorage array via iSCSI.
 			// Rescan the session to ensure new volumes are detected.
 			_, err := shared.RunCommand("iscsiadm", "--mode", "session", "--sid", sessionID, "--rescan")
@@ -856,13 +887,13 @@ func (d *pure) iscsiConnect() (revert.Hook, error) {
 	iscsiAddr := d.config["pure.iscsi.address"]
 
 	// Attempt to login into discovered iSCSI targets.
-	stdout, stderr, err := shared.RunCommandSplit(d.state.ShutdownCtx, nil, nil, "iscsiadm", "--mode", "node", "--targetname", d.targetIQN, "--portal", iscsiAddr, "--login", "--debug=8")
+	stdout, stderr, err := shared.RunCommandSplit(d.state.ShutdownCtx, nil, nil, "iscsiadm", "--mode", "node", "--targetname", targetIQN, "--portal", iscsiAddr, "--login", "--debug=8")
 	if err != nil {
 		logger.Warn("Output", logger.Ctx{"stdout": stdout, "error": err})
 		return nil, fmt.Errorf("Failed to connect to PureStorage host %q via iSCSI: %s\n%v", iscsiAddr, stderr, err)
 	}
 
-	revert.Add(func() { _ = d.iscsiDisconnect(d.targetIQN) })
+	revert.Add(func() { _ = d.iscsiDisconnect(targetIQN) })
 
 	cleanup := revert.Clone().Fail
 	revert.Success()
@@ -871,7 +902,7 @@ func (d *pure) iscsiConnect() (revert.Hook, error) {
 
 // iscsiDisconnect disconnects this host from the given iSCSI target.
 func (d *pure) iscsiDisconnect(iqn string) error {
-	hasConn, err := iscsiHasConnection(d.targetIQN)
+	hasConn, err := iscsiHasConnection(iqn)
 	if err != nil {
 		return err
 	}
@@ -1029,7 +1060,8 @@ func (d *pure) unmapVolume(vol Volume) error {
 		// If this was the last volume being unmapped from this system, terminate iSCSI session
 		// and remove the host from PureStorage.
 		if host.ConnectionCount == 1 {
-			err := d.iscsiDisconnect(d.targetIQN)
+			// TODO: Fix usage of first target.
+			err := d.iscsiDisconnect(d.iscsiTargets[0].IQN)
 			if err != nil {
 				return err
 			}
@@ -1101,8 +1133,13 @@ func (d *pure) getMappedDevPath(vol Volume, mapVolume bool) (string, revert.Hook
 		return "", nil
 	}
 
-	volumeFullName := fmt.Sprintf("%s::%s", vol.pool, vol.name)
-	timeout := time.Now().Add(30 * time.Second) // TODO: Adjust to 5 or 10 seconds!
+	volName, err := d.getVolumeName(vol)
+	if err != nil {
+		return "", nil, err
+	}
+
+	volumeFullName := fmt.Sprintf("%s::%s", vol.pool, volName)
+	timeout := time.Now().Add(60 * time.Second) // TODO: Adjust to 5 or 10 seconds!
 	logger.Warn("Looking for device", logger.Ctx{"volume": volumeFullName, "timeout": "30s"})
 
 	var volumeDevPath string
@@ -1112,6 +1149,7 @@ func (d *pure) getMappedDevPath(vol Volume, mapVolume bool) (string, revert.Hook
 	for {
 		if time.Now().After(timeout) {
 			diskPaths, _ := resources.GetDisksByID("scsi-")
+			// TODO: Remove second part of the error (debug purpose).
 			return "", nil, fmt.Errorf("Failed to locate device for volume %q: Timeout exceeded\nList of devices: \n%s", vol.name, strings.Join(diskPaths, "\n"))
 		}
 
@@ -1142,7 +1180,7 @@ func (d *pure) getMappedDevPath(vol Volume, mapVolume bool) (string, revert.Hook
 			break
 		}
 
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	if volumeDevPath == "" {
@@ -1206,8 +1244,9 @@ func (d *pure) hostIQN() (string, error) {
 	// Find the IQN line in the file.
 	lines := strings.Split(string(content), "\n")
 	for _, line := range lines {
-		if strings.HasPrefix(line, "InitiatorName=") {
-			return strings.TrimPrefix(line, "InitiatorName="), nil
+		iqn, ok := strings.CutPrefix(line, "InitiatorName=")
+		if ok {
+			return iqn, nil
 		}
 	}
 
@@ -1234,31 +1273,22 @@ func (d *pure) getVolumeName(vol Volume) (string, error) {
 		return "", fmt.Errorf(`Failed marshalling the "volatile.uuid" of volume %q to binary format: %w`, vol.name, err)
 	}
 
-	// The volume's name in base64 encoded format.
-	volName := base64.StdEncoding.EncodeToString(binUUID)
+	// The volume's name in base64 encoded format. PureStorage volume name cannot contain some
+	// base64 characters, such as equal sign (=), plus (+), and slash (/). Therefore, use
+	volName := base64.RawURLEncoding.EncodeToString(binUUID)
 
-	var suffix string
-	if vol.contentType == ContentTypeBlock {
-		suffix = powerFlexBlockVolSuffix
-	} else if vol.contentType == ContentTypeISO {
-		suffix = powerFlexISOVolSuffix
-	}
-
-	// PureStorage volume name cannot contain some base64 characters, such as equal sign (=),
-	// plus (+), and slash (/). Therefore, remove equal signs as they are just filler ensure
-	// string is a multiple of 4. Additionally, replace plus and slash with underscore and
-	// hypen respectivelly.
-	volName = strings.TrimRight(volName, "=")
-	volName = strings.ReplaceAll(volName, "/", "-")
-	volName = strings.ReplaceAll(volName, "+", "_")
-
-	// Use storage volume prefix from powerFlexVolTypePrefixes depending on type.
-	// If the volume's type is unknown, don't put any prefix to accommodate the volume name size constraint.
-	volumeTypePrefix, ok := powerFlexVolTypePrefixes[vol.volType]
+	// Search for the volume type prefix, and if found, prepend it to the volume name.
+	volumeTypePrefix, ok := pureVolTypePrefixes[vol.volType]
 	if ok {
-		volumeTypePrefix = fmt.Sprintf("%s_", volumeTypePrefix)
+		volName = fmt.Sprintf("%s_%s", volumeTypePrefix, volName)
 	}
 
-	logger.Error("Volume name", logger.Ctx{"volName": volName, "volType": vol.volType, "suffix": suffix})
-	return fmt.Sprintf("%s%s%s", volumeTypePrefix, volName, suffix), nil
+	// Search for the content type suffix, and if found, append it to the volume name.
+	contentTypeSuffix, ok := pureContentTypeSuffixes[vol.contentType]
+	if ok {
+		volName = fmt.Sprintf("%s_%s", volName, contentTypeSuffix)
+	}
+
+	logger.Error("Volume name", logger.Ctx{"volName": volName, "volType": vol.volType, "contentType": vol.contentType})
+	return volName, nil
 }
