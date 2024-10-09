@@ -582,11 +582,127 @@ func (d *pure) BackupVolume(vol VolumeCopy, tarWriter *instancewriter.InstanceTa
 
 // CreateVolumeSnapshot creates a snapshot of a volume.
 func (d *pure) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
+	revert := revert.New()
+	defer revert.Fail()
+
+	parentName, _, _ := api.GetParentAndSnapshotName(snapVol.name)
+	sourcePath := GetVolumeMountPath(d.name, snapVol.volType, parentName)
+
+	if filesystem.IsMountPoint(sourcePath) {
+		// Attempt to sync and freeze filesystem, but do not error if not able to freeze (as filesystem
+		// could still be busy), as we do not guarantee the consistency of a snapshot. This is costly but
+		// try to ensure that all cached data has been committed to disk. If we don't then the snapshot
+		// of the underlying filesystem can be inconsistent or, in the worst case, empty.
+		unfreezeFS, err := d.filesystemFreeze(sourcePath)
+		if err == nil {
+			defer func() { _ = unfreezeFS() }()
+		}
+	}
+
+	// Create the parent directory.
+	err := createParentSnapshotDirIfMissing(d.name, snapVol.volType, parentName)
+	if err != nil {
+		return err
+	}
+
+	err = snapVol.EnsureMountPath()
+	if err != nil {
+		return err
+	}
+
+	parentVolConfig := map[string]string{
+		"volatile.uuid": snapVol.parentUUID,
+	}
+
+	parentVol := NewVolume(d, d.name, snapVol.volType, snapVol.contentType, parentName, parentVolConfig, nil)
+	parentVolName, err := d.getVolumeName(parentVol)
+	if err != nil {
+		return err
+	}
+
+	snapVolName, err := d.getVolumeName(snapVol)
+	if err != nil {
+		return err
+	}
+
+	err = d.client().createVolumeSnapshot(snapVol.pool, parentVolName, snapVolName)
+	if err != nil {
+		return err
+	}
+
+	revert.Add(func() { _ = d.DeleteVolumeSnapshot(snapVol, op) })
+
+	// For VM images, create a filesystem volume too.
+	if snapVol.IsVMBlock() {
+		fsVol := snapVol.NewVMBlockFilesystemVolume()
+
+		// Set the parent volume's UUID.
+		fsVol.SetParentUUID(snapVol.parentUUID)
+
+		err := d.CreateVolumeSnapshot(fsVol, op)
+		if err != nil {
+			return err
+		}
+
+		revert.Add(func() { _ = d.DeleteVolumeSnapshot(fsVol, op) })
+	}
+
+	revert.Success()
 	return nil
 }
 
 // DeleteVolumeSnapshot removes a snapshot from the storage device.
 func (d *pure) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
+	parentVolConfig := map[string]string{
+		"volatile.uuid": snapVol.parentUUID,
+	}
+
+	parentName, _, _ := api.GetParentAndSnapshotName(snapVol.name)
+	parentVol := NewVolume(d, d.name, snapVol.volType, snapVol.contentType, parentName, parentVolConfig, nil)
+	parentVolName, err := d.getVolumeName(parentVol)
+	if err != nil {
+		return err
+	}
+
+	snapVolName, err := d.getVolumeName(snapVol)
+	if err != nil {
+		return err
+	}
+
+	err = d.client().deleteVolumeSnapshot(snapVol.pool, parentVolName, snapVolName)
+	if err != nil {
+		return err
+	}
+
+	mountPath := snapVol.MountPath()
+
+	if snapVol.contentType == ContentTypeFS && shared.PathExists(mountPath) {
+		err = wipeDirectory(mountPath)
+		if err != nil {
+			return err
+		}
+
+		err = os.Remove(mountPath)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("Failed to remove %q: %w", mountPath, err)
+		}
+	}
+
+	// Remove the parent snapshot directory if this is the last snapshot being removed.
+	err = deleteParentSnapshotDirIfEmpty(d.name, snapVol.volType, parentName)
+	if err != nil {
+		return err
+	}
+
+	// For VM images, delete the filesystem volume too.
+	if snapVol.IsVMBlock() {
+		fsVol := snapVol.NewVMBlockFilesystemVolume()
+		err := d.DeleteVolumeSnapshot(fsVol, op)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

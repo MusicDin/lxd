@@ -494,7 +494,6 @@ func (p *pureClient) getVolume(poolName string, volName string) (*pureVolume, er
 		return nil, fmt.Errorf("Failed to get volume %q: %w", volName, err)
 	}
 
-	// TODO: Is this check required
 	if len(resp.Items) == 0 {
 		return nil, api.StatusErrorf(http.StatusNotFound, "Volume %q not found", volName)
 	}
@@ -547,6 +546,60 @@ func (p *pureClient) deleteVolume(poolName string, volName string) error {
 	err = p.requestAuthenticated(http.MethodDelete, fmt.Sprintf("/volumes?names=%s::%s", poolName, volName), nil, nil)
 	if err != nil {
 		return fmt.Errorf("Failed to delete volume %q in storage pool %q: %w", volName, poolName, err)
+	}
+
+	return nil
+}
+
+// getVolumeSnapshot retrieves an existing snapshot for the given storage volume.
+func (p *pureClient) getVolumeSnapshot(poolName string, volName string, snapshotName string) (*pureVolume, error) {
+	var resp pureResponse[pureVolume]
+
+	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/volume-snapshots?names=%s::%s.%s", poolName, volName, snapshotName), nil, &resp)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to retrieve snapshot %q for volume %q in storage pool %q: %w", snapshotName, volName, poolName, err)
+	}
+
+	if len(resp.Items) == 0 {
+		return nil, api.StatusErrorf(http.StatusNotFound, "Snapshot %q not found", snapshotName)
+	}
+
+	return &resp.Items[0], nil
+}
+
+// createVolumeSnapshot creates a new snapshot for the given storage volume.
+func (p *pureClient) createVolumeSnapshot(poolName string, volName string, snapshotName string) error {
+	req, err := p.createBodyReader(map[string]any{
+		"suffix": snapshotName,
+	})
+	if err != nil {
+		return err
+	}
+
+	var resp pureResponse[pureID]
+
+	err = p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/volume-snapshots?source_names=%s::%s", poolName, volName), req, &resp)
+	if err != nil {
+		return fmt.Errorf("Failed to create snapshot %q for volume %q in storage pool %q: %w", snapshotName, volName, poolName, err)
+	}
+
+	return nil
+}
+
+// deleteVolumeSnapshot deletes an existing snapshot for the given storage volume.
+func (p *pureClient) deleteVolumeSnapshot(poolName string, volName string, snapshotName string) error {
+	req, err := p.createBodyReader(map[string]any{
+		"suffix": snapshotName,
+	})
+	if err != nil {
+		return err
+	}
+
+	var resp pureResponse[pureID]
+
+	err = p.requestAuthenticated(http.MethodDelete, fmt.Sprintf("/volume-snapshots?source_names=%s::%s.%s", poolName, volName, snapshotName), req, &resp)
+	if err != nil {
+		return fmt.Errorf("Failed to delete snapshot %q for volume %q in storage pool %q: %w", snapshotName, volName, poolName, err)
 	}
 
 	return nil
@@ -1277,16 +1330,21 @@ func (d *pure) getVolumeName(vol Volume) (string, error) {
 	// base64 characters, such as equal sign (=), plus (+), and slash (/). Therefore, use
 	volName := base64.RawURLEncoding.EncodeToString(binUUID)
 
+	// TODO: Snapshots do not support underscores in their names.
+	volName = strings.ReplaceAll(volName, "_", "-")
+
 	// Search for the volume type prefix, and if found, prepend it to the volume name.
 	volumeTypePrefix, ok := pureVolTypePrefixes[vol.volType]
 	if ok {
-		volName = fmt.Sprintf("%s_%s", volumeTypePrefix, volName)
+		// TODO: Dash/hyphen used instead of underscore.
+		volName = fmt.Sprintf("%s-%s", volumeTypePrefix, volName)
 	}
 
 	// Search for the content type suffix, and if found, append it to the volume name.
 	contentTypeSuffix, ok := pureContentTypeSuffixes[vol.contentType]
 	if ok {
-		volName = fmt.Sprintf("%s_%s", volName, contentTypeSuffix)
+		// TODO: Dash/hyphen used instead of dot.
+		volName = fmt.Sprintf("%s-%s", volName, contentTypeSuffix)
 	}
 
 	logger.Error("Volume name", logger.Ctx{"volName": volName, "volType": vol.volType, "contentType": vol.contentType})
