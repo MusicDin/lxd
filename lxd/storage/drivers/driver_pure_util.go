@@ -52,17 +52,6 @@ var pureContentTypeSuffixes = map[ContentType]string{
 	ContentTypeISO: "i",
 }
 
-type pureISCSITarget struct {
-	// IP address of the iSCSI target.
-	Portal string
-
-	// Group tag of the iSCSI target.
-	GroupTag string
-
-	// Target iSCSI qualified name (IQN).
-	IQN string
-}
-
 // pureError represents an error responses from PureStorage API.
 type pureError struct {
 	// List of errors returned by the PureStorage API.
@@ -139,9 +128,49 @@ type pureResponse[T any] struct {
 	Items []T `json:"items"`
 }
 
-// pureID represents a generic ID response from the PureStorage API.
-type pureID struct {
-	ID string `json:"id"`
+// pureEntity represents a generic entity in PureStorage.
+type pureEntity struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// pureSpace represents the usage data of PureStorage resource.
+type pureSpace struct {
+	// Total reserved space.
+	// For volumes, this is the available space or quota.
+	// For storage pools, this is the total reserved space (not the quota).
+	TotalBytes int64 `json:"total_provisioned"`
+
+	// Amount of logically written data that a volume or a snapshot references.
+	// This value is compared against the quota, therefore, it should be used for
+	// showing the actual used space. Although, the actual used space is most likely
+	// less than this value due to the data reduction that is done by PureStorage.
+	UsedBytes int64 `json:"virtual"`
+}
+
+// pureStorageArray represents a storage array in PureStorage.
+type pureStorageArray struct {
+	ID       string    `json:"id"`
+	Name     string    `json:"name"`
+	Capacity int64     `json:"capacity"`
+	Space    pureSpace `json:"space"`
+}
+
+// pureStoragePool represents a storage pool (Pod) in PureStorage.
+type pureStoragePool struct {
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	Quota       int64        `json:"quota_limit"`
+	IsDestroyed bool         `json:"destroyed"`
+	Space       pureSpace    `json:"space"`
+	Arrays      []pureEntity `json:"arrays"`
+}
+
+// pureVolume represents a volume in PureStorage.
+type pureVolume struct {
+	ID    string    `json:"id"`
+	Name  string    `json:"name"`
+	Space pureSpace `json:"space"`
 }
 
 // pureHost represents a host in PureStorage.
@@ -151,41 +180,11 @@ type pureHost struct {
 	ConnectionCount int      `json:"connection_count"`
 }
 
-// pureProtectionDomain represents a protection domain in PureStorage.
-type pureProtectionDomain struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	SystemID string `json:"systemId"`
-}
-
-// pureStoragePool represents a storage pool (Pod) in PureStorage.
-type pureStoragePool struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Destroyed bool   `json:"destroyed"`
-	// ProtectionDomainID string `json:"protectionDomainId"`
-}
-
-// pureProtectionDomainStoragePool represents a relation between a storage pool and a protection domain
-// in PureStorage.
-type pureProtectionDomainStoragePool struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
-// pureVolume represents a volume in PureStorage.
-type pureVolume struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	VolumeType string `json:"volumeType"` // volume/snapshot
-	// VTreeID          string `json:"vtreeId"`
-	// AncestorVolumeID string `json:"ancestorVolumeId"`
-	// MappedSDCInfo    []struct {
-	// 	SDCID    string `json:"sdcId"`
-	// 	SDCName  string `json:"sdcName"`
-	// 	NQN      string `json:"nqn"`
-	// 	HostType string `json:"hostType"`
-	// } `json:"mappedSdcInfo"`
+// pureTarget represents a target in PureStorage. e
+// Expand this struct if more fields, such as NQN, are needed.
+type pureTarget struct {
+	IQN    *string `json:"iqn"`
+	Portal *string `json:"portal"`
 }
 
 // pureClient holds the PureStorage HTTP client and an access token.
@@ -386,37 +385,41 @@ func (p *pureClient) login() error {
 	return nil
 }
 
-// getVolumeID returns the volume ID for the given name.
-// func (p *pureClient) getVolumeID(name string) (string, error) {
-// 	body, err := p.createBodyReader(map[string]any{
-// 		"name": name,
-// 	})
-// 	if err != nil {
-// 		return "", err
-// 	}
+// getStorageArray returns the storage pool behind poolID.
+func (p *pureClient) getStorageArrays(arrayNames ...string) ([]pureStorageArray, error) {
+	var resp pureResponse[pureStorageArray]
+	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/arrays?names=%s", strings.Join(arrayNames, ",")), nil, &resp)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to get storage arrays: %w", err)
+	}
 
-// 	var actualResponse string
-// 	err = p.requestAuthenticated(http.MethodPost, "/api/types/Volume/instances/action/queryIdByKey", body, &actualResponse)
-// 	if err != nil {
-// 		powerFlexError, ok := err.(*powerFlexError)
-// 		if ok {
-// 			// API returns 500 if the volume does not exist.
-// 			// To not confuse it with other 500 that might occur check the error code too.
-// 			if powerFlexError.HTTPStatusCode() == http.StatusInternalServerError && powerFlexError.ErrorCode() == powerFlexCodeVolumeNotFound {
-// 				return "", api.StatusErrorf(http.StatusNotFound, "PowerFlex volume not found: %q", name)
-// 			}
-// 		}
+	return resp.Items, nil
+}
 
-// 		return "", fmt.Errorf("Failed to get volume ID: %q: %w", name, err)
-// 	}
+// getStorageArray returns the storage pool behind poolID.
+func (p *pureClient) getStorageArray(arrayName string) (*pureStorageArray, error) {
+	var resp pureResponse[pureStorageArray]
+	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/arrays?names=%s", arrayName), nil, &resp)
+	if err != nil {
+		perr, ok := err.(*pureError)
+		if ok && perr.IsNotFoundError() {
+			return nil, api.StatusErrorf(http.StatusNotFound, "Storage array %q not found", arrayName)
+		}
 
-// 	return actualResponse, nil
-// }
+		return nil, fmt.Errorf("Failed to get storage array %q: %w", arrayName, err)
+	}
 
-// getStoragePool returns the storage pool behind poolID.
+	if len(resp.Items) == 0 {
+		return nil, api.StatusErrorf(http.StatusNotFound, "Storage array %q not found", arrayName)
+	}
+
+	return &resp.Items[0], nil
+}
+
+// getStoragePool returns the storage pool with the given name.
 func (p *pureClient) getStoragePool(poolName string) (*pureStoragePool, error) {
-	var actualResponse pureStoragePool
-	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/pods?names=%s", poolName), nil, &actualResponse)
+	var resp pureResponse[pureStoragePool]
+	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/pods?names=%s", poolName), nil, &resp)
 	if err != nil {
 		perr, ok := err.(*pureError)
 		if ok && perr.IsNotFoundError() {
@@ -426,23 +429,21 @@ func (p *pureClient) getStoragePool(poolName string) (*pureStoragePool, error) {
 		return nil, fmt.Errorf("Failed to get storage pool %q: %w", poolName, err)
 	}
 
-	return &actualResponse, nil
+	if len(resp.Items) == 0 {
+		return nil, api.StatusErrorf(http.StatusNotFound, "Storage pool %q not found", poolName)
+	}
+
+	return &resp.Items[0], nil
 }
 
 // createStoragePool creates a storage pool (PureStorage Pod) and returns it's ID.
-func (p *pureClient) createStoragePool(poolName string) (string, error) {
-	var resp pureResponse[pureID]
-
-	err := p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/pods?names=%s", poolName), nil, &resp)
+func (p *pureClient) createStoragePool(poolName string) error {
+	err := p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/pods?names=%s", poolName), nil, nil)
 	if err != nil {
-		return "", fmt.Errorf("Failed to create storage pool %q: %w", poolName, err)
+		return fmt.Errorf("Failed to create storage pool %q: %w", poolName, err)
 	}
 
-	if len(resp.Items) == 0 || resp.Items[0].ID == "" {
-		return "", fmt.Errorf(`Failed to create storage pool %q: Response does not contain field "id"`, poolName)
-	}
-
-	return resp.Items[0].ID, nil
+	return nil
 }
 
 // deleteStoragePool deletes a storage pool (PureStorage Pod).
@@ -501,28 +502,24 @@ func (p *pureClient) getVolume(poolName string, volName string) (*pureVolume, er
 	return &resp.Items[0], nil
 }
 
-// createVolume creates a new volume in the given storage pool. The volume is created with supplied size in bytes.
-// Upon successful creation, volume's ID is returned.
-func (p *pureClient) createVolume(poolName string, volName string, sizeBytes int64) (string, error) {
+// createVolume creates a new volume in the given storage pool. The volume is created with
+// supplied size in bytes. Upon successful creation, volume's ID is returned.
+func (p *pureClient) createVolume(poolName string, volName string, sizeBytes int64) error {
 	req, err := p.createBodyReader(map[string]any{
 		"provisioned": sizeBytes,
 	})
 	if err != nil {
-		return "", err
+		return err
 	}
 
-	var resp pureResponse[pureID]
-
-	err = p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/volumes?names=%s::%s", poolName, volName), req, &resp)
+	// Prevent default protection groups to be applied on the new volume, which can
+	// prevent us from eradicating the volume once deleted.
+	err = p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/volumes?names=%s::%s&with_default_protection=false", poolName, volName), req, nil)
 	if err != nil {
-		return "", fmt.Errorf("Failed to create volume %q in storage pool %q: %w", volName, poolName, err)
+		return fmt.Errorf("Failed to create volume %q in storage pool %q: %w", volName, poolName, err)
 	}
 
-	if len(resp.Items) == 0 {
-		return "", fmt.Errorf("Failed to create volume %q in storage pool %q: Volume ID not found", volName, poolName)
-	}
-
-	return resp.Items[0].ID, nil
+	return nil
 }
 
 // deleteVolume deletes an exisiting volume in the given storage pool.
@@ -551,6 +548,63 @@ func (p *pureClient) deleteVolume(poolName string, volName string) error {
 	return nil
 }
 
+// resizeVolume resizes an existing volume.
+func (p *pureClient) resizeVolume(poolName string, volName string, sizeBytes int64) error {
+	req, err := p.createBodyReader(map[string]any{
+		"provisioned": sizeBytes,
+	})
+	if err != nil {
+		return err
+	}
+
+	err = p.requestAuthenticated(http.MethodPatch, fmt.Sprintf("/volumes?names=%s::%s", poolName, volName), req, nil)
+	if err != nil {
+		return fmt.Errorf("Failed to resize volume %q in storage pool %q: %w", volName, poolName, err)
+	}
+
+	return nil
+}
+
+// copyVolume copies a source volume into destination volume. If overwrite is set to true,
+// the destination volume will be overwritten if it already exists.
+func (p *pureClient) copyVolume(srcPoolName string, srcVolName string, dstPoolName string, dstVolName string, overwrite bool) error {
+	req, err := p.createBodyReader(map[string]any{
+		"source": map[string]string{
+			"name": fmt.Sprintf("%s::%s", srcPoolName, srcVolName),
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("/volumes?names=%s::%s&overwrite=%v", dstPoolName, dstVolName, overwrite)
+
+	if !overwrite {
+		// Disable default protection groups when creating a new volume to avoid potential issues
+		// when deleting the volume because protection group may prevent volume eridication.
+		url = fmt.Sprintf("%s&with_default_protection=false", url)
+	}
+
+	err = p.requestAuthenticated(http.MethodPost, url, req, nil)
+	if err != nil {
+		return fmt.Errorf(`Failed to copy volume "%s/%s" to "%s/%s": %w`, srcPoolName, srcVolName, dstPoolName, dstVolName, err)
+	}
+
+	return nil
+}
+
+// getVolumeSnapshots retrieves all existing snapshot for the given storage volume.
+func (p *pureClient) getVolumeSnapshots(poolName string, volName string) ([]pureVolume, error) {
+	var resp pureResponse[pureVolume]
+
+	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/volume-snapshots?names=%s::%s", poolName, volName), nil, &resp)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to retrieve snapshots for volume %q in storage pool %q: %w", volName, poolName, err)
+	}
+
+	return resp.Items, nil
+}
+
 // getVolumeSnapshot retrieves an existing snapshot for the given storage volume.
 func (p *pureClient) getVolumeSnapshot(poolName string, volName string, snapshotName string) (*pureVolume, error) {
 	var resp pureResponse[pureVolume]
@@ -576,9 +630,7 @@ func (p *pureClient) createVolumeSnapshot(poolName string, volName string, snaps
 		return err
 	}
 
-	var resp pureResponse[pureID]
-
-	err = p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/volume-snapshots?source_names=%s::%s", poolName, volName), req, &resp)
+	err = p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/volume-snapshots?source_names=%s::%s", poolName, volName), req, nil)
 	if err != nil {
 		return fmt.Errorf("Failed to create snapshot %q for volume %q in storage pool %q: %w", snapshotName, volName, poolName, err)
 	}
@@ -595,14 +647,18 @@ func (p *pureClient) deleteVolumeSnapshot(poolName string, volName string, snaps
 		return err
 	}
 
-	var resp pureResponse[pureID]
-
-	err = p.requestAuthenticated(http.MethodDelete, fmt.Sprintf("/volume-snapshots?source_names=%s::%s.%s", poolName, volName, snapshotName), req, &resp)
+	err = p.requestAuthenticated(http.MethodDelete, fmt.Sprintf("/volume-snapshots?source_names=%s::%s.%s", poolName, volName, snapshotName), req, nil)
 	if err != nil {
 		return fmt.Errorf("Failed to delete snapshot %q for volume %q in storage pool %q: %w", snapshotName, volName, poolName, err)
 	}
 
 	return nil
+}
+
+// copyVolumeSnapshot copies a volume snapshot into destination volume. If destination volume
+// already exists, it is overwritten.
+func (p *pureClient) restoreVolumeSnapshot(srcPoolName string, srcVolName string, srcVolumeSnapshots string) error {
+	return p.copyVolume(srcPoolName, fmt.Sprintf("%s.%s", srcVolName, srcVolumeSnapshots), srcPoolName, srcVolName, true)
 }
 
 // getHosts retrieves an existing PureStorage host.
@@ -736,6 +792,35 @@ func (p *pureClient) deleteHost(hostName string) error {
 	return nil
 }
 
+// getISCSITarget retrieves the target that can be connected to using the provided initiator IQN.
+func (p *pureClient) getISCSITarget() (*pureTarget, error) {
+	var resp pureResponse[pureTarget]
+
+	portal := p.driver.config["pure.iscsi.address"]
+
+	// Check if the port is already set for the address.
+	addrAndPort := strings.Split(portal, ":")
+	if len(addrAndPort) == 1 {
+		// Search on default iSCSI port 3260.
+		portal = fmt.Sprintf("%s:3260", portal)
+	} else if len(addrAndPort) > 2 {
+		// Incorrect address.
+		return nil, fmt.Errorf("Invalid iSCSI address %q", portal)
+	}
+
+	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/ports?filter=portal='%s'", portal), nil, &resp)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to retrieve iSCSI targets for address %q: %w", portal, err)
+	}
+
+	if len(resp.Items) == 0 {
+		return nil, api.StatusErrorf(http.StatusNotFound, "No iSCSI target found on address %q", portal)
+	}
+
+	return &resp.Items[0], nil
+
+}
+
 // ensureISCSIHost returns a name of the host that is configured with a given IQN. If such host
 // does not exist, a new one is created.
 func (d *pure) ensureISCSIHost() (hostName string, cleanup revert.Hook, err error) {
@@ -787,55 +872,6 @@ func (d *pure) ensureISCSIHost() (hostName string, cleanup revert.Hook, err erro
 	return hostname, cleanup, nil
 }
 
-// iscsiDiscover returns PureStorage array IQN discovered on the provided iscsi host.
-func (d *pure) iscsiDiscover() ([]pureISCSITarget, error) {
-	iscsiAddr := d.config["pure.iscsi.address"]
-
-	// Ensure the iSCSI directory exists.
-	// TODO: This is temporary workaround.
-	err := os.MkdirAll("/run/lock/iscsi", 0755)
-	if err != nil {
-		return nil, err
-	}
-
-	out, err := shared.RunCommand("iscsiadm", "--mode", "discovery", "--type", "sendtargets", "--portal", iscsiAddr)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to discover any iSCSI target on address %q: %w", iscsiAddr, err)
-	}
-
-	var targets []pureISCSITarget
-	for _, line := range strings.Split(out, "\n") {
-		// Each output line is the format "Portal,GroupTag Target".
-		//
-		// For example:
-		// 10.0.0.10:3260,0 iqn.1992-04.com.example:600009700bcbb70e3287017400000001
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
-			continue
-		}
-
-		addr := strings.Split(fields[0], ",")[0]
-		tag := strings.Split(fields[0], ",")[1]
-		iqn := fields[1]
-
-		logger.Warn("Discovered iSCSI target", logger.Ctx{"portal": addr, "tag": tag, "iqn": iqn})
-
-		target := pureISCSITarget{
-			Portal:   addr,
-			GroupTag: tag,
-			IQN:      iqn,
-		}
-
-		targets = append(targets, target)
-	}
-
-	if len(targets) == 0 {
-		return nil, fmt.Errorf("Failed to discover any iSCSI target on address %q", iscsiAddr)
-	}
-
-	return targets, nil
-}
-
 func iscsiHasConnection(iqn string) (bool, error) {
 	// Base path for iSCSI sessions.
 	basePath := "/sys/class/iscsi_session"
@@ -874,13 +910,13 @@ func (d *pure) iscsiConnect() (revert.Hook, error) {
 	defer revert.Fail()
 
 	// Find the array's IQN if connecting for the first time.
-	if len(d.iscsiTargets) == 0 {
-		targets, err := d.iscsiDiscover()
+	if d.iscsiTarget == nil {
+		target, err := d.client().getISCSITarget()
 		if err != nil {
 			return nil, err
 		}
 
-		d.iscsiTargets = targets
+		d.iscsiTarget = target
 	}
 
 	// Base path for iSCSI sessions.
@@ -893,7 +929,7 @@ func (d *pure) iscsiConnect() (revert.Hook, error) {
 	}
 
 	// TODO: Temporary use just the first target.
-	targetIQN := d.iscsiTargets[0].IQN
+	targetIQN := *d.iscsiTarget.IQN
 
 	for _, session := range sessions {
 		// Get the target IQN of the iSCSI session.
@@ -954,17 +990,17 @@ func (d *pure) iscsiConnect() (revert.Hook, error) {
 }
 
 // iscsiDisconnect disconnects this host from the given iSCSI target.
-func (d *pure) iscsiDisconnect(iqn string) error {
-	hasConn, err := iscsiHasConnection(iqn)
+func (d *pure) iscsiDisconnect(targetIQN string) error {
+	hasConn, err := iscsiHasConnection(targetIQN)
 	if err != nil {
 		return err
 	}
 
 	if hasConn {
 		// Disconnect from the iSCSI target.
-		_, err := shared.RunCommand("iscsiadm", "--mode", "node", "--targetname", iqn, "--logout")
+		_, err := shared.RunCommand("iscsiadm", "--mode", "node", "--targetname", targetIQN, "--logout")
 		if err != nil {
-			return fmt.Errorf("Failed disconnecting from PureStorage iSCSI target %q: %w", iqn, err)
+			return fmt.Errorf("Failed disconnecting from PureStorage iSCSI target %q: %w", targetIQN, err)
 		}
 	}
 
@@ -1113,11 +1149,13 @@ func (d *pure) unmapVolume(vol Volume) error {
 		// If this was the last volume being unmapped from this system, terminate iSCSI session
 		// and remove the host from PureStorage.
 		if host.ConnectionCount == 1 {
-			// TODO: Fix usage of first target.
-			err := d.iscsiDisconnect(d.iscsiTargets[0].IQN)
+			err := d.iscsiDisconnect(*d.iscsiTarget.IQN)
 			if err != nil {
 				return err
 			}
+
+			// Remove cached iSCSI target.
+			d.iscsiTarget = nil
 
 			err = d.client().deleteHost(host.Name)
 			if err != nil {
@@ -1305,14 +1343,6 @@ func (d *pure) hostIQN() (string, error) {
 
 	return "", fmt.Errorf("Failed to extract host IQN from %q", filename)
 }
-
-// // resolvePool looks up the selected storage pool.
-// // If only the pool is provided, it's expected to be the ID of the pool.
-// // In case both pool and domain are set, the pool will get looked up
-// // by name within the domain.
-// func (d *pure) resolvePool() (*powerFlexStoragePool, error) {
-// 	return nil, nil
-// }
 
 // getVolumeName returns the fully qualified name derived from the volume.
 func (d *pure) getVolumeName(vol Volume) (string, error) {

@@ -70,7 +70,7 @@ func (d *pure) CreateVolume(vol Volume, filler *VolumeFiller, op *operations.Ope
 	}
 
 	// Create the volume.
-	_, err = client.createVolume(vol.pool, volName, sizeBytes)
+	err = client.createVolume(vol.pool, volName, sizeBytes)
 	if err != nil {
 		return err
 	}
@@ -384,21 +384,21 @@ func (d *pure) UpdateVolume(vol Volume, changedConfig map[string]string) error {
 
 // GetVolumeUsage returns the disk space used by the volume.
 func (d *pure) GetVolumeUsage(vol Volume) (int64, error) {
-	// If mounted, use the filesystem stats for pretty accurate usage information.
-	if vol.contentType == ContentTypeFS && filesystem.IsMountPoint(vol.MountPath()) {
-		var stat unix.Statfs_t
-
-		err := unix.Statfs(vol.MountPath(), &stat)
+	volName, err := d.getVolumeName(vol)
 		if err != nil {
 			return -1, err
 		}
 
-		return int64(stat.Blocks-stat.Bfree) * int64(stat.Bsize), nil
+pureVol, err := d.client().getVolume(vol.pool, volName)
+	if err != nil {
+		return -1, err
 	}
+
+	logger.Warn("Volume usage", logger.Ctx{"volName": vol.name, "used_size": pureVol.Space.UsedBytes, "total_size": pureVol.Space.TotalBytes})
 
 	// Getting the usage of an unmounted volume is not supported.
 	// PowerFlex reports the usage on pool level only.
-	return 0, ErrNotSupported
+	return pureVol.Space.UsedBytes, nil
 }
 
 // SetVolumeQuota applies a size limit on volume.

@@ -21,7 +21,7 @@ var pureLoaded = false
 var pureVersion = ""
 
 // pureDefaultVolumeSize represents the default PureStorage volume size.
-const pureDefaultVolumeSize = "8GiB"
+const pureDefaultVolumeSize = "10GiB"
 
 // PureStorage modes.
 const (
@@ -39,9 +39,9 @@ type pure struct {
 	// apiVersion indicates the PureStorage API version.
 	apiVersion string
 
-	// iscsiTargets represents the list of PureStorage array iSCSI targets.
-	// It is used to avoid unnecessary discovery.
-	iscsiTargets []pureISCSITarget
+	// iscsiTarget represents an iSCSI target that the initiator (host) can connect to.
+	// It is used as cache to avoid unnecessary discovery.
+	iscsiTarget *pureTarget
 }
 
 // load is used initialize the driver. It should be used only once.
@@ -228,14 +228,14 @@ func (d *pure) Create() error {
 	}
 
 	// Create the storage pool.
-	id, err := d.client().createStoragePool(d.name)
+	err = d.client().createStoragePool(d.name)
 	if err != nil {
 		return fmt.Errorf("Failed to create storage pool: %w", err)
 	}
 
 	revert.Add(func() { _ = d.client().deleteStoragePool(d.name) })
 
-	logger.Info("Storage pool successfully created", logger.Ctx{"name": d.name, "id": id, "api_version": d.apiVersion})
+	logger.Info("Storage pool successfully created", logger.Ctx{"name": d.name, "api_version": d.apiVersion})
 
 	revert.Success()
 	return nil
@@ -277,19 +277,35 @@ func (d *pure) Unmount() (bool, error) {
 
 // GetResources returns the pool resource usage information.
 func (d *pure) GetResources() (*api.ResourcesStoragePool, error) {
-	// pool, err := d.resolvePool()
-	// if err != nil {
-	// 	return nil, err
-	// }
+	pool, err := d.client().getStoragePool(d.name)
+	if err != nil {
+		return nil, err
+	}
 
-	// stats, err := d.client().getStoragePoolStatistics(pool.ID)
-	// if err != nil {
-	// 	return nil, err
-	// }
+	logger.Warn("Pool resources", logger.Ctx{"pool": d.name, "space.total": pool.Space.TotalBytes, "space.used": pool.Space.UsedBytes})
 
 	res := &api.ResourcesStoragePool{}
-	// res.Space.Total = stats.MaxCapacityInKb * 1000
-	// res.Space.Used = stats.CapacityInUseInKb * 1000
+
+	res.Space.Total = uint64(pool.Quota)
+	res.Space.Used = uint64(pool.Space.UsedBytes)
+
+	if pool.Quota == 0 {
+		// If quota is set to 0, it means that the storage pool is unbounded. Therefore,
+		// collect the total capacity of arrays where storage pool provisioned.
+		arrayNames := make([]string, 0, len(pool.Arrays))
+		for _, array := range pool.Arrays {
+			arrayNames = append(arrayNames, array.Name)
+		}
+
+		arrays, err := d.client().getStorageArrays(arrayNames...)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, array := range arrays {
+			res.Space.Total += uint64(array.Capacity)
+		}
+	}
 
 	return res, nil
 }
