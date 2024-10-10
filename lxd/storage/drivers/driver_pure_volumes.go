@@ -385,11 +385,11 @@ func (d *pure) UpdateVolume(vol Volume, changedConfig map[string]string) error {
 // GetVolumeUsage returns the disk space used by the volume.
 func (d *pure) GetVolumeUsage(vol Volume) (int64, error) {
 	volName, err := d.getVolumeName(vol)
-		if err != nil {
-			return -1, err
-		}
+	if err != nil {
+		return -1, err
+	}
 
-pureVol, err := d.client().getVolume(vol.pool, volName)
+	pureVol, err := d.client().getVolume(vol.pool, volName)
 	if err != nil {
 		return -1, err
 	}
@@ -402,8 +402,108 @@ pureVol, err := d.client().getVolume(vol.pool, volName)
 }
 
 // SetVolumeQuota applies a size limit on volume.
-// Does nothing if supplied with an empty/zero size.
+// Does nothing if supplied with an non-positive size.
 func (d *pure) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, op *operations.Operation) error {
+	revert := revert.New()
+	defer revert.Fail()
+
+	// Convert to bytes.
+	sizeBytes, err := units.ParseByteSizeString(size)
+	if err != nil {
+		return err
+	}
+
+	// Do nothing if size isn't specified.
+	if sizeBytes <= 0 {
+		return nil
+	}
+
+	volName, err := d.getVolumeName(vol)
+	if err != nil {
+		return err
+	}
+
+	// Get volume and retrieve current size.
+	pureVol, err := d.client().getVolume(vol.pool, volName)
+	if err != nil {
+		return err
+	}
+
+	oldSizeBytes := pureVol.Space.TotalBytes
+	if oldSizeBytes == sizeBytes {
+		// Nothing to do.
+		return nil
+	}
+
+	devPath, cleanup, err := d.getMappedDevPath(vol, true)
+	if err != nil {
+		return err
+	}
+
+	revert.Add(cleanup)
+
+	inUse := vol.MountInUse()
+
+	// Resize filesystem if needed.
+	if vol.contentType == ContentTypeFS {
+		fsType := vol.ConfigBlockFilesystem()
+
+		if sizeBytes > oldSizeBytes {
+			// Grow block device first.
+			err = d.client().resizeVolume(vol.pool, volName, sizeBytes)
+			if err != nil {
+				return err
+			}
+
+			// Grow the filesystem to fill the block device.
+			err = growFileSystem(fsType, devPath, vol)
+			if err != nil {
+				return err
+			}
+		} else {
+			if inUse {
+				// We don't allow online shrinking of filesytem volumes.
+				return ErrInUse
+			}
+
+			// Shrink filesystem first.
+			err = shrinkFileSystem(fsType, devPath, vol, sizeBytes, allowUnsafeResize)
+			if err != nil {
+				return err
+			}
+
+			// Shrink the block device.
+			err = d.client().resizeVolume(vol.pool, volName, sizeBytes)
+			if err != nil {
+				return err
+			}
+		}
+	} else {
+		inUse := vol.MountInUse()
+
+		// Only perform pre-resize checks if we are not in "unsafe" mode.
+		// In unsafe mode we expect the caller to know what they are doing and understand the risks.
+		if !allowUnsafeResize && inUse {
+			// We don't allow online resizing of block volumes.
+			return ErrInUse
+		}
+
+		// Resize block device.
+		err = d.client().resizeVolume(vol.pool, volName, sizeBytes)
+		if err != nil {
+			return err
+		}
+
+		// Move the VM GPT alt header to end of disk if needed (not needed in unsafe resize mode as it is
+		// expected the caller will do all necessary post resize actions themselves).
+		if vol.IsVMBlock() && !allowUnsafeResize {
+			err = d.moveGPTAltHeader(devPath)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 
