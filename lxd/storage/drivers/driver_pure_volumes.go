@@ -708,30 +708,107 @@ func (d *pure) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operation) er
 
 // MountVolumeSnapshot simulates mounting a volume snapshot.
 func (d *pure) MountVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
-	// A snapshot in PowerFlex is just another volume.
-	// We can reuse the volume mounting procedures.
+	// A snapshot in PureStorage is just a read-only volume. Therefore,
+	// reuse the volume mounting procedures.
 	return d.MountVolume(snapVol, op)
 }
 
 // UnmountVolumeSnapshot simulates unmounting a volume snapshot.
 func (d *pure) UnmountVolumeSnapshot(snapVol Volume, op *operations.Operation) (bool, error) {
-	// A snapshot in PureStorage is just another volume.
-	// We can reuse the volume mounting procedures.
+	// A snapshot in PureStorage is just a read-only volume. Therefore,
+	// reuse the volume mounting procedures.
 	return d.UnmountVolume(snapVol, false, op)
 }
 
 // VolumeSnapshots returns a list of snapshots for the volume (in no particular order).
 func (d *pure) VolumeSnapshots(vol Volume, op *operations.Operation) ([]string, error) {
-	return []string{}, nil
+	volName, err := d.getVolumeName(vol)
+	if err != nil {
+		return nil, err
+	}
+
+	volumeSnapshots, err := d.client().getVolumeSnapshots(vol.pool, volName)
+	if err != nil {
+		return nil, err
+	}
+
+	var snapshotNames []string
+	for _, snapshot := range volumeSnapshots {
+		snapshotNames = append(snapshotNames, snapshot.Name)
+	}
+
+	return snapshotNames, nil
 }
 
-// CheckVolumeSnapshots checks that the volume's snapshots, according to the storage driver, match those provided.
+// CheckVolumeSnapshots checks that the volume's snapshots, according to the storage driver,
+// match those provided. Note that additional snapshots may exist within the PureStorage pool
+// if protection groups are configured outside of LXD.
 func (d *pure) CheckVolumeSnapshots(vol Volume, snapVols []Volume, op *operations.Operation) error {
+	// Get all of the volume's snapshots in base64 encoded format.
+	storageSnapshotNames, err := vol.driver.VolumeSnapshots(vol, op)
+	if err != nil {
+		return err
+	}
+
+	// Create a list of all wanted snapshots.
+	// The list contains the PowerFlex volume names in their base64 encoded format.
+	wantedSnapshotNames := make([]string, 0, len(snapVols))
+	for _, snap := range snapVols {
+		snapName, err := d.getVolumeName(snap)
+		if err != nil {
+			return err
+		}
+
+		wantedSnapshotNames = append(wantedSnapshotNames, snapName)
+	}
+
+	// Check if the provided list of volume snapshots matches the ones from storage.
+	for _, wantedSnapshotName := range wantedSnapshotNames {
+		if !shared.ValueInSlice(wantedSnapshotName, storageSnapshotNames) {
+			return fmt.Errorf("Snapshot %q expected but not in storage", wantedSnapshotName)
+		}
+	}
+
 	return nil
 }
 
 // RestoreVolume restores a volume from a snapshot.
 func (d *pure) RestoreVolume(vol Volume, snapVol Volume, op *operations.Operation) error {
+	ourUnmount, err := d.UnmountVolume(vol, false, op)
+	if err != nil {
+		return err
+	}
+
+	if ourUnmount {
+		defer func() { _ = d.MountVolume(vol, op) }()
+	}
+
+	volName, err := d.getVolumeName(vol)
+	if err != nil {
+		return err
+	}
+
+	snapVolName, err := d.getVolumeName(snapVol)
+	if err != nil {
+		return err
+	}
+
+	// Overwrite existing volume by copying the given snapshot content into it.
+	err = d.client().restoreVolumeSnapshot(vol.pool, volName, snapVolName)
+	if err != nil {
+		return err
+	}
+
+	// For VMs, also restore the filesystem volume.
+	if vol.IsVMBlock() {
+		fsVol := vol.NewVMBlockFilesystemVolume()
+		snapFSVol := snapVol.NewVMBlockFilesystemVolume()
+		err := d.RestoreVolume(fsVol, snapFSVol, op)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
