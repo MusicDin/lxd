@@ -440,6 +440,8 @@ func (c *cmdRemoteAdd) run(cmd *cobra.Command, args []string) error {
 	// Check if the system CA worked for the TLS connection
 	var certificate *x509.Certificate
 	if err != nil {
+		fmt.Printf("DEBUG: Client not trusted by CA cert: %v\n", err)
+
 		// Failed to connect using the system CA, so retrieve the remote certificate
 		certificate, err = shared.GetRemoteCertificate(addr, c.global.conf.UserAgent)
 		if err != nil {
