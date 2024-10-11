@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: LXD\n"
 "Report-Msgid-Bugs-To: lxd@lists.canonical.com\n"
-"POT-Creation-Date: 2024-10-08 07:43+0100\n"
+"POT-Creation-Date: 2024-10-11 11:10+0000\n"
 "PO-Revision-Date: 2023-03-10 15:14+0000\n"
 "Last-Translator: KATOH Yasufumi <karma@jazz.email.ne.jp>\n"
 "Language-Team: Japanese <https://hosted.weblate.org/projects/linux-"
@@ -749,15 +749,15 @@ msgstr "<alias> <target>"
 msgid "<old alias> <new alias>"
 msgstr "<old alias> <new alias>"
 
-#: lxc/remote.go:850 lxc/remote.go:915
+#: lxc/remote.go:852 lxc/remote.go:917
 msgid "<remote>"
 msgstr "<remote>"
 
-#: lxc/remote.go:963
+#: lxc/remote.go:965
 msgid "<remote> <URL>"
 msgstr "<remote> <URL>"
 
-#: lxc/remote.go:769
+#: lxc/remote.go:771
 msgid "<remote> <new-name>"
 msgstr "<remote> <new-name>"
 
@@ -792,7 +792,7 @@ msgstr "ALIASES"
 msgid "ARCHITECTURE"
 msgstr "ARCHITECTURE"
 
-#: lxc/remote.go:751
+#: lxc/remote.go:753
 msgid "AUTH TYPE"
 msgstr "AUTH TYPE"
 
@@ -962,7 +962,7 @@ msgstr "アドレス: %s"
 msgid "Admin access key: %s"
 msgstr "管理者アクセスキー: %s"
 
-#: lxc/remote.go:581
+#: lxc/remote.go:583
 #, c-format
 msgid "Admin password (or token) for %s:"
 msgstr "%s の管理者パスワード（もしくはトークン）:"
@@ -1075,7 +1075,7 @@ msgstr ""
 "このコマンドはインスタンスのブートコンソールに接続できます。\n"
 "そしてそこから過去のログエントリを取り出すことができます。"
 
-#: lxc/remote.go:552
+#: lxc/remote.go:554
 #, c-format
 msgid "Authentication type '%s' not supported by server"
 msgstr "認証タイプ '%s' はサーバではサポートされていません"
@@ -1256,7 +1256,7 @@ msgstr ""
 msgid "Can't read from stdin: %w"
 msgstr "標準入力から読み込めません: %w"
 
-#: lxc/remote.go:894
+#: lxc/remote.go:896
 msgid "Can't remove the default remote"
 msgstr "デフォルトのリモートは削除できません"
 
@@ -1325,7 +1325,7 @@ msgstr "カード: %s (%s)"
 msgid "Certificate add token for %s deleted"
 msgstr "%s に対する証明書追加トークンが削除されました"
 
-#: lxc/remote.go:455
+#: lxc/remote.go:457
 #, fuzzy
 msgid "Certificate fingerprint"
 msgstr "証明書のフィンガープリント: %s"
@@ -1346,7 +1346,7 @@ msgstr "Chassis"
 msgid "Client %s certificate add token:"
 msgstr "クライアント %s の証明書追加トークン:"
 
-#: lxc/remote.go:620
+#: lxc/remote.go:622
 msgid "Client certificate now trusted by server:"
 msgstr "クライアント証明書がサーバに信頼されました:"
 
@@ -1613,12 +1613,12 @@ msgstr "コア %d"
 msgid "Cores:"
 msgstr "コア:"
 
-#: lxc/remote.go:490
+#: lxc/remote.go:492
 #, c-format
 msgid "Could not close server cert file %q: %w"
 msgstr "サーバ証明書ファイル %q をクローズできません: %w"
 
-#: lxc/remote.go:225 lxc/remote.go:474
+#: lxc/remote.go:225 lxc/remote.go:476
 msgid "Could not create server cert dir"
 msgstr "サーバ証明書格納用のディレクトリを作成できません"
 
@@ -1657,7 +1657,7 @@ msgstr "秘密鍵ファイル %s をエラーで読み込めません: %v"
 msgid "Could not write new remote certificate for remote '%s' with error: %v"
 msgstr "リモート '%s' に対する新しいリモート証明書がエラーで書き込めません: %v"
 
-#: lxc/remote.go:485
+#: lxc/remote.go:487
 #, c-format
 msgid "Could not write server cert file %q: %w"
 msgstr "サーバ証明書ファイル %q を書き込めません: %w"
@@ -2031,9 +2031,9 @@ msgstr "警告を削除します"
 #: lxc/project.go:191 lxc/project.go:262 lxc/project.go:398 lxc/project.go:472
 #: lxc/project.go:592 lxc/project.go:657 lxc/project.go:745 lxc/project.go:789
 #: lxc/project.go:850 lxc/project.go:917 lxc/publish.go:34 lxc/query.go:34
-#: lxc/rebuild.go:28 lxc/remote.go:35 lxc/remote.go:91 lxc/remote.go:648
-#: lxc/remote.go:686 lxc/remote.go:772 lxc/remote.go:853 lxc/remote.go:917
-#: lxc/remote.go:965 lxc/rename.go:22 lxc/restore.go:24 lxc/snapshot.go:32
+#: lxc/rebuild.go:28 lxc/remote.go:35 lxc/remote.go:91 lxc/remote.go:650
+#: lxc/remote.go:688 lxc/remote.go:774 lxc/remote.go:855 lxc/remote.go:919
+#: lxc/remote.go:967 lxc/rename.go:22 lxc/restore.go:24 lxc/snapshot.go:32
 #: lxc/storage.go:34 lxc/storage.go:97 lxc/storage.go:203 lxc/storage.go:261
 #: lxc/storage.go:393 lxc/storage.go:475 lxc/storage.go:655 lxc/storage.go:742
 #: lxc/storage.go:846 lxc/storage.go:940 lxc/storage_bucket.go:30
@@ -2781,7 +2781,7 @@ msgstr ""
 #: lxc/network_forward.go:93 lxc/network_load_balancer.go:97
 #: lxc/network_peer.go:85 lxc/network_zone.go:89 lxc/network_zone.go:770
 #: lxc/operation.go:109 lxc/profile.go:707 lxc/project.go:474
-#: lxc/project.go:919 lxc/remote.go:690 lxc/storage.go:657
+#: lxc/project.go:919 lxc/remote.go:692 lxc/storage.go:657
 #: lxc/storage_bucket.go:460 lxc/storage_bucket.go:775
 #: lxc/storage_volume.go:1608 lxc/warning.go:94
 msgid "Format (csv|json|table|yaml|compact)"
@@ -2819,7 +2819,7 @@ msgstr "クロック数: %vMhz"
 msgid "Frequency: %vMhz (min: %vMhz, max: %vMhz)"
 msgstr "クロック数: %vMhz (最小: %vMhz, 最大: %vMhz)"
 
-#: lxc/remote.go:754
+#: lxc/remote.go:756
 msgid "GLOBAL"
 msgstr "GLOBAL"
 
@@ -3885,7 +3885,7 @@ msgstr ""
 "    u - （使用中の）リファレンス数\n"
 "    U - 現在のディスク使用量"
 
-#: lxc/remote.go:685 lxc/remote.go:686
+#: lxc/remote.go:687 lxc/remote.go:688
 msgid "List the available remotes"
 msgstr "利用可能なリモートサーバを一覧表示します"
 
@@ -4592,7 +4592,7 @@ msgstr "インスタンス名を指定する必要があります: "
 #: lxc/config_trust.go:514 lxc/list.go:573 lxc/network.go:1081
 #: lxc/network_acl.go:156 lxc/network_peer.go:148 lxc/network_zone.go:147
 #: lxc/network_zone.go:827 lxc/profile.go:755 lxc/project.go:567
-#: lxc/remote.go:748 lxc/storage.go:715 lxc/storage_bucket.go:512
+#: lxc/remote.go:750 lxc/storage.go:715 lxc/storage_bucket.go:512
 #: lxc/storage_bucket.go:832 lxc/storage_volume.go:1731
 msgid "NAME"
 msgstr "NAME"
@@ -4619,7 +4619,7 @@ msgstr "NICs:"
 
 #: lxc/network.go:1058 lxc/operation.go:155 lxc/project.go:525
 #: lxc/project.go:530 lxc/project.go:535 lxc/project.go:540 lxc/project.go:545
-#: lxc/project.go:550 lxc/remote.go:708 lxc/remote.go:713 lxc/remote.go:718
+#: lxc/project.go:550 lxc/remote.go:710 lxc/remote.go:715 lxc/remote.go:720
 msgid "NO"
 msgstr "NO"
 
@@ -4922,11 +4922,11 @@ msgstr "PROFILES"
 msgid "PROJECT"
 msgstr "PROJECT"
 
-#: lxc/remote.go:750
+#: lxc/remote.go:752
 msgid "PROTOCOL"
 msgstr "PROTOCOL"
 
-#: lxc/image.go:1136 lxc/remote.go:752
+#: lxc/image.go:1136 lxc/remote.go:754
 msgid "PUBLIC"
 msgstr "PUBLIC"
 
@@ -4967,7 +4967,7 @@ msgstr "クライアント名を入力してください: "
 msgid "Please provide cluster member name: "
 msgstr "クラスターメンバー名を入力してください: "
 
-#: lxc/remote.go:466
+#: lxc/remote.go:468
 msgid "Please type 'y', 'n' or the fingerprint:"
 msgstr "'y', 'n', フィンガープリントのどれかを入力してください:"
 
@@ -5294,13 +5294,13 @@ msgstr "インスタンスの更新中: %s"
 msgid "Refreshing the image: %s"
 msgstr "イメージの更新中: %s"
 
-#: lxc/remote.go:810
+#: lxc/remote.go:812
 #, c-format
 msgid "Remote %s already exists"
 msgstr "リモート %s は既に存在します"
 
-#: lxc/project.go:884 lxc/remote.go:801 lxc/remote.go:882 lxc/remote.go:946
-#: lxc/remote.go:994
+#: lxc/project.go:884 lxc/remote.go:803 lxc/remote.go:884 lxc/remote.go:948
+#: lxc/remote.go:996
 #, c-format
 msgid "Remote %s doesn't exist"
 msgstr "リモート %s は存在しません"
@@ -5310,12 +5310,12 @@ msgstr "リモート %s は存在しません"
 msgid "Remote %s exists as <%s>"
 msgstr "リモート %s は <%s> として存在します"
 
-#: lxc/remote.go:890
+#: lxc/remote.go:892
 #, c-format
 msgid "Remote %s is global and cannot be removed"
 msgstr "リモート %s は global ですので削除できません"
 
-#: lxc/remote.go:805 lxc/remote.go:886 lxc/remote.go:998
+#: lxc/remote.go:807 lxc/remote.go:888 lxc/remote.go:1000
 #, c-format
 msgid "Remote %s is static and cannot be modified"
 msgstr "リモート %s は static ですので変更できません"
@@ -5418,7 +5418,7 @@ msgstr "ロードバランサーからポートを削除します"
 msgid "Remove profiles from instances"
 msgstr "インスタンスからプロファイルを削除します"
 
-#: lxc/remote.go:852 lxc/remote.go:853
+#: lxc/remote.go:854 lxc/remote.go:855
 msgid "Remove remotes"
 msgstr "リモートサーバを削除します"
 
@@ -5477,7 +5477,7 @@ msgstr "プロファイル名を変更します"
 msgid "Rename projects"
 msgstr "プロジェクト名を変更します"
 
-#: lxc/remote.go:771 lxc/remote.go:772
+#: lxc/remote.go:773 lxc/remote.go:774
 msgid "Rename remotes"
 msgstr "リモートサーバ名を変更します"
 
@@ -5631,7 +5631,7 @@ msgstr "SSH クライアントが切断されました %q"
 msgid "STATE"
 msgstr "STATE"
 
-#: lxc/remote.go:753
+#: lxc/remote.go:755
 msgid "STATIC"
 msgstr "STATIC"
 
@@ -5673,11 +5673,11 @@ msgstr "直接リクエスト (raw query) を LXD に送ります"
 msgid "Server authentication type (tls or oidc)"
 msgstr "サーバの認証タイプ (tls もしくは candid)"
 
-#: lxc/remote.go:464
+#: lxc/remote.go:466
 msgid "Server certificate NACKed by user"
 msgstr "ユーザによりサーバ証明書が拒否されました"
 
-#: lxc/remote.go:616
+#: lxc/remote.go:618
 msgid "Server doesn't trust us after authentication"
 msgstr "認証後、サーバが我々を信用していません"
 
@@ -5946,7 +5946,7 @@ msgstr ""
 "後方互換性のため、単一の設定を行う場合は次の形式でも設定できます:\n"
 "    lxc storage volume set [<remote>:]<pool> <volume> <key> <value>"
 
-#: lxc/remote.go:964 lxc/remote.go:965
+#: lxc/remote.go:966 lxc/remote.go:967
 msgid "Set the URL for the remote"
 msgstr "リモートの URL を設定します"
 
@@ -6204,7 +6204,7 @@ msgid ""
 "that are granted via identity provider group mappings. \n"
 msgstr ""
 
-#: lxc/remote.go:647 lxc/remote.go:648
+#: lxc/remote.go:649 lxc/remote.go:650
 msgid "Show the default remote"
 msgstr "デフォルトのリモートを表示します"
 
@@ -6416,7 +6416,7 @@ msgstr "Swap (ピーク)"
 msgid "Switch the current project"
 msgstr "現在のプロジェクトを切り替えます"
 
-#: lxc/remote.go:916 lxc/remote.go:917
+#: lxc/remote.go:918 lxc/remote.go:919
 msgid "Switch the default remote"
 msgstr "デフォルトのリモートを切り替えます"
 
@@ -6761,7 +6761,7 @@ msgstr "インスタンスを転送中: %s"
 msgid "Transmit policy"
 msgstr "通信ポリシー"
 
-#: lxc/remote.go:571
+#: lxc/remote.go:573
 #, fuzzy, c-format
 msgid "Trust token for %s: "
 msgstr "%s:%s のクラスターに join するためのトークンが削除されました"
@@ -6806,7 +6806,7 @@ msgstr "UNLIMITED"
 msgid "UPLOAD DATE"
 msgstr "UPLOAD DATE"
 
-#: lxc/cluster.go:193 lxc/remote.go:749
+#: lxc/cluster.go:193 lxc/remote.go:751
 msgid "URL"
 msgstr "URL"
 
@@ -7176,7 +7176,7 @@ msgstr ""
 
 #: lxc/network.go:1060 lxc/operation.go:157 lxc/project.go:527
 #: lxc/project.go:532 lxc/project.go:537 lxc/project.go:542 lxc/project.go:547
-#: lxc/project.go:552 lxc/remote.go:710 lxc/remote.go:715 lxc/remote.go:720
+#: lxc/project.go:552 lxc/remote.go:712 lxc/remote.go:717 lxc/remote.go:722
 msgid "YES"
 msgstr "YES"
 
@@ -7866,7 +7866,7 @@ msgstr "[<remote>] <IP|FQDN|URL|token>"
 msgid "[[<remote>:]<member>]"
 msgstr "[[<remote>:]<member>]"
 
-#: lxc/project.go:557 lxc/remote.go:739
+#: lxc/project.go:557 lxc/remote.go:741
 msgid "current"
 msgstr "現在値"
 
@@ -8560,7 +8560,7 @@ msgid ""
 "the configuration from \"config.yaml\"."
 msgstr ""
 
-#: lxc/remote.go:463
+#: lxc/remote.go:465
 msgid "n"
 msgstr "n"
 
@@ -8572,7 +8572,7 @@ msgstr "名前"
 msgid "no"
 msgstr "no"
 
-#: lxc/remote.go:456
+#: lxc/remote.go:458
 msgid "ok (y/n/[fingerprint])?"
 msgstr "ok (y/n/[fingerprint])?"
 
@@ -8611,7 +8611,7 @@ msgstr "サーバに接続できません"
 msgid "used by"
 msgstr "ストレージを使用中の"
 
-#: lxc/remote.go:465
+#: lxc/remote.go:467
 msgid "y"
 msgstr "y"
 
