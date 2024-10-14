@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1386,36 +1385,25 @@ func (d *pure) hostIQN() (string, error) {
 	return "", fmt.Errorf("Failed to extract host IQN from %q", filename)
 }
 
-// getVolumeName returns the fully qualified name derived from the volume.
+// getVolumeName returns the fully qualified name derived from the volume's UUID.
 func (d *pure) getVolumeName(vol Volume) (string, error) {
 	volUUID, err := uuid.Parse(vol.config["volatile.uuid"])
 	if err != nil {
 		return "", fmt.Errorf(`Failed parsing "volatile.uuid" from volume %q: %w`, vol.name, err)
 	}
 
-	binUUID, err := volUUID.MarshalBinary()
-	if err != nil {
-		return "", fmt.Errorf(`Failed marshalling the "volatile.uuid" of volume %q to binary format: %w`, vol.name, err)
-	}
-
-	// The volume's name in base64 encoded format. PureStorage volume name cannot contain some
-	// base64 characters, such as equal sign (=), plus (+), and slash (/). Therefore, use
-	volName := base64.RawURLEncoding.EncodeToString(binUUID)
-
-	// TODO: Snapshots do not support underscores in their names.
-	volName = strings.ReplaceAll(volName, "_", "-")
+	// Remove hypens from the UUID to create a volume name.
+	volName := strings.ReplaceAll(volUUID.String(), "-", "")
 
 	// Search for the volume type prefix, and if found, prepend it to the volume name.
 	volumeTypePrefix, ok := pureVolTypePrefixes[vol.volType]
 	if ok {
-		// TODO: Dash/hyphen used instead of underscore.
 		volName = fmt.Sprintf("%s-%s", volumeTypePrefix, volName)
 	}
 
 	// Search for the content type suffix, and if found, append it to the volume name.
 	contentTypeSuffix, ok := pureContentTypeSuffixes[vol.contentType]
 	if ok {
-		// TODO: Dash/hyphen used instead of dot.
 		volName = fmt.Sprintf("%s-%s", volName, contentTypeSuffix)
 	}
 
