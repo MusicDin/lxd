@@ -599,7 +599,7 @@ func (p *pureClient) resizeVolume(poolName string, volName string, sizeBytes int
 		return err
 	}
 
-	err = p.requestAuthenticated(http.MethodPatch, fmt.Sprintf("/volumes?names=%s::%s", poolName, volName), req, nil)
+	err = p.requestAuthenticated(http.MethodPatch, fmt.Sprintf("/volumes?names=%s::%s&truncate=true", poolName, volName), req, nil)
 	if err != nil {
 		return fmt.Errorf("Failed to resize volume %q in storage pool %q: %w", volName, poolName, err)
 	}

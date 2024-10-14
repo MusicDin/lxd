@@ -463,6 +463,8 @@ func (d *pure) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, o
 		} else {
 			if inUse {
 				// We don't allow online shrinking of filesytem volumes.
+				// Returning this error ensures the disk is resized next
+				// time the instance is started.
 				return ErrInUse
 			}
 
@@ -485,6 +487,8 @@ func (d *pure) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, o
 		// In unsafe mode we expect the caller to know what they are doing and understand the risks.
 		if !allowUnsafeResize && inUse {
 			// We don't allow online resizing of block volumes.
+			// Returning this error ensures the disk is resized next
+			// time the instance is started.
 			return ErrInUse
 		}
 
