@@ -438,9 +438,28 @@ func (p *pureClient) getStoragePool(poolName string) (*pureStoragePool, error) {
 
 // createStoragePool creates a storage pool (PureStorage Pod) and returns it's ID.
 func (p *pureClient) createStoragePool(poolName string) error {
-	err := p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/pods?names=%s", poolName), nil, nil)
-	if err != nil {
-		return fmt.Errorf("Failed to create storage pool %q: %w", poolName, err)
+	pool, err := p.getStoragePool(poolName)
+	if err == nil && pool.IsDestroyed {
+		// Storage pool exists in destroyed state, therefore, restore it.
+		req, err := p.createBodyReader(map[string]any{
+			"destroyed": false,
+		})
+		if err != nil {
+			return err
+		}
+
+		err = p.requestAuthenticated(http.MethodPatch, fmt.Sprintf("/pods?names=%s", poolName), req, nil)
+		if err != nil {
+			return fmt.Errorf("Failed to restore storage pool %q: %w", poolName, err)
+		}
+
+		logger.Warn("Storage pool has been restored", logger.Ctx{"pool": poolName})
+	} else {
+		// Storage pool does not exist in destroyed state, therefore, try to create a new one.
+		err = p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/pods?names=%s", poolName), nil, nil)
+		if err != nil {
+			return fmt.Errorf("Failed to create storage pool %q: %w", poolName, err)
+		}
 	}
 
 	return nil
@@ -448,31 +467,54 @@ func (p *pureClient) createStoragePool(poolName string) error {
 
 // deleteStoragePool deletes a storage pool (PureStorage Pod).
 func (p *pureClient) deleteStoragePool(poolName string) error {
-	req, err := p.createBodyReader(map[string]any{
-		"destroyed": true,
-	})
+	pool, err := p.getStoragePool(poolName)
 	if err != nil {
+		if api.StatusErrorCheck(err, http.StatusNotFound) {
+			// Storage pool has been already removed.
+			return nil
+		}
+
 		return err
 	}
 
-	// To destroy the storage pool, we need to first destroy it by setting the destroyed to true.
-	// In addition, destroy all of its contents to allow the pool to be deleted.
-	err = p.requestAuthenticated(http.MethodPatch, fmt.Sprintf("/pods?names=%s&destroy_contents=true", poolName), req, nil)
-	if err != nil {
-		perr, ok := err.(*pureError)
-		if ok && perr.IsNotFoundError() {
-			return api.StatusErrorf(http.StatusNotFound, "Storage pool %q not found", poolName)
+	// To delete the storage pool, we need to destroy it first by setting the destroyed property to true.
+	// In addition, we want to destroy all of its contents to allow the pool to be deleted.
+	// If the pool is already destroyed, we can skip this step.
+	if !pool.IsDestroyed {
+		req, err := p.createBodyReader(map[string]any{
+			"destroyed": true,
+		})
+		if err != nil {
+			return err
 		}
 
-		return fmt.Errorf("Failed to destroy storage pool %q: %w", poolName, err)
+		err = p.requestAuthenticated(http.MethodPatch, fmt.Sprintf("/pods?names=%s&destroy_contents=true", poolName), req, nil)
+		if err != nil {
+			perr, ok := err.(*pureError)
+			if ok && perr.IsNotFoundError() {
+				return nil
+			}
+
+			return fmt.Errorf("Failed to destroy storage pool %q: %w", poolName, err)
+		}
 	}
 
-	// Afterwards, the storage pool and all of its contents can be deleted (eradicated).
+	// Eradicate the storage pool by permanently deleting it along all of its contents.
 	err = p.requestAuthenticated(http.MethodDelete, fmt.Sprintf("/pods?names=%s&eradicate_contents=true", poolName), nil, nil)
 	if err != nil {
 		perr, ok := err.(*pureError)
-		if ok && perr.IsNotFoundError() {
-			return api.StatusErrorf(http.StatusNotFound, "Storage pool %q not found", poolName)
+		if ok {
+			if perr.IsNotFoundError() {
+				return nil
+			}
+
+			if perr.Is(http.StatusBadRequest, "Cannot eradicate pod") {
+				// Eradication failed, therefore the pool remains in the destroyed state.
+				// However, we still consider it as deleted because PureStorage SafeMode
+				// may be enabled, which prevents immediate eradication of the pool.
+				logger.Warn("Storage pool is left in destroyed state", logger.Ctx{"pool": poolName, "err": err})
+				return nil
+			}
 		}
 
 		return fmt.Errorf("Failed to delete storage pool %q: %w", poolName, err)

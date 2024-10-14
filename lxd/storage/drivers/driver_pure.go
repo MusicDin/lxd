@@ -190,7 +190,7 @@ func (d *pure) Validate(config map[string]string) error {
 	// on the other cluster members too. This can be done here since Validate
 	// gets executed on every cluster member when receiving the cluster
 	// notification to finally create the pool.
-	if d.config["pure.mode"] == pureModeISCSI || d.config["pure.mode"] == "" {
+	if d.config["pure.mode"] == pureModeISCSI {
 		if !d.loadISCSIModules() {
 			return fmt.Errorf("iSCSI is not supported")
 		}
@@ -214,15 +214,17 @@ func (d *pure) Create() error {
 		return err
 	}
 
+	err = d.Validate(d.config)
+	if err != nil {
+		return err
+	}
+
 	revert := revert.New()
 	defer revert.Fail()
 
 	switch d.config["pure.mode"] {
 	case pureModeISCSI:
-		// Ensure iSCSI address is configured.
-		if d.config["pure.iscsi.address"] == "" {
-			return fmt.Errorf("The pure.iscsi.address must be set when mode is set to iSCSI")
-		}
+		// Nothing to do here (yet).
 	default:
 		return fmt.Errorf("Unsupported PureStorage mode %q", d.config["pure.mode"])
 	}
