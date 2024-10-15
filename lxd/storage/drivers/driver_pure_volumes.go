@@ -174,6 +174,115 @@ func (d *pure) CreateVolumeFromBackup(vol VolumeCopy, srcBackup backup.Info, src
 
 // CreateVolumeFromCopy provides same-pool volume copying functionality.
 func (d *pure) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, allowInconsistent bool, op *operations.Operation) error {
+	revert := revert.New()
+	defer revert.Fail()
+
+	// Function to run once the volume is created, which will ensure appropriate permissions
+	// on the mount path inside the volume, and resize the volume to specified size.
+	postCreateTasks := func(v Volume) error {
+		if vol.contentType == ContentTypeFS {
+			// Mount the volume and ensure the permissions are set correctly inside the mounted volume.
+			err := v.MountTask(func(_ string, _ *operations.Operation) error {
+				return v.EnsureMountPath()
+			}, op)
+			if err != nil {
+				return err
+			}
+		}
+
+		// Resize volume to the size specified.
+		err := d.SetVolumeQuota(vol.Volume, vol.ConfigSize(), false, op)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	srcPoolName := srcVol.pool
+
+	srcVolName, err := d.getVolumeName(srcVol.Volume)
+	if err != nil {
+		return err
+	}
+
+	volName, err := d.getVolumeName(vol.Volume)
+	if err != nil {
+		return err
+	}
+
+	poolName := vol.pool
+
+	// Since snapshots are first copied into destination volume from which a new snapshot is created,
+	// we need to also remove the destination volume if an error occurs during copying of snapshots.
+	deleteVolCopy := true
+
+	// Copy volume snapshots.
+	// PureStorage does not allow copying snapshots along with the volume. Therefore, we
+	// copy the snapshots sequentially. Each snapshot is first copied into destination
+	// volume from which a new snapshot is created. The process is repeted until all
+	// snapshots are copied.
+	for _, snapshot := range srcVol.Snapshots {
+		snapshotName, err := d.getVolumeName(snapshot)
+		if err != nil {
+			return err
+		}
+
+		// Copy the snapshot.
+		err = d.client().copyVolumeSnapshot(srcPoolName, srcVolName, snapshotName, poolName, volName)
+		if err != nil {
+			return err
+		}
+
+		if deleteVolCopy {
+			// If at least one snapshot is copied into destination volume, we need to remove
+			// that volume as well in case of an error.
+			revert.Add(func() { _ = d.DeleteVolume(vol.Volume, op) })
+			deleteVolCopy = false
+		}
+
+		// Instantiate new snapshot volume and set it's parent UUID.
+		newSnapVol := NewVolume(d, vol.pool, snapshot.volType, snapshot.contentType, snapshot.name, snapshot.config, nil)
+		newSnapVol.SetParentUUID(vol.config["volatile.uuid"])
+
+		// Create snapshot of a new volume. There is no need for the reverter because deleting
+		// a volume will also remove all associated snapshots.
+		err = d.CreateVolumeSnapshot(newSnapVol, op)
+		if err != nil {
+			return err
+		}
+
+		revert.Add(func() { _ = d.DeleteVolumeSnapshot(newSnapVol, op) })
+	}
+
+	// Finally, copy the source volume into destination volume snapshots.
+	err = d.client().copyVolume(srcPoolName, srcVolName, poolName, volName, true)
+	if err != nil {
+		return err
+	}
+
+	// Add reverted to delete destination volume, if not already added.
+	if deleteVolCopy {
+		revert.Add(func() { _ = d.DeleteVolume(vol.Volume, op) })
+	}
+
+	// For VMs, also copy the filesystem volume.
+	if vol.IsVMBlock() {
+		srcFSVol := NewVolumeCopy(srcVol.NewVMBlockFilesystemVolume())
+		fsVol := NewVolumeCopy(vol.NewVMBlockFilesystemVolume())
+
+		err := d.CreateVolumeFromCopy(fsVol, srcFSVol, false, op)
+		if err != nil {
+			return err
+		}
+	}
+
+	err = postCreateTasks(vol.Volume)
+	if err != nil {
+		return err
+	}
+
+	revert.Success()
 	return nil
 }
 

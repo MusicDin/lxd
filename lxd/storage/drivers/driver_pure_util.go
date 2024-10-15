@@ -679,6 +679,17 @@ func (p *pureClient) createVolumeSnapshot(poolName string, volName string, snaps
 	return nil
 }
 
+// restoreVolumeSnapshot restores the volume by copying the volume snapshot into its parent volume.
+func (p *pureClient) restoreVolumeSnapshot(poolName string, volName string, snapshotName string) error {
+	return p.copyVolume(poolName, fmt.Sprintf("%s.%s", volName, snapshotName), poolName, volName, true)
+}
+
+// copyVolumeSnapshot copies the volume snapshot into destination volume. Destination volume is overwritten
+// if already exists.
+func (p *pureClient) copyVolumeSnapshot(srcPoolName string, srcVolName string, srcSnapshotName string, dstPoolName string, dstVolName string) error {
+	return p.copyVolume(srcPoolName, fmt.Sprintf("%s.%s", srcVolName, srcSnapshotName), dstPoolName, dstVolName, true)
+}
+
 // deleteVolumeSnapshot deletes an existing snapshot for the given storage volume.
 func (p *pureClient) deleteVolumeSnapshot(poolName string, volName string, snapshotName string) error {
 	req, err := p.createBodyReader(map[string]any{
@@ -694,12 +705,6 @@ func (p *pureClient) deleteVolumeSnapshot(poolName string, volName string, snaps
 	}
 
 	return nil
-}
-
-// copyVolumeSnapshot copies a volume snapshot into destination volume. If destination volume
-// already exists, it is overwritten.
-func (p *pureClient) restoreVolumeSnapshot(srcPoolName string, srcVolName string, srcVolumeSnapshots string) error {
-	return p.copyVolume(srcPoolName, fmt.Sprintf("%s.%s", srcVolName, srcVolumeSnapshots), srcPoolName, srcVolName, true)
 }
 
 // getHosts retrieves an existing PureStorage host.
