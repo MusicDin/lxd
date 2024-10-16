@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -312,7 +313,142 @@ func (d *pure) CreateVolumeFromMigration(vol VolumeCopy, conn io.ReadWriteCloser
 
 // RefreshVolume updates an existing volume to match the state of another.
 func (d *pure) RefreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots []string, allowInconsistent bool, op *operations.Operation) error {
-	_, err := genericVFSCopyVolume(d, nil, vol, srcVol, refreshSnapshots, true, allowInconsistent, op)
+	revert := revert.New()
+	defer revert.Fail()
+
+	// Function to run once the volume is created, which will ensure appropriate permissions
+	// on the mount path inside the volume, and resize the volume to specified size.
+	postCreateTasks := func(v Volume) error {
+		if vol.contentType == ContentTypeFS {
+			// Mount the volume and ensure the permissions are set correctly inside the mounted volume.
+			err := v.MountTask(func(_ string, _ *operations.Operation) error {
+				return v.EnsureMountPath()
+			}, op)
+			if err != nil {
+				return err
+			}
+		}
+
+		// Resize volume to the size specified.
+		err := d.SetVolumeQuota(vol.Volume, vol.ConfigSize(), false, op)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	srcPoolName := srcVol.pool
+
+	srcVolName, err := d.getVolumeName(srcVol.Volume)
+	if err != nil {
+		return err
+	}
+
+	volName, err := d.getVolumeName(vol.Volume)
+	if err != nil {
+		return err
+	}
+
+	poolName := vol.pool
+
+	// Create new reverter snapshot, which is used to revert the original volume
+	// in case snapshot copying fails. This is required, because snapshots need to be
+	// first copied into the destination volume from which a new snapshot is created.
+	reverterSnapshotName := "lxd-reverter-snapshot"
+	if len(refreshSnapshots) > 0 {
+		// Remove existing reverter snapshot.
+		err = d.client().deleteVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
+		if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
+			return err
+		}
+
+		// Create new reverter snapshot.
+		err = d.client().createVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
+		if err != nil {
+			return err
+		}
+
+		revert.Add(func() {
+			// Restore destination volume from reverter snapshot and remove the snapshot afterwards.
+			_ = d.client().restoreVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
+			_ = d.client().deleteVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
+		})
+
+		// Copy volume snapshots.
+		// PureStorage does not allow copying snapshots along with the volume. Therefore,
+		// we copy the missing snapshots sequentially. Each snapshot is first copied into
+		// destination volume from which a new snapshot is created. The process is repeted
+		// until all of the missing snapshots are copied.
+		var refreshedSnapshots []string
+		for _, snapshot := range srcVol.Snapshots {
+			snapshotName := strings.TrimPrefix(snapshot.name, fmt.Sprintf("%s/", srcVol.name))
+
+			if !slices.Contains(refreshSnapshots, snapshotName) {
+				continue
+			}
+
+			refreshedSnapshots = append(refreshedSnapshots, snapshotName)
+
+			snapshotName, err := d.getVolumeName(snapshot)
+			if err != nil {
+				return err
+			}
+
+			// Overwrite existing destination volume with snapshot.
+			err = d.client().copyVolumeSnapshot(srcPoolName, srcVolName, snapshotName, poolName, volName)
+			if err != nil {
+				return err
+			}
+
+			// Instantiate new snapshot volume and set it's parent UUID.
+			newSnapVol := NewVolume(d, vol.pool, snapshot.volType, snapshot.contentType, snapshotName, snapshot.config, nil)
+			newSnapVol.SetParentUUID(vol.config["volatile.uuid"])
+
+			// Create snapshot of a new volume.
+			err = d.CreateVolumeSnapshot(newSnapVol, op)
+			if err != nil {
+				return err
+			}
+
+			revert.Add(func() { _ = d.DeleteVolumeSnapshot(newSnapVol, op) })
+		}
+
+		missing := shared.RemoveElementsFromSlice(refreshSnapshots, refreshedSnapshots...)
+		if len(missing) > 0 {
+			return fmt.Errorf("Failed to refresh snapshots %v", missing)
+		}
+	}
+
+	// Finally, copy the source volume into destination volume snapshots.
+	err = d.client().copyVolume(srcPoolName, srcVolName, poolName, volName, true)
+	if err != nil {
+		return err
+	}
+
+	// For VMs, also copy the filesystem volume.
+	if vol.IsVMBlock() {
+		srcFSVol := NewVolumeCopy(srcVol.NewVMBlockFilesystemVolume())
+		fsVol := NewVolumeCopy(vol.NewVMBlockFilesystemVolume())
+
+		err := d.CreateVolumeFromCopy(fsVol, srcFSVol, false, op)
+		if err != nil {
+			return err
+		}
+	}
+
+	err = postCreateTasks(vol.Volume)
+	if err != nil {
+		return err
+	}
+
+	revert.Success()
+
+	// Remove temporary reverter snapshot.
+	if len(refreshSnapshots) > 0 {
+		_ = d.client().deleteVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
+	}
+
 	return err
 }
 
