@@ -1433,6 +1433,6 @@ func (d *pure) getVolumeName(vol Volume) (string, error) {
 		volName = fmt.Sprintf("%s-%s", volName, contentTypeSuffix)
 	}
 
-	logger.Error("Volume name", logger.Ctx{"volName": volName, "volType": vol.volType, "contentType": vol.contentType})
+	logger.Error("Volume name", logger.Ctx{"volName": vol.name, "volNameEncoded": volName, "volType": vol.volType, "contentType": vol.contentType})
 	return volName, nil
 }

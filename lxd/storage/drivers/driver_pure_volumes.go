@@ -218,19 +218,45 @@ func (d *pure) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, allowInco
 	// we need to also remove the destination volume if an error occurs during copying of snapshots.
 	deleteVolCopy := true
 
+	getSnapNames := func(snaps []Volume) []string {
+		names := make([]string, 0, len(snaps))
+		for _, snap := range snaps {
+			names = append(names, snap.name)
+		}
+		return names
+	}
+
+	logger.Warn("Snapshots", logger.Ctx{"source": getSnapNames(srcVol.Snapshots), "destination": getSnapNames(vol.Snapshots)})
+
 	// Copy volume snapshots.
 	// PureStorage does not allow copying snapshots along with the volume. Therefore, we
 	// copy the snapshots sequentially. Each snapshot is first copied into destination
 	// volume from which a new snapshot is created. The process is repeted until all
 	// snapshots are copied.
-	for _, snapshot := range srcVol.Snapshots {
-		snapshotName, err := d.getVolumeName(snapshot)
+	for _, snapshot := range vol.Snapshots {
+		_, snapshotShortName, _ := api.GetParentAndSnapshotName(snapshot.name)
+
+		// Find the corresponding source snapshot.
+		var srcSnapshot *Volume
+		for _, srcSnap := range srcVol.Snapshots {
+			_, srcSnapshotShortName, _ := api.GetParentAndSnapshotName(snapshot.name)
+			if snapshotShortName == srcSnapshotShortName {
+				srcSnapshot = &srcSnap
+				break
+			}
+		}
+
+		if srcSnapshot == nil {
+			return fmt.Errorf("Failed to copy snapshot %q: Source snapshot does not exist", snapshotShortName)
+		}
+
+		srcSnapshotName, err := d.getVolumeName(*srcSnapshot)
 		if err != nil {
 			return err
 		}
 
 		// Copy the snapshot.
-		err = d.client().copyVolumeSnapshot(srcPoolName, srcVolName, snapshotName, poolName, volName)
+		err = d.client().copyVolumeSnapshot(srcPoolName, srcVolName, srcSnapshotName, poolName, volName)
 		if err != nil {
 			return err
 		}
@@ -242,18 +268,17 @@ func (d *pure) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, allowInco
 			deleteVolCopy = false
 		}
 
-		// Instantiate new snapshot volume and set it's parent UUID.
-		newSnapVol := NewVolume(d, vol.pool, snapshot.volType, snapshot.contentType, snapshot.name, snapshot.config, nil)
-		newSnapVol.SetParentUUID(vol.config["volatile.uuid"])
+		// Set snapshot's parent UUID.
+		snapshot.SetParentUUID(vol.config["volatile.uuid"])
 
 		// Create snapshot of a new volume. There is no need for the reverter because deleting
 		// a volume will also remove all associated snapshots.
-		err = d.CreateVolumeSnapshot(newSnapVol, op)
+		err = d.CreateVolumeSnapshot(snapshot, op)
 		if err != nil {
 			return err
 		}
 
-		revert.Add(func() { _ = d.DeleteVolumeSnapshot(newSnapVol, op) })
+		revert.Add(func() { _ = d.DeleteVolumeSnapshot(snapshot, op) })
 	}
 
 	// Finally, copy the source volume into destination volume snapshots.
@@ -339,6 +364,7 @@ func (d *pure) RefreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots
 	}
 
 	srcPoolName := srcVol.pool
+	poolName := vol.pool
 
 	srcVolName, err := d.getVolumeName(srcVol.Volume)
 	if err != nil {
@@ -350,70 +376,100 @@ func (d *pure) RefreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots
 		return err
 	}
 
-	poolName := vol.pool
+	getSnapNames := func(snaps []Volume) []string {
+		names := make([]string, 0, len(snaps))
+		for _, snap := range snaps {
+			names = append(names, snap.name)
+		}
+		return names
+	}
 
-	// Create new reverter snapshot, which is used to revert the original volume
-	// in case snapshot copying fails. This is required, because snapshots need to be
-	// first copied into the destination volume from which a new snapshot is created.
+	// Create new reverter snapshot, which is used to revert the original volume in case of
+	// an error. Snapshots are also required to be first copied into destination volume,
+	// from which a new snapshot is created to effectively copy a snapshot. If any error
+	// occurs, the destination volume has been already modified and needs reverting.
 	reverterSnapshotName := "lxd-reverter-snapshot"
+
+	// Remove existing reverter snapshot.
+	err = d.client().deleteVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
+	if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
+		return err
+	}
+
+	// Create new reverter snapshot.
+	err = d.client().createVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
+	if err != nil {
+		return err
+	}
+
+	revert.Add(func() {
+		// Restore destination volume from reverter snapshot and remove the snapshot afterwards.
+		_ = d.client().restoreVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
+		_ = d.client().deleteVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
+	})
+
+	logger.Warn("Refresh snapshots", logger.Ctx{"source": getSnapNames(srcVol.Snapshots), "destination": getSnapNames(vol.Snapshots), "refSnapshots": refreshSnapshots})
+	// logger.Warn("Refreshing volume", logger.Ctx{"volName": vol.name, "srcVolName": srcVol.name, "refSnapshots": refreshSnapshots})
+
 	if len(refreshSnapshots) > 0 {
-		// Remove existing reverter snapshot.
-		err = d.client().deleteVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
-		if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
-			return err
-		}
+		var refreshedSnapshots []string
 
-		// Create new reverter snapshot.
-		err = d.client().createVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
-		if err != nil {
-			return err
-		}
-
-		revert.Add(func() {
-			// Restore destination volume from reverter snapshot and remove the snapshot afterwards.
-			_ = d.client().restoreVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
-			_ = d.client().deleteVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
-		})
-
-		// Copy volume snapshots.
+		// Refresh volume snapshots.
 		// PureStorage does not allow copying snapshots along with the volume. Therefore,
 		// we copy the missing snapshots sequentially. Each snapshot is first copied into
 		// destination volume from which a new snapshot is created. The process is repeted
 		// until all of the missing snapshots are copied.
-		var refreshedSnapshots []string
-		for _, snapshot := range srcVol.Snapshots {
-			snapshotName := strings.TrimPrefix(snapshot.name, fmt.Sprintf("%s/", srcVol.name))
-
-			if !slices.Contains(refreshSnapshots, snapshotName) {
+		for _, snapshot := range vol.Snapshots {
+			// Remove volume name prefix from the snapshot name, and check whether it
+			// has to be refreshed.
+			_, snapshotShortName, _ := api.GetParentAndSnapshotName(snapshot.name)
+			if !slices.Contains(refreshSnapshots, snapshotShortName) {
+				// Skip snapshot if it doesn't have to be refreshed.
+				logger.Warn("Skip snapshot", logger.Ctx{"snapshotShortName": snapshotShortName})
 				continue
 			}
 
-			refreshedSnapshots = append(refreshedSnapshots, snapshotName)
+			// Find the corresponding source snapshot.
+			var srcSnapshot *Volume
+			for _, srcSnap := range srcVol.Snapshots {
+				_, srcSnapshotShortName, _ := api.GetParentAndSnapshotName(srcSnap.name)
+				if snapshotShortName == srcSnapshotShortName {
+					srcSnapshot = &srcSnap
+					break
+				}
+			}
 
-			snapshotName, err := d.getVolumeName(snapshot)
+			if srcSnapshot == nil {
+				return fmt.Errorf("Failed to refresh snapshot %q: Source snapshot does not exist", snapshotShortName)
+			}
+
+			srcSnapshotName, err := d.getVolumeName(*srcSnapshot)
 			if err != nil {
 				return err
 			}
 
 			// Overwrite existing destination volume with snapshot.
-			err = d.client().copyVolumeSnapshot(srcPoolName, srcVolName, snapshotName, poolName, volName)
+			err = d.client().copyVolumeSnapshot(srcPoolName, srcVolName, srcSnapshotName, poolName, volName)
 			if err != nil {
 				return err
 			}
 
-			// Instantiate new snapshot volume and set it's parent UUID.
-			newSnapVol := NewVolume(d, vol.pool, snapshot.volType, snapshot.contentType, snapshotName, snapshot.config, nil)
-			newSnapVol.SetParentUUID(vol.config["volatile.uuid"])
+			// Set snapshot's parent UUID.
+			snapshot.SetParentUUID(vol.config["volatile.uuid"])
 
 			// Create snapshot of a new volume.
-			err = d.CreateVolumeSnapshot(newSnapVol, op)
+			err = d.CreateVolumeSnapshot(snapshot, op)
 			if err != nil {
 				return err
 			}
 
-			revert.Add(func() { _ = d.DeleteVolumeSnapshot(newSnapVol, op) })
+			revert.Add(func() { _ = d.DeleteVolumeSnapshot(snapshot, op) })
+
+			// Append snapshot to the list of successfully refreshed snapshots.
+			refreshedSnapshots = append(refreshedSnapshots, snapshotShortName)
 		}
 
+		// Ensure all snapshots were successfully refreshed.
 		missing := shared.RemoveElementsFromSlice(refreshSnapshots, refreshedSnapshots...)
 		if len(missing) > 0 {
 			return fmt.Errorf("Failed to refresh snapshots %v", missing)
@@ -445,9 +501,7 @@ func (d *pure) RefreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots
 	revert.Success()
 
 	// Remove temporary reverter snapshot.
-	if len(refreshSnapshots) > 0 {
-		_ = d.client().deleteVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
-	}
+	_ = d.client().deleteVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
 
 	return err
 }
