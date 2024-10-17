@@ -3704,6 +3704,16 @@ func (b *lxdBackend) DeleteInstanceSnapshot(inst instance.Instance, op *operatio
 
 	vol := b.GetVolume(volType, contentType, snapVolName, dbVol.Config)
 
+	// Load parent storage volume from database.
+	parentDBVol, err := VolumeDBGet(b, inst.Project().Name, parentName, volType)
+	if err != nil {
+		return err
+	}
+
+	// Certain storage drivers require the parent volume's UUID to be set on the snapshot volume
+	// because snapshot is linked with the parent volume.
+	vol.SetParentUUID(parentDBVol.Config["volatile.uuid"])
+
 	volExists, err := b.driver.HasVolume(vol)
 	if err != nil {
 		return err

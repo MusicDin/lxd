@@ -512,7 +512,7 @@ func (d *pure) DeleteVolume(vol Volume, op *operations.Operation) error {
 
 		err = os.Remove(mountPath)
 		if err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("Failed to remove '%s': %w", mountPath, err)
+			return fmt.Errorf("Failed to remove %q: %w", mountPath, err)
 		}
 	}
 
@@ -526,6 +526,33 @@ func (d *pure) HasVolume(vol Volume) (bool, error) {
 		return false, err
 	}
 
+	// If volume represents a snapshot, also retrive (encoded) volume name of the parent,
+	// and check if the snapshot exists.
+	if vol.IsSnapshot() {
+		parentVolConfig := map[string]string{
+			"volatile.uuid": vol.parentUUID,
+		}
+
+		parentName, _, _ := api.GetParentAndSnapshotName(vol.name)
+		parentVol := NewVolume(d, d.name, vol.volType, vol.contentType, parentName, parentVolConfig, nil)
+		parentVolName, err := d.getVolumeName(parentVol)
+		if err != nil {
+			return false, err
+		}
+
+		_, err = d.client().getVolumeSnapshot(vol.pool, parentVolName, volName)
+		if err != nil {
+			if api.StatusErrorCheck(err, http.StatusNotFound) {
+				return false, nil
+			}
+
+			return false, err
+		}
+
+		return true, nil
+	}
+
+	// Otherwise, check if the volume exists.
 	_, err = d.client().getVolume(vol.pool, volName)
 	if err != nil {
 		if api.StatusErrorCheck(err, http.StatusNotFound) {
