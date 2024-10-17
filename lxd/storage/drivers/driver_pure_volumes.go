@@ -1127,6 +1127,8 @@ func (d *pure) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operation) er
 	// For VM images, delete the filesystem volume too.
 	if snapVol.IsVMBlock() {
 		fsVol := snapVol.NewVMBlockFilesystemVolume()
+		fsVol.SetParentUUID(snapVol.parentUUID)
+
 		err := d.DeleteVolumeSnapshot(fsVol, op)
 		if err != nil {
 			return err
