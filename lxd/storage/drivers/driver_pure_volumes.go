@@ -583,12 +583,7 @@ func (d *pure) HasVolume(vol Volume) (bool, error) {
 	// If volume represents a snapshot, also retrive (encoded) volume name of the parent,
 	// and check if the snapshot exists.
 	if vol.IsSnapshot() {
-		parentVolConfig := map[string]string{
-			"volatile.uuid": vol.parentUUID,
-		}
-
-		parentName, _, _ := api.GetParentAndSnapshotName(vol.name)
-		parentVol := NewVolume(d, d.name, vol.volType, vol.contentType, parentName, parentVolConfig, nil)
+		parentVol := getSnapshotParentVolume(vol)
 		parentVolName, err := d.getVolumeName(parentVol)
 		if err != nil {
 			return false, err
@@ -989,12 +984,6 @@ func (d *pure) UnmountVolume(vol Volume, keepBlockDev bool, op *operations.Opera
 	return ourUnmount, nil
 }
 
-// RenameVolume renames a volume and its snapshots.
-func (d *pure) RenameVolume(vol Volume, newVolName string, op *operations.Operation) error {
-	// Renaming a volume in PowerFlex won't change it's name in storage.
-	return nil
-}
-
 // MigrateVolume sends a volume for migration.
 func (d *pure) MigrateVolume(vol VolumeCopy, conn io.ReadWriteCloser, volSrcArgs *migration.VolumeSourceArgs, op *operations.Operation) error {
 	// When performing a cluster member move don't do anything on the source member.
@@ -1007,7 +996,15 @@ func (d *pure) MigrateVolume(vol VolumeCopy, conn io.ReadWriteCloser, volSrcArgs
 
 // BackupVolume creates an exported version of a volume.
 func (d *pure) BackupVolume(vol VolumeCopy, tarWriter *instancewriter.InstanceTarWriter, optimized bool, snapshots []string, op *operations.Operation) error {
+	logger.Warn("BackupVolume", logger.Ctx{"volName": vol.name, "optimized": optimized, "snapshots": snapshots})
 	return genericVFSBackupVolume(d, vol, tarWriter, snapshots, op)
+}
+
+// RenameVolume renames a volume and its snapshots.
+func (d *pure) RenameVolume(vol Volume, newVolName string, op *operations.Operation) error {
+	// Renaming a volume won't change it's name in PureStorage because
+	// actual volume name is determined from UUID.
+	return nil
 }
 
 // CreateVolumeSnapshot creates a snapshot of a volume.
@@ -1040,11 +1037,7 @@ func (d *pure) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) er
 		return err
 	}
 
-	parentVolConfig := map[string]string{
-		"volatile.uuid": snapVol.parentUUID,
-	}
-
-	parentVol := NewVolume(d, d.name, snapVol.volType, snapVol.contentType, parentName, parentVolConfig, nil)
+	parentVol := getSnapshotParentVolume(snapVol)
 	parentVolName, err := d.getVolumeName(parentVol)
 	if err != nil {
 		return err
@@ -1083,12 +1076,7 @@ func (d *pure) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) er
 
 // DeleteVolumeSnapshot removes a snapshot from the storage device.
 func (d *pure) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
-	parentVolConfig := map[string]string{
-		"volatile.uuid": snapVol.parentUUID,
-	}
-
-	parentName, _, _ := api.GetParentAndSnapshotName(snapVol.name)
-	parentVol := NewVolume(d, d.name, snapVol.volType, snapVol.contentType, parentName, parentVolConfig, nil)
+	parentVol := getSnapshotParentVolume(snapVol)
 	parentVolName, err := d.getVolumeName(parentVol)
 	if err != nil {
 		return err
@@ -1119,7 +1107,7 @@ func (d *pure) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operation) er
 	}
 
 	// Remove the parent snapshot directory if this is the last snapshot being removed.
-	err = deleteParentSnapshotDirIfEmpty(d.name, snapVol.volType, parentName)
+	err = deleteParentSnapshotDirIfEmpty(d.name, snapVol.volType, parentVol.name)
 	if err != nil {
 		return err
 	}
@@ -1138,21 +1126,70 @@ func (d *pure) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operation) er
 	return nil
 }
 
-// MountVolumeSnapshot simulates mounting a volume snapshot.
+// MountVolumeSnapshot creates a new temporary volume from a volume snapshot to allow mounting it.
 func (d *pure) MountVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
-	// A snapshot in PureStorage is just a read-only volume. Therefore,
-	// reuse the volume mounting procedures.
-	return d.MountVolume(snapVol, op)
+	revert := revert.New()
+	defer revert.Fail()
+
+	parentVol := getSnapshotParentVolume(snapVol)
+
+	// Get the parent volume name.
+	parentVolName, err := d.getVolumeName(parentVol)
+	if err != nil {
+		return err
+	}
+
+	// Get the snapshot volume name.
+	snapVolName, err := d.getVolumeName(snapVol)
+	if err != nil {
+		return err
+	}
+
+	// A PureStorage snapshot cannot be mounted. To mount a snapshot, a new volume
+	// has to be created from the snapshot.
+	err = d.client().copyVolumeSnapshot(snapVol.pool, parentVolName, snapVolName, snapVol.pool, snapVolName)
+	if err != nil {
+		return err
+	}
+
+	// Ensure temporary snapshot volume is remooved in case of an error.
+	revert.Add(func() { _ = d.client().deleteVolume(snapVol.pool, snapVolName) })
+
+	err = d.MountVolume(snapVol, op)
+	if err != nil {
+		return err
+	}
+
+	revert.Success()
+	return nil
 }
 
-// UnmountVolumeSnapshot simulates unmounting a volume snapshot.
+// UnmountVolumeSnapshot unmountes and deletes volume that was temporary created from a snapshot
+// to allow mounting it.
 func (d *pure) UnmountVolumeSnapshot(snapVol Volume, op *operations.Operation) (bool, error) {
-	// A snapshot in PureStorage is just a read-only volume. Therefore,
-	// reuse the volume mounting procedures.
-	return d.UnmountVolume(snapVol, false, op)
+	ourUnmount, err := d.UnmountVolume(snapVol, false, op)
+	if err != nil {
+		return false, err
+	}
+
+	if ourUnmount {
+		// Get the snapshot volume name.
+		snapVolName, err := d.getVolumeName(snapVol)
+		if err != nil {
+			return true, err
+		}
+
+		// Cleanup temporary created snapshot volume.
+		err = d.client().deleteVolume(snapVol.pool, snapVolName)
+		if err != nil {
+			return true, err
+		}
+	}
+
+	return ourUnmount, nil
 }
 
-// VolumeSnapshots returns a list of snapshots for the volume (in no particular order).
+// VolumeSnapshots returns a list of PureStorage snapshot names for the given volume (in no particular order).
 func (d *pure) VolumeSnapshots(vol Volume, op *operations.Operation) ([]string, error) {
 	volName, err := d.getVolumeName(vol)
 	if err != nil {
@@ -1166,7 +1203,12 @@ func (d *pure) VolumeSnapshots(vol Volume, op *operations.Operation) ([]string, 
 
 	var snapshotNames []string
 	for _, snapshot := range volumeSnapshots {
-		snapshotNames = append(snapshotNames, snapshot.Name)
+		// Snapshot name contains storage pool and volume names as prefix.
+		// Storage pool is delimited with double colon (::) and volume with a dot.
+		_, volAndSnapName, _ := strings.Cut(snapshot.Name, "::")
+		_, snapshotName, _ := strings.Cut(volAndSnapName, ".")
+
+		snapshotNames = append(snapshotNames, snapshotName)
 	}
 
 	return snapshotNames, nil
@@ -1182,22 +1224,17 @@ func (d *pure) CheckVolumeSnapshots(vol Volume, snapVols []Volume, op *operation
 		return err
 	}
 
-	// Create a list of all wanted snapshots.
-	// The list contains the PowerFlex volume names in their base64 encoded format.
-	wantedSnapshotNames := make([]string, 0, len(snapVols))
+	logger.Warn("CheckVolumeSnapshots", logger.Ctx{"volName": vol.name, "storageSnapshotNames": storageSnapshotNames, "snapVols": fmt.Sprintf("%v", snapVols)})
+
+	// Check if the provided list of volume snapshots matches the ones from the storage.
 	for _, snap := range snapVols {
 		snapName, err := d.getVolumeName(snap)
 		if err != nil {
 			return err
 		}
 
-		wantedSnapshotNames = append(wantedSnapshotNames, snapName)
-	}
-
-	// Check if the provided list of volume snapshots matches the ones from storage.
-	for _, wantedSnapshotName := range wantedSnapshotNames {
-		if !shared.ValueInSlice(wantedSnapshotName, storageSnapshotNames) {
-			return fmt.Errorf("Snapshot %q expected but not in storage", wantedSnapshotName)
+		if !slices.Contains(storageSnapshotNames, snapName) {
+			return fmt.Errorf("Snapshot %q expected but not in storage", snapName)
 		}
 	}
 
@@ -1246,6 +1283,18 @@ func (d *pure) RestoreVolume(vol Volume, snapVol Volume, op *operations.Operatio
 
 // RenameVolumeSnapshot renames a volume snapshot.
 func (d *pure) RenameVolumeSnapshot(snapVol Volume, newSnapshotName string, op *operations.Operation) error {
-	// Renaming a volume snapshot in PowerFlex won't change it's name in storage.
+	// Renaming a snapshot won't change it's name in PureStorage because
+	// actual volume name is determined from UUID.
 	return nil
+}
+
+// getSnapshotParentVolume returns new instance of a parent volume that has volatile.uuid set to the
+// snapshot's parent UUID.
+func getSnapshotParentVolume(snapVol Volume /*, op *operations.Operation*/) Volume {
+	parentName, _, _ := api.GetParentAndSnapshotName(snapVol.name)
+	parentVolConfig := map[string]string{
+		"volatile.uuid": snapVol.parentUUID,
+	}
+
+	return NewVolume(snapVol.driver, snapVol.pool, snapVol.volType, snapVol.contentType, parentName, parentVolConfig, nil)
 }
