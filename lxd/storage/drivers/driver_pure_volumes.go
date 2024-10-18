@@ -1155,6 +1155,31 @@ func (d *pure) MountVolumeSnapshot(snapVol Volume, op *operations.Operation) err
 	// Ensure temporary snapshot volume is remooved in case of an error.
 	revert.Add(func() { _ = d.client().deleteVolume(snapVol.pool, snapVolName) })
 
+	// For VMs, also create the temporary filesystem volume snapshot.
+	if snapVol.IsVMBlock() {
+		snapFsVol := snapVol.NewVMBlockFilesystemVolume()
+		snapFsVol.SetParentUUID(snapVol.parentUUID)
+
+		parentFsVol := getSnapshotParentVolume(snapFsVol)
+
+		snapFsVolName, err := d.getVolumeName(snapFsVol)
+		if err != nil {
+			return err
+		}
+
+		parentFsVolName, err := d.getVolumeName(parentFsVol)
+		if err != nil {
+			return err
+		}
+
+		err = d.client().copyVolumeSnapshot(snapVol.pool, parentFsVolName, snapFsVolName, snapVol.pool, snapFsVolName)
+		if err != nil {
+			return err
+		}
+
+		revert.Add(func() { _ = d.client().deleteVolume(snapVol.pool, snapFsVolName) })
+	}
+
 	err = d.MountVolume(snapVol, op)
 	if err != nil {
 		return err
@@ -1172,15 +1197,30 @@ func (d *pure) UnmountVolumeSnapshot(snapVol Volume, op *operations.Operation) (
 		return false, err
 	}
 
-	if ourUnmount {
-		// Get the snapshot volume name.
-		snapVolName, err := d.getVolumeName(snapVol)
+	if !ourUnmount {
+		return false, nil
+	}
+
+	snapVolName, err := d.getVolumeName(snapVol)
+	if err != nil {
+		return true, err
+	}
+
+	// Cleanup temporary snapshot volume.
+	err = d.client().deleteVolume(snapVol.pool, snapVolName)
+	if err != nil {
+		return true, err
+	}
+
+	// For VMs, also cleanup the temporary volume for a filesystem snapshot.
+	if snapVol.IsVMBlock() {
+		snapFsVol := snapVol.NewVMBlockFilesystemVolume()
+		snapFsVolName, err := d.getVolumeName(snapFsVol)
 		if err != nil {
 			return true, err
 		}
 
-		// Cleanup temporary created snapshot volume.
-		err = d.client().deleteVolume(snapVol.pool, snapVolName)
+		err = d.client().deleteVolume(snapVol.pool, snapFsVolName)
 		if err != nil {
 			return true, err
 		}
