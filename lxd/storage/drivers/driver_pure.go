@@ -141,13 +141,13 @@ func (d *pure) Validate(config map[string]string) error {
 		// ---
 		//  type: string
 		//  shortdesc: API token for PureStorage gateway authentication
-		"pure.api.token": validate.IsNotEmpty,
+		"pure.api.token": validate.Optional(),
 		// lxdmeta:generate(entities=storage-pure; group=pool-conf; key=pure.gateway)
 		//
 		// ---
 		//  type: string
 		//  shortdesc: Address of the PureStorage Gateway
-		"pure.gateway": validate.IsRequestURL,
+		"pure.gateway": validate.Optional(validate.IsRequestURL),
 		// lxdmeta:generate(entities=storage-pure; group=pool-conf; key=pure.gateway.verify)
 		//
 		// ---
@@ -174,7 +174,7 @@ func (d *pure) Validate(config map[string]string) error {
 		// Default PureStorage volume size rounded to 512B. The minimum size is 1MiB.
 		// ---
 		//  type: string
-		//  defaultdesc: `8GiB`
+		//  defaultdesc: `10GiB`
 		//  shortdesc: Size/quota of the storage volume
 		"volume.size": validate.Optional(validate.IsMultipleOfUnit("512B")),
 	}
@@ -214,10 +214,10 @@ func (d *pure) Create() error {
 		return err
 	}
 
-	err = d.Validate(d.config)
-	if err != nil {
-		return err
-	}
+	// err = d.Validate(d.config)
+	// if err != nil {
+	// 	return err
+	// }
 
 	revert := revert.New()
 	defer revert.Fail()
@@ -245,6 +245,7 @@ func (d *pure) Create() error {
 
 // Update applies any driver changes required from a configuration change.
 func (d *pure) Update(changedConfig map[string]string) error {
+	// TODO: Handle rename.
 	return nil
 }
 
@@ -314,5 +315,46 @@ func (d *pure) GetResources() (*api.ResourcesStoragePool, error) {
 
 // MigrationTypes returns the type of transfer methods to be used when doing migrations between pools in preference order.
 func (d *pure) MigrationTypes(contentType ContentType, refresh bool, copySnapshots bool) []migration.Type {
-	return []migration.Type{}
+	var rsyncFeatures []string
+
+	// Do not pass compression argument to rsync if the associated
+	// config key, that is rsync.compression, is set to false.
+	if shared.IsFalse(d.Config()["rsync.compression"]) {
+		rsyncFeatures = []string{"xattrs", "delete", "bidirectional"}
+	} else {
+		rsyncFeatures = []string{"xattrs", "delete", "compress", "bidirectional"}
+	}
+
+	if refresh {
+		var transportType migration.MigrationFSType
+
+		if IsContentBlock(contentType) {
+			transportType = migration.MigrationFSType_BLOCK_AND_RSYNC
+		} else {
+			transportType = migration.MigrationFSType_RSYNC
+		}
+
+		return []migration.Type{
+			{
+				FSType:   transportType,
+				Features: rsyncFeatures,
+			},
+		}
+	}
+
+	if contentType == ContentTypeBlock {
+		return []migration.Type{
+			{
+				FSType:   migration.MigrationFSType_BLOCK_AND_RSYNC,
+				Features: rsyncFeatures,
+			},
+		}
+	}
+
+	return []migration.Type{
+		{
+			FSType:   migration.MigrationFSType_RSYNC,
+			Features: rsyncFeatures,
+		},
+	}
 }
