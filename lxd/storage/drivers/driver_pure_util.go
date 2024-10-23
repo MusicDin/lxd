@@ -590,7 +590,7 @@ func (p *pureClient) deleteVolume(poolName string, volName string) error {
 	return nil
 }
 
-// resizeVolume resizes an existing volume.
+// resizeVolume resizes an existing volume. This function does not resize any filesystem inside the volume.
 func (p *pureClient) resizeVolume(poolName string, volName string, sizeBytes int64) error {
 	req, err := p.createBodyReader(map[string]any{
 		"provisioned": sizeBytes,

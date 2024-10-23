@@ -769,19 +769,11 @@ func (d *pure) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, o
 	if vol.contentType == ContentTypeFS {
 		fsType := vol.ConfigBlockFilesystem()
 
-		if sizeBytes > oldSizeBytes {
-			// Grow block device first.
-			err = d.client().resizeVolume(vol.pool, volName, sizeBytes)
-			if err != nil {
-				return err
+		if sizeBytes < oldSizeBytes {
+			if !filesystemTypeCanBeShrunk(fsType) {
+				return fmt.Errorf("Filesystem %q cannot be shrunk: %w", fsType, ErrCannotBeShrunk)
 			}
 
-			// Grow the filesystem to fill the block device.
-			err = growFileSystem(fsType, devPath, vol)
-			if err != nil {
-				return err
-			}
-		} else {
 			if inUse {
 				// We don't allow online shrinking of filesytem volumes.
 				// Returning this error ensures the disk is resized next
@@ -797,6 +789,18 @@ func (d *pure) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, o
 
 			// Shrink the block device.
 			err = d.client().resizeVolume(vol.pool, volName, sizeBytes)
+			if err != nil {
+				return err
+			}
+		} else {
+			// Grow block device first.
+			err = d.client().resizeVolume(vol.pool, volName, sizeBytes)
+			if err != nil {
+				return err
+			}
+
+			// Grow the filesystem to fill the block device.
+			err = growFileSystem(fsType, devPath, vol)
 			if err != nil {
 				return err
 			}
