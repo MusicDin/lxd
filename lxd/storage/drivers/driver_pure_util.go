@@ -1085,13 +1085,13 @@ func (d *pure) iscsiDisconnectAll() error {
 }
 
 // mapVolume maps the given volume onto this host.
-func (d *pure) mapVolume(vol Volume) (revert.Hook, error) {
+func (d *pure) mapVolume(vol Volume) error {
 	revert := revert.New()
 	defer revert.Fail()
 
 	volName, err := d.getVolumeName(vol)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	var hostname string
@@ -1100,7 +1100,7 @@ func (d *pure) mapVolume(vol Volume) (revert.Hook, error) {
 	case pureModeISCSI:
 		unlock, err := locking.Lock(d.state.ShutdownCtx, "iscsi")
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		defer unlock()
@@ -1108,7 +1108,7 @@ func (d *pure) mapVolume(vol Volume) (revert.Hook, error) {
 		// Ensure the host exists and is configured with the correct IQN.
 		hostName, cleanup, err := d.ensureISCSIHost()
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		hostname = hostName
@@ -1120,7 +1120,7 @@ func (d *pure) mapVolume(vol Volume) (revert.Hook, error) {
 	// Ensure the volume is connected to the host.
 	connCreated, err := client.connectHostToVolume(vol.pool, volName, hostname)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	if connCreated {
@@ -1132,15 +1132,14 @@ func (d *pure) mapVolume(vol Volume) (revert.Hook, error) {
 		// when at least one volume is connected to the host.
 		cleanup, err := d.iscsiConnect()
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		revert.Add(cleanup)
 	}
 
-	cleanup := revert.Clone().Fail
 	revert.Success()
-	return cleanup, nil
+	return nil
 }
 
 // unmapVolume unmaps the given volume from this host.
@@ -1247,12 +1246,12 @@ func (d *pure) getMappedDevPath(vol Volume, mapVolume bool) (string, revert.Hook
 	}()
 
 	if mapVolume {
-		cleanup, err := d.mapVolume(vol)
+		err := d.mapVolume(vol)
 		if err != nil {
 			return "", nil, err
 		}
 
-		revert.Add(cleanup)
+		revert.Add(func() { _ = d.unmapVolume(vol) })
 	}
 
 	// findDevPathFunc has to be called in a loop with a set timeout to ensure
