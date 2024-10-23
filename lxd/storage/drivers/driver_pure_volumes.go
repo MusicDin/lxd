@@ -806,15 +806,19 @@ func (d *pure) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, o
 			}
 		}
 	} else {
-		inUse := vol.MountInUse()
-
 		// Only perform pre-resize checks if we are not in "unsafe" mode.
 		// In unsafe mode we expect the caller to know what they are doing and understand the risks.
-		if !allowUnsafeResize && inUse {
-			// We don't allow online resizing of block volumes.
+		if !allowUnsafeResize {
+			if sizeBytes < oldSizeBytes {
+				return fmt.Errorf("Block volumes cannot be shrunk: %w", ErrCannotBeShrunk)
+			}
+
+			if inUse {
+				// We don't allow online shrinking of filesytem volumes.
 			// Returning this error ensures the disk is resized next
 			// time the instance is started.
 			return ErrInUse
+			}
 		}
 
 		// Resize block device.
