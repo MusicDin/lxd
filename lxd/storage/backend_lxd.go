@@ -1157,6 +1157,30 @@ func (b *lxdBackend) CreateInstanceFromCopy(inst instance.Instance, src instance
 		volCopy := drivers.NewVolumeCopy(vol, targetSnapshots...)
 		srcVolCopy := drivers.NewVolumeCopy(srcVol, sourceSnapshots...)
 
+		// Ensure parent UUID is configured if the source volume is snapshot.
+		if src.IsSnapshot() {
+			parentName, _, isSnap := api.GetParentAndSnapshotName(src.Name())
+			if !isSnap {
+				return fmt.Errorf("Failed to parse snapshot name of the instance")
+			}
+
+			// Load storage volume from database.
+			parentDBVol, err := VolumeDBGet(b, src.Project().Name, parentName, volType)
+			if err != nil {
+				return err
+			}
+
+			logger.Error("parentName", logger.Ctx{"parentName": parentName, "UUID": parentDBVol.Config["volatile.uuid"]})
+
+			parentUUID := parentDBVol.Config["volatile.uuid"]
+			if parentUUID == "" {
+				return fmt.Errorf(`Instance volume %q is missing the required "volatile.uuid" setting`, parentName)
+			}
+
+			// Set the parent volume's UUID.
+			srcVolCopy.SetParentUUID(parentUUID)
+		}
+
 		err = b.driver.CreateVolumeFromCopy(volCopy, srcVolCopy, allowInconsistent, op)
 		if err != nil {
 			return err

@@ -216,6 +216,10 @@ func (d *pure) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, allowInco
 		fsVol := NewVolumeCopy(vol.NewVMBlockFilesystemVolume(), fsVolSnapshots...)
 		srcFSVol := NewVolumeCopy(srcVol.NewVMBlockFilesystemVolume(), srcFsVolSnapshots...)
 
+		// Ensure parent UUID is retained for the filesystem volumes.
+		fsVol.SetParentUUID(vol.parentUUID)
+		srcFSVol.SetParentUUID(srcVol.parentUUID)
+
 		err := d.CreateVolumeFromCopy(fsVol, srcFSVol, false, op)
 		if err != nil {
 			return err
@@ -224,19 +228,18 @@ func (d *pure) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, allowInco
 		revert.Add(func() { _ = d.DeleteVolume(fsVol.Volume, op) })
 	}
 
+	poolName := vol.pool
 	srcPoolName := srcVol.pool
-
-	srcVolName, err := d.getVolumeName(srcVol.Volume)
-	if err != nil {
-		return err
-	}
 
 	volName, err := d.getVolumeName(vol.Volume)
 	if err != nil {
 		return err
 	}
 
-	poolName := vol.pool
+	srcVolName, err := d.getVolumeName(srcVol.Volume)
+	if err != nil {
+		return err
+	}
 
 	// Since snapshots are first copied into destination volume from which a new snapshot is created,
 	// we need to also remove the destination volume if an error occurs during copying of snapshots.
@@ -257,59 +260,74 @@ func (d *pure) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, allowInco
 	// copy the snapshots sequentially. Each snapshot is first copied into destination
 	// volume from which a new snapshot is created. The process is repeted until all
 	// snapshots are copied.
-	for _, snapshot := range vol.Snapshots {
-		_, snapshotShortName, _ := api.GetParentAndSnapshotName(snapshot.name)
+	if !srcVol.IsSnapshot() {
+		for _, snapshot := range vol.Snapshots {
+			_, snapshotShortName, _ := api.GetParentAndSnapshotName(snapshot.name)
 
-		// Find the corresponding source snapshot.
-		var srcSnapshot *Volume
-		for _, srcSnap := range srcVol.Snapshots {
-			_, srcSnapshotShortName, _ := api.GetParentAndSnapshotName(snapshot.name)
-			if snapshotShortName == srcSnapshotShortName {
-				srcSnapshot = &srcSnap
-				break
+			// Find the corresponding source snapshot.
+			var srcSnapshot *Volume
+			for _, srcSnap := range srcVol.Snapshots {
+				_, srcSnapshotShortName, _ := api.GetParentAndSnapshotName(snapshot.name)
+				if snapshotShortName == srcSnapshotShortName {
+					srcSnapshot = &srcSnap
+					break
+				}
 			}
-		}
 
-		if srcSnapshot == nil {
-			return fmt.Errorf("Failed to copy snapshot %q: Source snapshot does not exist", snapshotShortName)
-		}
+			if srcSnapshot == nil {
+				return fmt.Errorf("Failed to copy snapshot %q: Source snapshot does not exist", snapshotShortName)
+			}
 
-		srcSnapshotName, err := d.getVolumeName(*srcSnapshot)
-		if err != nil {
-			return err
-		}
+			srcSnapshotName, err := d.getVolumeName(*srcSnapshot)
+			if err != nil {
+				return err
+			}
 
-		logger.Warn("Copying snapshot", logger.Ctx{"snapshot": snapshot.name, "srcVol": srcVol.name, "srcVolEncoded": srcVolName, "vol": vol.name, "volNameEncoded": volName})
+			// Copy the snapshot.
+			err = d.client().copyVolumeSnapshot(srcPoolName, srcVolName, srcSnapshotName, poolName, volName)
+			if err != nil {
+				return fmt.Errorf("Failed copying snapshot %q: %w", snapshot.name, err)
+			}
 
-		// Copy the snapshot.
-		err = d.client().copyVolumeSnapshot(srcPoolName, srcVolName, srcSnapshotName, poolName, volName)
-		if err != nil {
-			return fmt.Errorf("Failed copying snapshot %q: %w", snapshot.name, err)
-		}
+			if deleteVolCopy {
+				// If at least one snapshot is copied into destination volume, we need to remove
+				// that volume as well in case of an error.
+				revert.Add(func() { _ = d.DeleteVolume(vol.Volume, op) })
+				deleteVolCopy = false
+			}
 
-		if deleteVolCopy {
-			// If at least one snapshot is copied into destination volume, we need to remove
-			// that volume as well in case of an error.
-			revert.Add(func() { _ = d.DeleteVolume(vol.Volume, op) })
-			deleteVolCopy = false
-		}
+			// Set snapshot's parent UUID and retain source snapshot UUID.
+			snapshot.SetParentUUID(vol.config["volatile.uuid"])
 
-		// Set snapshot's parent UUID and retain source snapshot UUID.
-		snapshot.SetParentUUID(vol.config["volatile.uuid"])
-
-		// Create snapshot from a new volume (that was created from the source snapshot).
-		// However, do not create VM's filesystem volume snapshot, as filesystem volume is
-		// copied before block volume.
-		err = d.createVolumeSnapshot(snapshot, false, op)
-		if err != nil {
-			return err
+			// Create snapshot from a new volume (that was created from the source snapshot).
+			// However, do not create VM's filesystem volume snapshot, as filesystem volume is
+			// copied before block volume.
+			err = d.createVolumeSnapshot(snapshot, false, op)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
-	// Finally, copy the source volume into destination volume.
-	err = d.client().copyVolume(srcPoolName, srcVolName, poolName, volName, true)
-	if err != nil {
-		return err
+	// Finally, copy the source volume (or snapshot) into destination volume snapshots.
+	if srcVol.IsSnapshot() {
+		// Get snapshot parent volume name.
+		srcParentVol := getSnapshotParentVolume(srcVol.Volume)
+		srcParentVolName, err := d.getVolumeName(srcParentVol)
+		if err != nil {
+			return err
+		}
+
+		// Copy the source snapshot into destination volume.
+		err = d.client().copyVolumeSnapshot(srcPoolName, srcParentVolName, srcVolName, poolName, volName)
+		if err != nil {
+			return err
+		}
+	} else {
+		err = d.client().copyVolume(srcPoolName, srcVolName, poolName, volName, true)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Add reverted to delete destination volume, if not already added.
@@ -467,7 +485,7 @@ func (d *pure) refreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots
 	logger.Warn("Refresh snapshots", logger.Ctx{"source": getSnapNames(srcVol.Snapshots), "destination": getSnapNames(vol.Snapshots), "refSnapshots": refreshSnapshots})
 	// logger.Warn("Refreshing volume", logger.Ctx{"volName": vol.name, "srcVolName": srcVol.name, "refSnapshots": refreshSnapshots})
 
-	if len(refreshSnapshots) > 0 {
+	if !srcVol.IsSnapshot() && len(refreshSnapshots) > 0 {
 		var refreshedSnapshots []string
 
 		// Refresh volume snapshots.
@@ -533,10 +551,25 @@ func (d *pure) refreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots
 		}
 	}
 
-	// Finally, copy the source volume into destination volume snapshots.
-	err = d.client().copyVolume(srcPoolName, srcVolName, poolName, volName, true)
-	if err != nil {
-		return nil, err
+	// Finally, copy the source volume (or snapshot) into destination volume snapshots.
+	if srcVol.IsSnapshot() {
+		// Find snapshot parent volume.
+		srcParentVol := getSnapshotParentVolume(srcVol.Volume)
+		srcParentVolName, err := d.getVolumeName(srcParentVol)
+		if err != nil {
+			return nil, err
+		}
+
+		// Copy the source snapshot into destination volume.
+		err = d.client().copyVolumeSnapshot(srcPoolName, srcParentVolName, srcVolName, poolName, volName)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		err = d.client().copyVolume(srcPoolName, srcVolName, poolName, volName, true)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	err = postCreateTasks(vol.Volume)
@@ -1392,7 +1425,7 @@ func (d *pure) RenameVolumeSnapshot(snapVol Volume, newSnapshotName string, op *
 
 // getSnapshotParentVolume returns new instance of a parent volume that has volatile.uuid set to the
 // snapshot's parent UUID.
-func getSnapshotParentVolume(snapVol Volume /*, op *operations.Operation*/) Volume {
+func getSnapshotParentVolume(snapVol Volume) Volume {
 	parentName, _, _ := api.GetParentAndSnapshotName(snapVol.name)
 	parentVolConfig := map[string]string{
 		"volatile.uuid": snapVol.parentUUID,
