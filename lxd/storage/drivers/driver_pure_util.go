@@ -51,6 +51,10 @@ var pureContentTypeSuffixes = map[ContentType]string{
 	ContentTypeISO: "i",
 }
 
+// pureSnapshotPrefix is a prefix used for PureStorage snapshots to avoid name conflicts
+// when creating temporary volume from the snapshot.
+var pureSnapshotPrefix = "s"
+
 // pureError represents an error responses from PureStorage API.
 type pureError struct {
 	// List of errors returned by the PureStorage API.
@@ -1430,6 +1434,11 @@ func (d *pure) getVolumeName(vol Volume) (string, error) {
 	contentTypeSuffix, ok := pureContentTypeSuffixes[vol.contentType]
 	if ok {
 		volName = fmt.Sprintf("%s-%s", volName, contentTypeSuffix)
+	}
+
+	// If volume is snapshot, prepend snapshot prefix to its name.
+	if vol.IsSnapshot() {
+		volName = fmt.Sprintf("%s%s", pureSnapshotPrefix, volName)
 	}
 
 	logger.Error("Volume name", logger.Ctx{"volName": vol.name, "volNameEncoded": volName, "volType": vol.volType, "contentType": vol.contentType})

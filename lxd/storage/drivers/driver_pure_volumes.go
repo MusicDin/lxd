@@ -192,12 +192,36 @@ func (d *pure) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, allowInco
 		}
 
 		// Resize volume to the size specified.
-		err := d.SetVolumeQuota(vol.Volume, vol.ConfigSize(), false, op)
+		err := d.SetVolumeQuota(v, v.ConfigSize(), false, op)
 		if err != nil {
 			return err
 		}
 
 		return nil
+	}
+
+	// For VMs, also copy the filesystem volume.
+	if vol.IsVMBlock() {
+		// Ensure that the volume's snapshots are also replaced with their filesystem counterpart.
+		fsVolSnapshots := make([]Volume, 0, len(vol.Snapshots))
+		for _, snapshot := range vol.Snapshots {
+			fsVolSnapshots = append(fsVolSnapshots, snapshot.NewVMBlockFilesystemVolume())
+		}
+
+		srcFsVolSnapshots := make([]Volume, 0, len(srcVol.Snapshots))
+		for _, snapshot := range srcVol.Snapshots {
+			srcFsVolSnapshots = append(srcFsVolSnapshots, snapshot.NewVMBlockFilesystemVolume())
+		}
+
+		fsVol := NewVolumeCopy(vol.NewVMBlockFilesystemVolume(), fsVolSnapshots...)
+		srcFSVol := NewVolumeCopy(srcVol.NewVMBlockFilesystemVolume(), srcFsVolSnapshots...)
+
+		err := d.CreateVolumeFromCopy(fsVol, srcFSVol, false, op)
+		if err != nil {
+			return err
+		}
+
+		revert.Add(func() { _ = d.DeleteVolume(fsVol.Volume, op) })
 	}
 
 	srcPoolName := srcVol.pool
@@ -255,10 +279,12 @@ func (d *pure) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, allowInco
 			return err
 		}
 
+		logger.Warn("Copying snapshot", logger.Ctx{"snapshot": snapshot.name, "srcVol": srcVol.name, "srcVolEncoded": srcVolName, "vol": vol.name, "volNameEncoded": volName})
+
 		// Copy the snapshot.
 		err = d.client().copyVolumeSnapshot(srcPoolName, srcVolName, srcSnapshotName, poolName, volName)
 		if err != nil {
-			return err
+			return fmt.Errorf("Failed copying snapshot %q: %w", snapshot.name, err)
 		}
 
 		if deleteVolCopy {
@@ -268,20 +294,19 @@ func (d *pure) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, allowInco
 			deleteVolCopy = false
 		}
 
-		// Set snapshot's parent UUID.
+		// Set snapshot's parent UUID and retain source snapshot UUID.
 		snapshot.SetParentUUID(vol.config["volatile.uuid"])
 
-		// Create snapshot of a new volume. There is no need for the reverter because deleting
-		// a volume will also remove all associated snapshots.
-		err = d.CreateVolumeSnapshot(snapshot, op)
+		// Create snapshot from a new volume (that was created from the source snapshot).
+		// However, do not create VM's filesystem volume snapshot, as filesystem volume is
+		// copied before block volume.
+		err = d.createVolumeSnapshot(snapshot, false, op)
 		if err != nil {
 			return err
 		}
-
-		revert.Add(func() { _ = d.DeleteVolumeSnapshot(snapshot, op) })
 	}
 
-	// Finally, copy the source volume into destination volume snapshots.
+	// Finally, copy the source volume into destination volume.
 	err = d.client().copyVolume(srcPoolName, srcVolName, poolName, volName, true)
 	if err != nil {
 		return err
@@ -290,17 +315,6 @@ func (d *pure) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, allowInco
 	// Add reverted to delete destination volume, if not already added.
 	if deleteVolCopy {
 		revert.Add(func() { _ = d.DeleteVolume(vol.Volume, op) })
-	}
-
-	// For VMs, also copy the filesystem volume.
-	if vol.IsVMBlock() {
-		srcFSVol := NewVolumeCopy(srcVol.NewVMBlockFilesystemVolume())
-		fsVol := NewVolumeCopy(vol.NewVMBlockFilesystemVolume())
-
-		err := d.CreateVolumeFromCopy(fsVol, srcFSVol, false, op)
-		if err != nil {
-			return err
-		}
 	}
 
 	err = postCreateTasks(vol.Volume)
@@ -341,6 +355,48 @@ func (d *pure) RefreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots
 	revert := revert.New()
 	defer revert.Fail()
 
+	// For VMs, also copy the filesystem volume.
+	if vol.IsVMBlock() {
+		// Ensure that the volume's snapshots are also replaced with their filesystem counterpart.
+		fsVolSnapshots := make([]Volume, 0, len(vol.Snapshots))
+		for _, snapshot := range vol.Snapshots {
+			fsVolSnapshots = append(fsVolSnapshots, snapshot.NewVMBlockFilesystemVolume())
+		}
+
+		srcFsVolSnapshots := make([]Volume, 0, len(srcVol.Snapshots))
+		for _, snapshot := range srcVol.Snapshots {
+			srcFsVolSnapshots = append(srcFsVolSnapshots, snapshot.NewVMBlockFilesystemVolume())
+		}
+
+		fsVol := NewVolumeCopy(vol.NewVMBlockFilesystemVolume(), fsVolSnapshots...)
+		srcFSVol := NewVolumeCopy(srcVol.NewVMBlockFilesystemVolume(), srcFsVolSnapshots...)
+
+		cleanup, err := d.refreshVolume(fsVol, srcFSVol, refreshSnapshots, allowInconsistent, op)
+		if err != nil {
+			return err
+		}
+
+		revert.Add(cleanup)
+	}
+
+	cleanup, err := d.refreshVolume(vol, srcVol, refreshSnapshots, allowInconsistent, op)
+	if err != nil {
+		return err
+	}
+
+	revert.Add(cleanup)
+
+	revert.Success()
+	return nil
+}
+
+// refreshVolume updates an existing volume to match the state of another. For VM volumes and snaphots,
+// this function refreshes either block or filesystem volume, depending on the volume type. Therefore,
+// the caller needs to ensure it is called twice - once for each volume type.
+func (d *pure) refreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots []string, allowInconsistent bool, op *operations.Operation) (revert.Hook, error) {
+	revert := revert.New()
+	defer revert.Fail()
+
 	// Function to run once the volume is created, which will ensure appropriate permissions
 	// on the mount path inside the volume, and resize the volume to specified size.
 	postCreateTasks := func(v Volume) error {
@@ -368,12 +424,12 @@ func (d *pure) RefreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots
 
 	srcVolName, err := d.getVolumeName(srcVol.Volume)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	volName, err := d.getVolumeName(vol.Volume)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	getSnapNames := func(snaps []Volume) []string {
@@ -393,13 +449,13 @@ func (d *pure) RefreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots
 	// Remove existing reverter snapshot.
 	err = d.client().deleteVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
 	if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
-		return err
+		return nil, err
 	}
 
 	// Create new reverter snapshot.
 	err = d.client().createVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	revert.Add(func() {
@@ -440,27 +496,28 @@ func (d *pure) RefreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots
 			}
 
 			if srcSnapshot == nil {
-				return fmt.Errorf("Failed to refresh snapshot %q: Source snapshot does not exist", snapshotShortName)
+				return nil, fmt.Errorf("Failed to refresh snapshot %q: Source snapshot does not exist", snapshotShortName)
 			}
 
 			srcSnapshotName, err := d.getVolumeName(*srcSnapshot)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
 			// Overwrite existing destination volume with snapshot.
 			err = d.client().copyVolumeSnapshot(srcPoolName, srcVolName, srcSnapshotName, poolName, volName)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
 			// Set snapshot's parent UUID.
 			snapshot.SetParentUUID(vol.config["volatile.uuid"])
 
-			// Create snapshot of a new volume.
-			err = d.CreateVolumeSnapshot(snapshot, op)
+			// Create snapshot of a new volume. Do not copy VM's filesystem volume snapshot,
+			// as FS volumes are already copied by this point.
+			err = d.createVolumeSnapshot(snapshot, false, op)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
 			revert.Add(func() { _ = d.DeleteVolumeSnapshot(snapshot, op) })
@@ -472,38 +529,28 @@ func (d *pure) RefreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots
 		// Ensure all snapshots were successfully refreshed.
 		missing := shared.RemoveElementsFromSlice(refreshSnapshots, refreshedSnapshots...)
 		if len(missing) > 0 {
-			return fmt.Errorf("Failed to refresh snapshots %v", missing)
+			return nil, fmt.Errorf("Failed to refresh snapshots %v", missing)
 		}
 	}
 
 	// Finally, copy the source volume into destination volume snapshots.
 	err = d.client().copyVolume(srcPoolName, srcVolName, poolName, volName, true)
 	if err != nil {
-		return err
-	}
-
-	// For VMs, also copy the filesystem volume.
-	if vol.IsVMBlock() {
-		srcFSVol := NewVolumeCopy(srcVol.NewVMBlockFilesystemVolume())
-		fsVol := NewVolumeCopy(vol.NewVMBlockFilesystemVolume())
-
-		err := d.CreateVolumeFromCopy(fsVol, srcFSVol, false, op)
-		if err != nil {
-			return err
-		}
+		return nil, err
 	}
 
 	err = postCreateTasks(vol.Volume)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
+	cleanup := revert.Clone().Fail
 	revert.Success()
 
 	// Remove temporary reverter snapshot.
 	_ = d.client().deleteVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
 
-	return err
+	return cleanup, err
 }
 
 // DeleteVolume deletes a volume of the storage device.
@@ -815,9 +862,9 @@ func (d *pure) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, o
 
 			if inUse {
 				// We don't allow online shrinking of filesytem volumes.
-			// Returning this error ensures the disk is resized next
-			// time the instance is started.
-			return ErrInUse
+				// Returning this error ensures the disk is resized next
+				// time the instance is started.
+				return ErrInUse
 			}
 		}
 
@@ -1017,6 +1064,12 @@ func (d *pure) RenameVolume(vol Volume, newVolName string, op *operations.Operat
 
 // CreateVolumeSnapshot creates a snapshot of a volume.
 func (d *pure) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
+	return d.createVolumeSnapshot(snapVol, true, op)
+}
+
+// createVolumeSnapshot creates a snapshot of a volume. If snapshotVMfilesystem is false, a VM's filesystem volume
+// is not copied.
+func (d *pure) createVolumeSnapshot(snapVol Volume, snapshotVMfilesystem bool, op *operations.Operation) error {
 	revert := revert.New()
 	defer revert.Fail()
 
@@ -1063,8 +1116,9 @@ func (d *pure) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) er
 
 	revert.Add(func() { _ = d.DeleteVolumeSnapshot(snapVol, op) })
 
-	// For VM images, create a filesystem volume too.
-	if snapVol.IsVMBlock() {
+	// For VM images, create a snapshot of filesystem volume too.
+	// Skip if snapshotVMfilesystem is false to prevent overwriting separately copied volumes.
+	if snapVol.IsVMBlock() && snapshotVMfilesystem {
 		fsVol := snapVol.NewVMBlockFilesystemVolume()
 
 		// Set the parent volume's UUID.
