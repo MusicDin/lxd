@@ -31,16 +31,16 @@ Where possible, LXD uses the advanced features of each storage system to optimiz
 Feature                                     | Directory | Btrfs | LVM   | ZFS    | Ceph RBD | CephFS | Ceph Object | Dell PowerFlex | PureStorage
 :---                                        | :---      | :---  | :---  | :---   | :---     | :---   | :---        | :---           | :---
 {ref}`storage-optimized-image-storage`      | ❌        | ✅   | ✅     | ✅     | ✅       | ➖     | ➖          | ❌              | ✅
-Optimized instance creation                 | ❌        | ✅   | ✅     | ✅     | ✅       | ➖     | ➖          | ❌              |
+Optimized instance creation                 | ❌        | ✅   | ✅     | ✅     | ✅       | ➖     | ➖          | ❌              | ✅
 Optimized snapshot creation                 | ❌        | ✅   | ✅     | ✅     | ✅       | ✅     | ➖          | ✅              | ✅
-Optimized image transfer                    | ❌        | ✅   | ❌     | ✅     | ✅       | ➖     | ➖          | ❌              |
-Optimized backup (import/export)            | ❌        | ✅   | ❌     | ✅     | ❌       | ➖     | ➖          | ❌              |
-{ref}`storage-optimized-volume-transfer`    | ❌        | ✅   | ❌     | ✅     | ✅[^1]   | ➖     | ➖          | ❌              | ✅
-{ref}`storage-optimized-volume-refresh`     | ❌        | ✅   | ✅[^2] | ✅     | ✅[^3]   | ➖     | ➖          | ❌              | ✅
-Copy on write                               | ❌        | ✅   | ✅     | ✅     | ✅       | ✅     | ➖          | ✅              | ✅
+Optimized image transfer                    | ❌        | ✅   | ❌     | ✅     | ✅       | ➖     | ➖          | ❌              | ✅
+Optimized backup (import/export)            | ❌        | ✅   | ❌     | ✅     | ❌       | ➖     | ➖          | ❌              | ❌
+{ref}`storage-optimized-volume-transfer`    | ❌        | ✅   | ❌     | ✅     | ✅[^1]   | ➖     | ➖          | ❌              | ✅[^6]
+{ref}`storage-optimized-volume-refresh`     | ❌        | ✅   | ✅[^2] | ✅     | ✅[^3]   | ➖     | ➖          | ❌              | ✅[^6]
+Copy on write                               | ❌        | ✅   | ✅     | ✅     | ✅       | ✅     | ➖          | ✅              | ✅ TODO: Remove
 Block based                                 | ❌        | ❌   | ✅     | ❌      | ✅      | ❌     | ➖          | ✅              | ✅
-Instant cloning                             | ❌        | ✅   | ✅     | ✅     | ✅       | ✅     | ➖          | ❌              | ✅
-Storage driver usable inside a container    | ✅        | ✅   | ❌     | ✅[^4] | ❌       | ➖     | ➖          | ❌              |
+Instant cloning                             | ❌        | ✅   | ✅     | ✅     | ✅       | ✅     | ➖          | ❌              | ✅ TODO: What is the difference between Optimized instance/image creation and Instance cloning. What is difference between CoW and instant cloning?
+Storage driver usable inside a container    | ✅        | ✅   | ❌     | ✅[^4] | ❌       | ➖     | ➖          | ❌              | ❌ TODO: explain nested LXD scenario - Can nested LXD use the storage subsystem - NO for PureStorage, as it cannot access the nvme-tcp subsystem.
 Restore from older snapshots (not latest)   | ✅        | ✅   | ✅     | ❌      | ✅      | ✅     | ➖          | ✅              | ✅
 Storage quotas                              | ✅[^5]    | ✅   | ✅     | ✅     | ✅       | ✅     | ✅          | ✅              | ✅
 Available on `lxd init`                     | ✅        | ✅   | ✅     | ✅     | ✅       | ❌     | ❌          | ❌              | ❌
@@ -51,6 +51,7 @@ Object storage                              | ✅        | ✅   | ✅     | ✅
 [^3]: Only for volumes of type `block`.
 [^4]: Requires {config:option}`storage-zfs-volume-conf:zfs.delegate` to be enabled.
 [^5]: % Include content from [storage_dir.md](storage_dir.md)
+[^6]: The optimized refresh works only on the single PureStorage array that is used by single LXD host or cluster.
 
       ```{include} storage_dir.md
          :start-after: <!-- Include start dir quotas -->
