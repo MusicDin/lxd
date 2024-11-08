@@ -936,8 +936,6 @@ func (d *pure) ensureISCSIHost() (hostName string, cleanup revert.Hook, err erro
 		hostname = host.Name
 	}
 
-	logger.Warn("Ensured iSCSI host exists", logger.Ctx{"hostname": hostname, "iqn": iqn})
-
 	cleanup = revert.Clone().Fail
 	revert.Success()
 	return hostname, cleanup, nil
@@ -961,9 +959,6 @@ func iscsiHasConnection(iqn string) (bool, error) {
 		}
 
 		sessionIQN := strings.TrimSpace(string(iqnBytes))
-
-		logger.Warn("Found session", logger.Ctx{"session": session.Name(), "iqn": sessionIQN})
-
 		if iqn == sessionIQN {
 			// Already connected to the PureStorage array via iSCSI.
 			return true, nil
@@ -1012,8 +1007,6 @@ func (d *pure) iscsiConnect() (revert.Hook, error) {
 		sessionIQN := strings.TrimSpace(string(iqnBytes))
 		sessionID := strings.TrimPrefix(session.Name(), "session")
 
-		logger.Warn("Found session", logger.Ctx{"session": session.Name(), "id": sessionID, "iqn": sessionIQN})
-
 		if targetIQN == sessionIQN {
 			// Already connected to the PureStorage array via iSCSI.
 			// Rescan the session to ensure new volumes are detected.
@@ -1049,7 +1042,7 @@ func (d *pure) iscsiConnect() (revert.Hook, error) {
 	// Attempt to login into discovered iSCSI targets.
 	stdout, stderr, err := shared.RunCommandSplit(d.state.ShutdownCtx, nil, nil, "iscsiadm", "--mode", "node", "--targetname", targetIQN, "--portal", iscsiAddr, "--login", "--debug=8")
 	if err != nil {
-		logger.Warn("Output", logger.Ctx{"stdout": stdout, "error": err})
+		logger.Warn("Connection attempt output", logger.Ctx{"stdout": stdout, "error": err})
 		return nil, fmt.Errorf("Failed to connect to PureStorage host %q via iSCSI: %s\n%v", iscsiAddr, stderr, err)
 	}
 
@@ -1243,12 +1236,6 @@ func (d *pure) getMappedDevPath(vol Volume, mapVolume bool) (string, revert.Hook
 	revert := revert.New()
 	defer revert.Fail()
 
-	defer func() {
-		// Show mapped volumes from iSCSI:
-		out, err := shared.RunCommandContext(d.state.ShutdownCtx, "iscsiadm", "--mode", "session", "--print", "3" /* 3 = print level */)
-		logger.Debug("Active iSCSI session", logger.Ctx{"out": out, "error": err})
-	}()
-
 	if mapVolume {
 		err := d.mapVolume(vol)
 		if err != nil {
@@ -1301,7 +1288,6 @@ func (d *pure) getMappedDevPath(vol Volume, mapVolume bool) (string, revert.Hook
 
 	volumeFullName := fmt.Sprintf("%s::%s", vol.pool, volName)
 	timeout := time.Now().Add(60 * time.Second) // TODO: Adjust to 5 or 10 seconds!
-	logger.Warn("Looking for device", logger.Ctx{"volume": volumeFullName, "timeout": "30s"})
 
 	var volumeDevPath string
 
@@ -1347,8 +1333,6 @@ func (d *pure) getMappedDevPath(vol Volume, mapVolume bool) (string, revert.Hook
 	if volumeDevPath == "" {
 		return "", nil, fmt.Errorf("Failed to locate device for volume %q", vol.name)
 	}
-
-	logger.Warn("Located device for volume", logger.Ctx{"pool": vol.pool, "volume": vol.name, "device": volumeDevPath})
 
 	cleanup := revert.Clone().Fail
 	revert.Success()
@@ -1441,6 +1425,5 @@ func (d *pure) getVolumeName(vol Volume) (string, error) {
 		volName = fmt.Sprintf("%s%s", pureSnapshotPrefix, volName)
 	}
 
-	logger.Error("Volume name", logger.Ctx{"volName": vol.name, "volNameEncoded": volName, "volType": vol.volType, "contentType": vol.contentType})
 	return volName, nil
 }

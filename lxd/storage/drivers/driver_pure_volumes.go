@@ -245,16 +245,6 @@ func (d *pure) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, allowInco
 	// we need to also remove the destination volume if an error occurs during copying of snapshots.
 	deleteVolCopy := true
 
-	getSnapNames := func(snaps []Volume) []string {
-		names := make([]string, 0, len(snaps))
-		for _, snap := range snaps {
-			names = append(names, snap.name)
-		}
-		return names
-	}
-
-	logger.Warn("Snapshots", logger.Ctx{"source": getSnapNames(srcVol.Snapshots), "destination": getSnapNames(vol.Snapshots)})
-
 	// Copy volume snapshots.
 	// PureStorage does not allow copying snapshots along with the volume. Therefore, we
 	// copy the snapshots sequentially. Each snapshot is first copied into destination
@@ -450,14 +440,6 @@ func (d *pure) refreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots
 		return nil, err
 	}
 
-	getSnapNames := func(snaps []Volume) []string {
-		names := make([]string, 0, len(snaps))
-		for _, snap := range snaps {
-			names = append(names, snap.name)
-		}
-		return names
-	}
-
 	// Create new reverter snapshot, which is used to revert the original volume in case of
 	// an error. Snapshots are also required to be first copied into destination volume,
 	// from which a new snapshot is created to effectively copy a snapshot. If any error
@@ -482,9 +464,6 @@ func (d *pure) refreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots
 		_ = d.client().deleteVolumeSnapshot(vol.pool, volName, reverterSnapshotName)
 	})
 
-	logger.Warn("Refresh snapshots", logger.Ctx{"source": getSnapNames(srcVol.Snapshots), "destination": getSnapNames(vol.Snapshots), "refSnapshots": refreshSnapshots})
-	// logger.Warn("Refreshing volume", logger.Ctx{"volName": vol.name, "srcVolName": srcVol.name, "refSnapshots": refreshSnapshots})
-
 	if !srcVol.IsSnapshot() && len(refreshSnapshots) > 0 {
 		var refreshedSnapshots []string
 
@@ -499,7 +478,6 @@ func (d *pure) refreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots
 			_, snapshotShortName, _ := api.GetParentAndSnapshotName(snapshot.name)
 			if !slices.Contains(refreshSnapshots, snapshotShortName) {
 				// Skip snapshot if it doesn't have to be refreshed.
-				logger.Warn("Skip snapshot", logger.Ctx{"snapshotShortName": snapshotShortName})
 				continue
 			}
 
@@ -795,8 +773,6 @@ func (d *pure) GetVolumeUsage(vol Volume) (int64, error) {
 		return -1, err
 	}
 
-	logger.Warn("Volume usage", logger.Ctx{"volName": vol.name, "used_size": pureVol.Space.UsedBytes, "total_size": pureVol.Space.TotalBytes})
-
 	// Getting the usage of an unmounted volume is not supported.
 	// PowerFlex reports the usage on pool level only.
 	return pureVol.Space.UsedBytes, nil
@@ -1084,7 +1060,6 @@ func (d *pure) MigrateVolume(vol VolumeCopy, conn io.ReadWriteCloser, volSrcArgs
 
 // BackupVolume creates an exported version of a volume.
 func (d *pure) BackupVolume(vol VolumeCopy, tarWriter *instancewriter.InstanceTarWriter, optimized bool, snapshots []string, op *operations.Operation) error {
-	logger.Warn("BackupVolume", logger.Ctx{"volName": vol.name, "optimized": optimized, "snapshots": snapshots})
 	return genericVFSBackupVolume(d, vol, tarWriter, snapshots, op)
 }
 
@@ -1358,8 +1333,6 @@ func (d *pure) CheckVolumeSnapshots(vol Volume, snapVols []Volume, op *operation
 	if err != nil {
 		return err
 	}
-
-	logger.Warn("CheckVolumeSnapshots", logger.Ctx{"volName": vol.name, "storageSnapshotNames": storageSnapshotNames, "snapVols": fmt.Sprintf("%v", snapVols)})
 
 	// Check if the provided list of volume snapshots matches the ones from the storage.
 	for _, snap := range snapVols {
