@@ -821,6 +821,7 @@ func (d *pure) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, o
 	revert.Add(cleanup)
 
 	inUse := vol.MountInUse()
+	truncate := sizeBytes < oldSizeBytes
 
 	// Resize filesystem if needed.
 	if vol.contentType == ContentTypeFS {
@@ -845,13 +846,13 @@ func (d *pure) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, o
 			}
 
 			// Shrink the block device.
-			err = d.client().resizeVolume(vol.pool, volName, sizeBytes)
+			err = d.client().resizeVolume(vol.pool, volName, sizeBytes, truncate)
 			if err != nil {
 				return err
 			}
 		} else {
 			// Grow block device first.
-			err = d.client().resizeVolume(vol.pool, volName, sizeBytes)
+			err = d.client().resizeVolume(vol.pool, volName, sizeBytes, truncate)
 			if err != nil {
 				return err
 			}
@@ -879,7 +880,7 @@ func (d *pure) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, o
 		}
 
 		// Resize block device.
-		err = d.client().resizeVolume(vol.pool, volName, sizeBytes)
+		err = d.client().resizeVolume(vol.pool, volName, sizeBytes, truncate)
 		if err != nil {
 			return err
 		}

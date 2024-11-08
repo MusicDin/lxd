@@ -595,7 +595,7 @@ func (p *pureClient) deleteVolume(poolName string, volName string) error {
 }
 
 // resizeVolume resizes an existing volume. This function does not resize any filesystem inside the volume.
-func (p *pureClient) resizeVolume(poolName string, volName string, sizeBytes int64) error {
+func (p *pureClient) resizeVolume(poolName string, volName string, sizeBytes int64, truncate bool) error {
 	req, err := p.createBodyReader(map[string]any{
 		"provisioned": sizeBytes,
 	})
@@ -603,7 +603,7 @@ func (p *pureClient) resizeVolume(poolName string, volName string, sizeBytes int
 		return err
 	}
 
-	err = p.requestAuthenticated(http.MethodPatch, fmt.Sprintf("/volumes?names=%s::%s&truncate=true", poolName, volName), req, nil)
+	err = p.requestAuthenticated(http.MethodPatch, fmt.Sprintf("/volumes?names=%s::%s&truncate=%v", poolName, volName, truncate), req, nil)
 	if err != nil {
 		return fmt.Errorf("Failed to resize volume %q in storage pool %q: %w", volName, poolName, err)
 	}
