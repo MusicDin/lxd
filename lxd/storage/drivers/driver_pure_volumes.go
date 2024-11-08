@@ -807,8 +807,9 @@ func (d *pure) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, o
 	}
 
 	oldSizeBytes := pureVol.Space.TotalBytes
-	if oldSizeBytes == sizeBytes {
-		// Nothing to do.
+
+	// Do nothing if volume is already specified size (+/- 512 bytes).
+	if oldSizeBytes+512 > sizeBytes && oldSizeBytes-512 < sizeBytes {
 		return nil
 	}
 
