@@ -6618,6 +6618,7 @@ func (b *lxdBackend) DeleteCustomVolumeSnapshot(projectName, volName string, op 
 
 	isSnap := shared.IsSnapshot(volName)
 
+	parentName, _, isSnap := api.GetParentAndSnapshotName(volName)
 	if !isSnap {
 		return fmt.Errorf("Volume name must be a snapshot")
 	}
@@ -6639,10 +6640,20 @@ func (b *lxdBackend) DeleteCustomVolumeSnapshot(projectName, volName string, op 
 		return err
 	}
 
+	// Load parent storage volume from database.
+	parentDBVol, err := VolumeDBGet(b, projectName, parentName, drivers.VolumeTypeCustom)
+	if err != nil {
+		return err
+	}
+
 	// Get the volume name on storage.
 	volStorageName := project.StorageVolume(projectName, volName)
 
 	vol := b.GetVolume(drivers.VolumeTypeCustom, contentType, volStorageName, volume.Config)
+
+	// Certain storage drivers require the parent volume's UUID to be set on the snapshot volume
+	// because snapshot is linked with the parent volume.
+	vol.SetParentUUID(parentDBVol.Config["volatile.uuid"])
 
 	// Delete the snapshot from the storage device.
 	// Must come before DB VolumeDBDelete so that the volume ID is still available.
