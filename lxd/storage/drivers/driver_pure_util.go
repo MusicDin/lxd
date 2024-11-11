@@ -645,6 +645,11 @@ func (p *pureClient) getVolumeSnapshots(poolName string, volName string) ([]pure
 
 	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/volume-snapshots?names=%s::%s", poolName, volName), nil, &resp)
 	if err != nil {
+		perr, ok := err.(*pureError)
+		if ok && perr.IsNotFoundError() {
+			return nil, api.StatusErrorf(http.StatusNotFound, "Volume %q not found", volName)
+		}
+
 		return nil, fmt.Errorf("Failed to retrieve snapshots for volume %q in storage pool %q: %w", volName, poolName, err)
 	}
 

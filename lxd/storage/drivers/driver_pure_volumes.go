@@ -1310,6 +1310,10 @@ func (d *pure) VolumeSnapshots(vol Volume, op *operations.Operation) ([]string, 
 
 	volumeSnapshots, err := d.client().getVolumeSnapshots(vol.pool, volName)
 	if err != nil {
+		if api.StatusErrorCheck(err, http.StatusNotFound) {
+			return nil, nil
+		}
+
 		return nil, err
 	}
 
