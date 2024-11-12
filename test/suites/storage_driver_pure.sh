@@ -1,30 +1,3 @@
-configure_pure_pool() {
-  poolName=$1
-
-  # Quick checks to error out with intuitive message.
-  if [ -z "${PURESTORAGE_GATEWAY}" ]; then
-    echo "PureStorage gateway has to be set using PURESTORAGE_GATEWAY environment variable"
-    exit 1
-  fi
-
-  if [ -z "${PURESTORAGE_API_TOKEN}" ]; then
-    echo "PureStorage API token has to be set using PURESTORAGE_API_TOKEN environment variable"
-    exit 1
-  fi
-
-  if [ -z "${PURESTORAGE_ISCSI_ADDRESS}" ]; then
-    echo "PureStorage iSCSI address has to be set using PURESTORAGE_ISCSI_ADDRESS environment variable"
-    exit 1
-  fi
-
-  lxc storage create "${poolName}" pure \
-    pure.gateway="${PURESTORAGE_GATEWAY}" \
-    pure.gateway.verify="${PURESTORAGE_GATEWAY_VERIFY:-true}" \
-    pure.api.token="${PURESTORAGE_API_TOKEN}" \
-    pure.iscsi.address="${PURESTORAGE_ISCSI_ADDRESS}" \
-    pure.mode="${PURESTORAGE_MODE:-iscsi}"
-}
-
 test_storage_driver_pure() {
   local LXD_STORAGE_DIR lxd_backend
 
