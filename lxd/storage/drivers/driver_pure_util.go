@@ -440,14 +440,19 @@ func (p *pureClient) getStoragePool(poolName string) (*pureStoragePool, error) {
 	return &resp.Items[0], nil
 }
 
-// createStoragePool creates a storage pool (PureStorage Pod) and returns it's ID.
-func (p *pureClient) createStoragePool(poolName string) error {
+// createStoragePool creates a storage pool (PureStorage Pod).
+func (p *pureClient) createStoragePool(poolName string, size int64) error {
+	reqBody := make(map[string]any)
+	if size > 0 {
+		reqBody["quota_limit"] = size
+	}
+
 	pool, err := p.getStoragePool(poolName)
 	if err == nil && pool.IsDestroyed {
 		// Storage pool exists in destroyed state, therefore, restore it.
-		req, err := p.createBodyReader(map[string]any{
-			"destroyed": false,
-		})
+		reqBody["destroyed"] = false
+
+		req, err := p.createBodyReader(reqBody)
 		if err != nil {
 			return err
 		}
@@ -459,11 +464,36 @@ func (p *pureClient) createStoragePool(poolName string) error {
 
 		logger.Warn("Storage pool has been restored", logger.Ctx{"pool": poolName})
 	} else {
+		req, err := p.createBodyReader(reqBody)
+		if err != nil {
+			return err
+		}
+
 		// Storage pool does not exist in destroyed state, therefore, try to create a new one.
-		err = p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/pods?names=%s", poolName), nil, nil)
+		err = p.requestAuthenticated(http.MethodPost, fmt.Sprintf("/pods?names=%s", poolName), req, nil)
 		if err != nil {
 			return fmt.Errorf("Failed to create storage pool %q: %w", poolName, err)
 		}
+	}
+
+	return nil
+}
+
+// updateStoragePool updates an existing storage pool (PureStorage Pod).
+func (p *pureClient) updateStoragePool(poolName string, size int64) error {
+	reqBody := make(map[string]any)
+	if size > 0 {
+		reqBody["quota_limit"] = size
+	}
+
+	req, err := p.createBodyReader(reqBody)
+	if err != nil {
+		return err
+	}
+
+	err = p.requestAuthenticated(http.MethodPatch, fmt.Sprintf("/pods?names=%s", poolName), req, nil)
+	if err != nil {
+		return fmt.Errorf("Failed to update storage pool %q: %w", poolName, err)
 	}
 
 	return nil

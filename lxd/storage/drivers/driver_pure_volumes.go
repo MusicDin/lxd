@@ -931,7 +931,7 @@ func (d *pure) MountVolume(vol Volume, op *operations.Operation) error {
 	revert := revert.New()
 	defer revert.Fail()
 
-	// Activate PowerFlex volume if needed.
+	// Activate PureStorage volume if needed.
 	volDevPath, cleanup, err := d.getMappedDevPath(vol, true)
 	if err != nil {
 		return err

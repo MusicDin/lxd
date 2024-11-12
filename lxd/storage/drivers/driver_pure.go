@@ -11,6 +11,7 @@ import (
 	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/logger"
 	"github.com/canonical/lxd/shared/revert"
+	"github.com/canonical/lxd/shared/units"
 	"github.com/canonical/lxd/shared/validate"
 )
 
@@ -123,6 +124,7 @@ func (d *pure) FillConfig() error {
 // Validate checks that all provided keys are supported and that no conflicting or missing configuration is present.
 func (d *pure) Validate(config map[string]string) error {
 	rules := map[string]func(value string) error{
+		"size": validate.Optional(validate.IsSize),
 		// lxdmeta:generate(entities=storage-pure; group=pool-conf; key=pure.user.name)
 		//
 		// ---
@@ -229,8 +231,13 @@ func (d *pure) Create() error {
 		return fmt.Errorf("Unsupported PureStorage mode %q", d.config["pure.mode"])
 	}
 
+	poolSizeBytes, err := units.ParseByteSizeString(d.config["size"])
+	if err != nil {
+		return fmt.Errorf("Failed to parse storage size (quota limit): %w", err)
+	}
+
 	// Create the storage pool.
-	err = d.client().createStoragePool(d.name)
+	err = d.client().createStoragePool(d.name, poolSizeBytes)
 	if err != nil {
 		return fmt.Errorf("Failed to create storage pool: %w", err)
 	}
@@ -245,7 +252,23 @@ func (d *pure) Create() error {
 
 // Update applies any driver changes required from a configuration change.
 func (d *pure) Update(changedConfig map[string]string) error {
-	// TODO: Handle rename.
+	newPoolSizeBytes, err := units.ParseByteSizeString(changedConfig["size"])
+	if err != nil {
+		return fmt.Errorf("Failed to parse storage size (quota limit): %w", err)
+	}
+
+	oldPoolSizeBytes, err := units.ParseByteSizeString(d.config["size"])
+	if err != nil {
+		return fmt.Errorf("Failed to parse old storage size (quota limit): %w", err)
+	}
+
+	if newPoolSizeBytes != oldPoolSizeBytes {
+		err = d.client().updateStoragePool(d.name, newPoolSizeBytes)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
