@@ -5667,6 +5667,32 @@ func (b *lxdBackend) MigrateCustomVolume(projectName string, conn io.ReadWriteCl
 
 	vol := b.GetVolume(drivers.VolumeTypeCustom, contentType, volStorageName, args.Info.Config.Volume.Config)
 
+	// Ensure parent UUID is configured if the volume is a snapshot.
+	if vol.IsSnapshot() {
+		parentName, _, isSnap := api.GetParentAndSnapshotName(vol.Name())
+		if !isSnap {
+			return fmt.Errorf("Failed to parse snapshot's parent volume name")
+		}
+
+		_, parentVolName := project.StorageVolumeParts(parentName)
+
+		logger.Errorf(">>> Parent nameFull: %q, Parent name (short): %q", parentName, parentVolName)
+
+		// Load storage volume from database.
+		parentDBVol, err := VolumeDBGet(b, projectName, parentVolName, vol.Type())
+		if err != nil {
+			return err
+		}
+
+		parentUUID := parentDBVol.Config["volatile.uuid"]
+		if parentUUID == "" {
+			return fmt.Errorf(`Custom volume %q is missing the required "volatile.uuid" setting`, parentName)
+		}
+
+		// Set the parent volume UUID.
+		vol.SetParentUUID(parentUUID)
+	}
+
 	// Retrieve a list of snapshots.
 	allSourceSnapshots, err := VolumeDBSnapshotsGet(b, projectName, args.Name, drivers.VolumeTypeCustom)
 	if err != nil {
