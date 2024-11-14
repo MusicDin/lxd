@@ -673,7 +673,7 @@ func (p *pureClient) copyVolume(srcPoolName string, srcVolName string, dstPoolNa
 func (p *pureClient) getVolumeSnapshots(poolName string, volName string) ([]pureVolume, error) {
 	var resp pureResponse[pureVolume]
 
-	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/volume-snapshots?names=%s::%s", poolName, volName), nil, &resp)
+	err := p.requestAuthenticated(http.MethodGet, fmt.Sprintf("/volume-snapshots?source_names=%s::%s", poolName, volName), nil, &resp)
 	if err != nil {
 		perr, ok := err.(*pureError)
 		if ok && perr.IsNotFoundError() {
