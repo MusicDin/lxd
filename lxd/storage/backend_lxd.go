@@ -3937,6 +3937,21 @@ func (b *lxdBackend) MountInstanceSnapshot(inst instance.Instance, op *operation
 		return nil, err
 	}
 
+	// Ensure parent UUID is configured if the source volume is snapshot.
+	parentName, _, _ := api.GetParentAndSnapshotName(inst.Name())
+	parentDBVol, err := VolumeDBGet(b, inst.Project().Name, parentName, volType)
+	if err != nil {
+		return nil, err
+	}
+
+	parentUUID := parentDBVol.Config["volatile.uuid"]
+	if parentUUID == "" {
+		return nil, fmt.Errorf(`Instance volume %q is missing the required "volatile.uuid" setting`, parentName)
+	}
+
+	vol.SetParentUUID(parentUUID)
+
+	// Mount the snapshot.
 	err = b.driver.MountVolumeSnapshot(vol, op)
 	if err != nil {
 		return nil, err
@@ -3986,6 +4001,21 @@ func (b *lxdBackend) UnmountInstanceSnapshot(inst instance.Instance, op *operati
 		return err
 	}
 
+	// Ensure parent UUID is configured if the source volume is snapshot.
+	parentName, _, _ := api.GetParentAndSnapshotName(inst.Name())
+	parentDBVol, err := VolumeDBGet(b, inst.Project().Name, parentName, volType)
+	if err != nil {
+		return err
+	}
+
+	parentUUID := parentDBVol.Config["volatile.uuid"]
+	if parentUUID == "" {
+		return fmt.Errorf(`Instance volume %q is missing the required "volatile.uuid" setting`, parentName)
+	}
+
+	vol.SetParentUUID(parentUUID)
+
+	// Unmount volume.
 	_, err = b.driver.UnmountVolumeSnapshot(vol, op)
 
 	return err
