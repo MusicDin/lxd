@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"slices"
 	"strings"
@@ -532,4 +533,19 @@ func (p *pureClient) disconnectHostFromVolume(poolName string, volName string, h
 	}
 
 	return nil
+}
+
+// serverName returns the hostname of this host. It prefers the value from the daemons state
+// in case LXD is clustered.
+func (d *pure) serverName() (string, error) {
+	if d.state.ServerName != "none" {
+		return d.state.ServerName, nil
+	}
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		return "", fmt.Errorf("Failed to get hostname: %w", err)
+	}
+
+	return hostname, nil
 }
