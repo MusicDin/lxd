@@ -121,11 +121,24 @@ type pureResponse[T any] struct {
 	Items []T `json:"items"`
 }
 
+// pureEntity represents a generic entity in Pure Storage.
+type pureEntity struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// pureStorageArray represents a storage array in Pure Storage.
+type pureStorageArray struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // pureStoragePool represents a storage pool (pod) in Pure Storage.
 type pureStoragePool struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	IsDestroyed bool   `json:"destroyed"`
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	IsDestroyed bool         `json:"destroyed"`
+	Arrays      []pureEntity `json:"arrays"`
 }
 
 // pureVolume represents a volume in Pure Storage.
@@ -359,6 +372,20 @@ func (p *pureClient) login() error {
 	}
 
 	return nil
+}
+
+// getStorageArray returns the list of storage arrays.
+// If arrayNames are provided, only those are returned.
+func (p *pureClient) getStorageArrays(arrayNames ...string) ([]pureStorageArray, error) {
+	var resp pureResponse[pureStorageArray]
+
+	url := api.NewURL().Path("arrays").WithQuery("names", strings.Join(arrayNames, ","))
+	err := p.requestAuthenticated(http.MethodGet, url.URL, nil, &resp)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to get storage arrays: %w", err)
+	}
+
+	return resp.Items, nil
 }
 
 // getStoragePool returns the storage pool with the given name.
