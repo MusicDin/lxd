@@ -11,6 +11,9 @@ const (
 
 	// TypeISCSI represents an iSCSI storage connector.
 	TypeISCSI string = "iscsi"
+
+	// TypeNVME represents an NVMe/TCP storage connector.
+	TypeNVME string = "nvme"
 )
 
 // Connector represents a storage connector that handles connections through
@@ -36,6 +39,10 @@ func NewConnector(connectorType string, serverUUID string) (Connector, error) {
 	switch connectorType {
 	case TypeISCSI:
 		return &connectorISCSI{
+			common: common,
+		}, nil
+	case TypeNVME:
+		return &connectorNVMe{
 			common: common,
 		}, nil
 	default:
