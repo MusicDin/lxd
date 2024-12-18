@@ -2,11 +2,15 @@ package connectors
 
 import (
 	"context"
+	"fmt"
 )
 
 const (
 	// TypeUnknown represents an unknown storage connector.
 	TypeUnknown string = "unknown"
+
+	// TypeISCSI represents an iSCSI storage connector.
+	TypeISCSI string = "iscsi"
 )
 
 // Connector represents a storage connector that handles connections through
@@ -21,4 +25,20 @@ type Connector interface {
 	ConnectAll(ctx context.Context, targetAddr string) error
 	Disconnect(targetQN string) error
 	DisconnectAll() error
+}
+
+// NewConnector creates a new connector of the given type.
+func NewConnector(connectorType string, serverUUID string) (Connector, error) {
+	common := common{
+		serverUUID: serverUUID,
+	}
+
+	switch connectorType {
+	case TypeISCSI:
+		return &connectorISCSI{
+			common: common,
+		}, nil
+	default:
+		return nil, fmt.Errorf("Invalid connector type %q", connectorType)
+	}
 }
