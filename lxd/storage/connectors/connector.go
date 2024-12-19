@@ -2,7 +2,6 @@ package connectors
 
 import (
 	"context"
-	"fmt"
 )
 
 const (
@@ -34,7 +33,7 @@ type Connector interface {
 }
 
 // NewConnector creates a new connector of the given type.
-func NewConnector(connectorType string, serverUUID string) (Connector, error) {
+func NewConnector(connectorType string, serverUUID string) Connector {
 	common := common{
 		serverUUID: serverUUID,
 	}
@@ -43,26 +42,25 @@ func NewConnector(connectorType string, serverUUID string) (Connector, error) {
 	case TypeISCSI:
 		return &connectorISCSI{
 			common: common,
-		}, nil
+		}
 	case TypeNVME:
 		return &connectorNVMe{
 			common: common,
-		}, nil
+		}
 	default:
-		return nil, fmt.Errorf("Invalid connector type %q", connectorType)
+		// Return common connector if the type is unknown.
+		// We want to avoid returning nil to prevent panics.
+		return &common
 	}
 }
 
-func GetSupportedVersions(supportedConnectors []string) ([]string, error) {
+func GetSupportedVersions(supportedConnectors []string) []string {
 	versions := make([]string, 0, len(supportedConnectors))
 
 	// Iterate over the supported connectors, extracting version and loading
 	// kernel module for each of them.
 	for _, connectorType := range supportedConnectors {
-		connector, err := NewConnector(connectorType, "")
-		if err != nil {
-			return nil, fmt.Errorf("Failed to initialize connector %q: %v", connectorType, err)
-		}
+		connector := NewConnector(connectorType, "")
 
 		version, err := connector.Version()
 		if err != nil {
@@ -74,5 +72,5 @@ func GetSupportedVersions(supportedConnectors []string) ([]string, error) {
 		versions = append(versions, version)
 	}
 
-	return versions, nil
+	return versions
 }

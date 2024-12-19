@@ -785,12 +785,7 @@ func (d *powerflex) getVolumeType(vol Volume) powerFlexVolumeType {
 func (d *powerflex) createNVMeHost() (string, revert.Hook, error) {
 	var hostID string
 
-	connector, err := d.connector()
-	if err != nil {
-		return "", nil, err
-	}
-
-	targetNQN, err := connector.QualifiedName()
+	targetNQN, err := d.connector().QualifiedName()
 	if err != nil {
 		return "", nil, err
 	}
@@ -831,12 +826,7 @@ func (d *powerflex) createNVMeHost() (string, revert.Hook, error) {
 func (d *powerflex) deleteNVMeHost() error {
 	client := d.client()
 
-	connector, err := d.connector()
-	if err != nil {
-		return err
-	}
-
-	targetNQN, err := connector.QualifiedName()
+	targetNQN, err := d.connector().QualifiedName()
 	if err != nil {
 		return err
 	}
@@ -860,11 +850,6 @@ func (d *powerflex) mapVolume(vol Volume) (revert.Hook, error) {
 	defer reverter.Fail()
 
 	var hostID string
-
-	connector, err := d.connector()
-	if err != nil {
-		return nil, err
-	}
 
 	switch d.config["powerflex.mode"] {
 	case connectors.TypeNVME:
@@ -942,12 +927,12 @@ func (d *powerflex) mapVolume(vol Volume) (revert.Hook, error) {
 	targetQN := domain.SystemID
 	targetAddr := d.config["powerflex.sdt"]
 
-	err = connector.Connect(d.state.ShutdownCtx, targetAddr, targetQN)
+	err = d.connector().Connect(d.state.ShutdownCtx, targetAddr, targetQN)
 	if err != nil {
 		return nil, err
 	}
 
-	reverter.Add(func() { _ = connector.Disconnect(targetQN) })
+	reverter.Add(func() { _ = d.connector().Disconnect(targetQN) })
 
 	cleanup := reverter.Clone().Fail
 	reverter.Success()
@@ -1007,11 +992,6 @@ func (d *powerflex) getMappedDevPath(vol Volume, mapVolume bool) (string, revert
 
 // unmapVolume unmaps the given volume from this host.
 func (d *powerflex) unmapVolume(vol Volume) error {
-	connector, err := d.connector()
-	if err != nil {
-		return err
-	}
-
 	volumeName, err := d.getVolumeName(vol)
 	if err != nil {
 		return err
@@ -1026,7 +1006,7 @@ func (d *powerflex) unmapVolume(vol Volume) error {
 	var host *powerFlexSDC
 	switch d.config["powerflex.mode"] {
 	case connectors.TypeNVME:
-		hostNQN, err := connector.QualifiedName()
+		hostNQN, err := d.connector().QualifiedName()
 		if err != nil {
 			return err
 		}
@@ -1089,7 +1069,7 @@ func (d *powerflex) unmapVolume(vol Volume) error {
 
 			// Disconnect from the NVMe subsystem.
 			// Do this first before removing the host from PowerFlex.
-			err = connector.Disconnect(targetQN)
+			err = d.connector().Disconnect(targetQN)
 			if err != nil {
 				return err
 			}

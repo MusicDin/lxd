@@ -754,12 +754,7 @@ func (p *pureClient) getHosts() ([]pureHost, error) {
 // The Pure Storage host is considered a match if it includes the fully qualified
 // name of the LXD host that is determined by the configured mode.
 func (p *pureClient) getCurrentHost() (*pureHost, error) {
-	connector, err := p.driver.connector()
-	if err != nil {
-		return nil, err
-	}
-
-	qn, err := connector.QualifiedName()
+	qn, err := p.driver.connector().QualifiedName()
 	if err != nil {
 		return nil, err
 	}
@@ -923,12 +918,7 @@ func (p *pureClient) getTarget() (targetAddr string, targetQN string, err error)
 func (d *pure) ensureHost() (hostName string, cleanup revert.Hook, err error) {
 	var hostname string
 
-	connector, err := d.connector()
-	if err != nil {
-		return "", nil, err
-	}
-
-	qn, err := connector.QualifiedName()
+	qn, err := d.connector().QualifiedName()
 	if err != nil {
 		return "", nil, err
 	}
@@ -983,11 +973,6 @@ func (d *pure) mapVolume(vol Volume) error {
 	revert := revert.New()
 	defer revert.Fail()
 
-	connector, err := d.connector()
-	if err != nil {
-		return err
-	}
-
 	volName, err := d.getVolumeName(vol)
 	if err != nil {
 		return err
@@ -1028,7 +1013,7 @@ func (d *pure) mapVolume(vol Volume) error {
 	// when at least one volume is mapped with the corresponding Pure Storage
 	// host. Additionally, DO NOT REVERT the connection as it would disconnect
 	// all connected volumes.
-	err = connector.Connect(d.state.ShutdownCtx, targetAddr, targetQN)
+	err = d.connector().Connect(d.state.ShutdownCtx, targetAddr, targetQN)
 	if err != nil {
 		return err
 	}
@@ -1094,18 +1079,13 @@ func (d *pure) unmapVolume(vol Volume) error {
 	// If this was the last volume being unmapped from this system, terminate
 	// an active session and remove the host from Pure Storage.
 	if host.ConnectionCount == 1 {
-		connector, err := d.connector()
-		if err != nil {
-			return err
-		}
-
 		_, targetQN, err := d.client().getTarget()
 		if err != nil {
 			return err
 		}
 
 		// Disconnect from the target.
-		err = connector.Disconnect(targetQN)
+		err = d.connector().Disconnect(targetQN)
 		if err != nil {
 			return err
 		}

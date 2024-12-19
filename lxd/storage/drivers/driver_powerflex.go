@@ -51,34 +51,23 @@ func (d *powerflex) load() error {
 		return nil
 	}
 
-	versions, err := connectors.GetSupportedVersions(powerflexSupportedConnectors)
-	if err != nil {
-		return err
-	}
-
+	versions := connectors.GetSupportedVersions(powerflexSupportedConnectors)
 	powerFlexVersion = strings.Join(versions, " / ")
 	powerFlexLoaded = true
+
+	_ = d.connector().LoadModules()
+
 	return nil
 }
 
 // connector retrieves an initialized storage connector based on the configured
 // PowerFlex mode. The connector is cached in the driver struct.
-func (d *powerflex) connector() (connectors.Connector, error) {
-	if d.storageConnector != nil {
-		return d.storageConnector, nil
+func (d *powerflex) connector() connectors.Connector {
+	if d.storageConnector == nil {
+		d.storageConnector = connectors.NewConnector(d.config["powerflex.mode"], d.state.ServerUUID)
 	}
 
-	connector, err := connectors.NewConnector(d.config["powerflex.mode"], d.state.ServerUUID)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to initialize connector: %v", err)
-	}
-
-	if !connector.LoadModules() {
-		return nil, fmt.Errorf("Powerflex mode %q is not supported due to missing kernel modules", d.config["powerflex.mode"])
-	}
-
-	d.storageConnector = connector
-	return d.storageConnector, nil
+	return d.storageConnector
 }
 
 // isRemote returns true indicating this driver uses remote storage.
@@ -117,7 +106,7 @@ func (d *powerflex) FillConfig() error {
 	// Second try if the SDC kernel module is setup.
 	if d.config["powerflex.mode"] == "" {
 		// Create dummy connector to check if NVMe/TCP kernel modules can be loaded.
-		nvmeConnector, _ := connectors.NewConnector(connectors.TypeNVME, "")
+		nvmeConnector := connectors.NewConnector(connectors.TypeNVME, "")
 
 		if nvmeConnector.LoadModules() {
 			d.config["powerflex.mode"] = connectors.TypeNVME
@@ -303,8 +292,7 @@ func (d *powerflex) Validate(config map[string]string) error {
 	// on the other cluster members too. This can be done here since Validate
 	// gets executed on every cluster member when receiving the cluster
 	// notification to finally create the pool.
-	connector, _ := d.connector()
-	if connector != nil && !connector.LoadModules() {
+	if d.config["powerflex.mode"] != "" && !d.connector().LoadModules() {
 		return fmt.Errorf("PowerFlex mode %q is not supported due to missing modules", config["powerflex.mode"])
 	}
 

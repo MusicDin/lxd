@@ -28,7 +28,7 @@ func (c *common) QualifiedName() (string, error) {
 
 // LoadModules loads the necessary kernel modules.
 func (c *common) LoadModules() bool {
-	return true
+	return false // Return false to ensure loading module fails by default.
 }
 
 // SessionID returns the identifier of a session that matches the connector's qualified name.

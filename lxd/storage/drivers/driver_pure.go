@@ -10,6 +10,7 @@ import (
 	"github.com/canonical/lxd/lxd/storage/connectors"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
+	"github.com/canonical/lxd/shared/logger"
 	"github.com/canonical/lxd/shared/revert"
 	"github.com/canonical/lxd/shared/units"
 	"github.com/canonical/lxd/shared/validate"
@@ -31,7 +32,7 @@ type pure struct {
 	common
 
 	// Holds the low level connector for the Pure Storage driver.
-	// Should not be accessed directly outside the connector() function.
+	// Use pure.connector() to retrieve the connector.
 	storageConnector connectors.Connector
 
 	// Holds the low level HTTP client for the Pure Storage API.
@@ -49,33 +50,21 @@ func (d *pure) load() error {
 		return nil
 	}
 
-	versions, err := connectors.GetSupportedVersions(pureSupportedConnectors)
-	if err != nil {
-		return err
-	}
-
+	versions := connectors.GetSupportedVersions(pureSupportedConnectors)
 	pureVersion = strings.Join(versions, " / ")
 	pureLoaded = true
+
+	_ = d.connector().LoadModules()
 
 	return nil
 }
 
-func (d *pure) connector() (connectors.Connector, error) {
-	if d.storageConnector != nil {
-		return d.storageConnector, nil
+func (d *pure) connector() connectors.Connector {
+	if d.storageConnector == nil {
+		d.storageConnector = connectors.NewConnector(d.config["pure.mode"], d.state.ServerUUID)
 	}
 
-	connector, err := connectors.NewConnector(d.config["pure.mode"], d.state.ServerUUID)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to initialize connector: %v", err)
-	}
-
-	if !connector.LoadModules() {
-		return nil, fmt.Errorf("Pure Storage mode %q is not supported due to missing kernel modules", d.config["pure.mode"])
-	}
-
-	d.storageConnector = connector
-	return d.storageConnector, nil
+	return d.storageConnector
 }
 
 // client returns the drivers Pure Storage client. A new client is created only if it does not already exist.
@@ -167,15 +156,28 @@ func (d *pure) Validate(config map[string]string) error {
 		return err
 	}
 
-	// Check if the selected Pure Storage mode is supported on this node.
-	// Also when forming the storage pool on a LXD cluster, the mode
-	// that got discovered on the creating machine needs to be validated
-	// on the other cluster members too. This can be done here since Validate
-	// gets executed on every cluster member when receiving the cluster
-	// notification to finally create the pool.
-	c, _ := d.connector()
-	if c != nil && !c.LoadModules() {
-		return fmt.Errorf("Pure Storage mode %q is not supported due to missing kernel modules", config["pure.mode"])
+	logger.Warn("PureStorage driver config", logger.Ctx{"config": fmt.Sprintf("%+v", config)})
+	logger.Warn("PureStorage user   config", logger.Ctx{"config": fmt.Sprintf("%+v", d.config)})
+
+	oldMode := d.config["pure.mode"]
+	newMode := config["pure.mode"]
+
+	if newMode != "" {
+		// Ensure pure.mode cannot be changed to avoid leaving volume mappings and to prevent
+		// disturbing running instances.
+		if oldMode != "" && oldMode != newMode {
+			return fmt.Errorf("Pure Storage mode cannot be changed")
+		}
+
+		// Check if the selected Pure Storage mode is supported on this node.
+		// Also when forming the storage pool on a LXD cluster, the mode
+		// that got discovered on the creating machine needs to be validated
+		// on the other cluster members too. This can be done here since Validate
+		// gets executed on every cluster member when receiving the cluster
+		// notification to finally create the pool.
+		if !connectors.NewConnector(newMode, "").LoadModules() {
+			return fmt.Errorf("Pure Storage mode %q is not supported due to missing kernel modules", config["pure.mode"])
+		}
 	}
 
 	return nil
