@@ -14,6 +14,9 @@ const (
 
 	// TypeNVME represents an NVMe/TCP storage connector.
 	TypeNVME string = "nvme"
+
+	// TypeSDC represents Dell SDC storage connector.
+	TypeSDC string = "sdc"
 )
 
 // Connector represents a storage connector that handles connections through
@@ -48,4 +51,28 @@ func NewConnector(connectorType string, serverUUID string) (Connector, error) {
 	default:
 		return nil, fmt.Errorf("Invalid connector type %q", connectorType)
 	}
+}
+
+func GetSupportedVersions(supportedConnectors []string) ([]string, error) {
+	versions := make([]string, 0, len(supportedConnectors))
+
+	// Iterate over the supported connectors, extracting version and loading
+	// kernel module for each of them.
+	for _, connectorType := range supportedConnectors {
+		connector, err := NewConnector(connectorType, "")
+		if err != nil {
+			return nil, fmt.Errorf("Failed to initialize connector %q: %v", connectorType, err)
+		}
+
+		version, err := connector.Version()
+		if err != nil {
+			// Ignore the connector if the version cannot be retrieved.
+			// This is due to missing tools.
+			continue
+		}
+
+		versions = append(versions, version)
+	}
+
+	return versions, nil
 }
