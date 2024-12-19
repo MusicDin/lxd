@@ -8,6 +8,7 @@ import (
 
 	"github.com/canonical/lxd/lxd/migration"
 	"github.com/canonical/lxd/lxd/operations"
+	"github.com/canonical/lxd/lxd/storage/connectors"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/validate"
@@ -19,16 +20,20 @@ const powerFlexDefaultUser = "admin"
 // powerFlexDefaultSize represents the default PowerFlex volume size.
 const powerFlexDefaultSize = "8GiB"
 
-const (
-	powerFlexModeNVMe = "nvme"
-	powerFlexModeSDC  = "sdc"
-)
+var powerflexSupportedConnectors = []string{
+	connectors.TypeNVME,
+	connectors.TypeSDC,
+}
 
 var powerFlexLoaded bool
 var powerFlexVersion string
 
 type powerflex struct {
 	common
+
+	// Holds the low level connector for the PowerFlex driver.
+	// Should not be accessed directly outside the connector() function.
+	storageConnector connectors.Connector
 
 	// Holds the low level HTTP client for the PowerFlex API.
 	// Use powerflex.client() to retrieve the client struct.
@@ -46,26 +51,34 @@ func (d *powerflex) load() error {
 		return nil
 	}
 
-	// Detect and record the version.
-	// The NVMe CLI is shipped with the snap.
-	out, err := shared.RunCommand("nvme", "version")
+	versions, err := connectors.GetSupportedVersions(powerflexSupportedConnectors)
 	if err != nil {
-		return fmt.Errorf("Failed to get nvme-cli version: %w", err)
+		return err
 	}
 
-	fields := strings.Split(strings.TrimSpace(out), " ")
-	if strings.HasPrefix(out, "nvme version ") && len(fields) > 2 {
-		powerFlexVersion = fmt.Sprintf("%s (nvme-cli)", fields[2])
-	}
-
-	// Load the NVMe/TCP kernel modules.
-	// Ignore if the modules cannot be loaded.
-	// Support for the NVMe/TCP mode is checked during pool creation.
-	// When a LXD host gets rebooted this ensures that the kernel modules are still loaded.
-	_ = d.loadNVMeModules()
-
+	powerFlexVersion = strings.Join(versions, " / ")
 	powerFlexLoaded = true
 	return nil
+}
+
+// connector retrieves an initialized storage connector based on the configured
+// PowerFlex mode. The connector is cached in the driver struct.
+func (d *powerflex) connector() (connectors.Connector, error) {
+	if d.storageConnector != nil {
+		return d.storageConnector, nil
+	}
+
+	connector, err := connectors.NewConnector(d.config["powerflex.mode"], d.state.ServerUUID)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to initialize connector: %v", err)
+	}
+
+	if !connector.LoadModules() {
+		return nil, fmt.Errorf("Powerflex mode %q is not supported due to missing kernel modules", d.config["powerflex.mode"])
+	}
+
+	d.storageConnector = connector
+	return d.storageConnector, nil
 }
 
 // isRemote returns true indicating this driver uses remote storage.
@@ -103,10 +116,13 @@ func (d *powerflex) FillConfig() error {
 	// First try if the NVMe/TCP kernel modules can be loaed.
 	// Second try if the SDC kernel module is setup.
 	if d.config["powerflex.mode"] == "" {
-		if d.loadNVMeModules() {
-			d.config["powerflex.mode"] = powerFlexModeNVMe
+		// Create dummy connector to check if NVMe/TCP kernel modules can be loaded.
+		nvmeConnector, _ := connectors.NewConnector(connectors.TypeNVME, "")
+
+		if nvmeConnector.LoadModules() {
+			d.config["powerflex.mode"] = connectors.TypeNVME
 		} else if goscaleio.DrvCfgIsSDCInstalled() {
-			d.config["powerflex.mode"] = powerFlexModeSDC
+			d.config["powerflex.mode"] = connectors.TypeSDC
 		}
 	}
 
@@ -140,7 +156,7 @@ func (d *powerflex) Create() error {
 	client := d.client()
 
 	switch d.config["powerflex.mode"] {
-	case powerFlexModeNVMe:
+	case connectors.TypeNVME:
 		// Discover one of the storage pools SDT services.
 		if d.config["powerflex.sdt"] == "" {
 			pool, err := d.resolvePool()
@@ -164,7 +180,7 @@ func (d *powerflex) Create() error {
 			d.config["powerflex.sdt"] = relations[0].IPList[0].IP
 		}
 
-	case powerFlexModeSDC:
+	case connectors.TypeSDC:
 		if d.config["powerflex.sdt"] != "" {
 			return fmt.Errorf("The powerflex.sdt config key is specific to the NVMe/TCP mode")
 		}
@@ -287,8 +303,9 @@ func (d *powerflex) Validate(config map[string]string) error {
 	// on the other cluster members too. This can be done here since Validate
 	// gets executed on every cluster member when receiving the cluster
 	// notification to finally create the pool.
-	if d.config["powerflex.mode"] == powerFlexModeNVMe && !d.loadNVMeModules() {
-		return fmt.Errorf("NVMe/TCP is not supported")
+	connector, _ := d.connector()
+	if connector != nil && !connector.LoadModules() {
+		return fmt.Errorf("PowerFlex mode %q is not supported due to missing modules", config["powerflex.mode"])
 	}
 
 	return nil
