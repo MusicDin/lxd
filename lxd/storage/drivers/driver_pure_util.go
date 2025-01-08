@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -1059,17 +1060,20 @@ func (p *pureClient) disconnectHostFromVolume(poolName string, volName string, h
 	return nil
 }
 
-// getTarget retrieves the Pure Storage address and the its qualified name for the configured mode.
-func (p *pureClient) getTarget() (targetAddr string, targetQN string, err error) {
+// getTarget retrieves target qualified name and its addresses based on the configured mode.
+func (p *pureClient) getTarget() (targetQN string, targetAddrs []string, err error) {
 	var resp pureResponse[pureTarget]
 
 	url := api.NewURL().Path("ports")
 	err = p.requestAuthenticated(http.MethodGet, url.URL, nil, &resp)
 	if err != nil {
-		return "", "", fmt.Errorf("Failed to retrieve Pure Storage targets: %w", err)
+		return "", nil, fmt.Errorf("Failed to retrieve Pure Storage targets: %w", err)
 	}
 
 	mode := p.driver.config["pure.mode"]
+
+	var nq string
+	var addrs []string
 
 	// Find and return the target that has address (portal) and qualified name configured.
 	for _, target := range resp.Items {
@@ -1078,18 +1082,24 @@ func (p *pureClient) getTarget() (targetAddr string, targetQN string, err error)
 		}
 
 		// Strip the port from the portal address.
-		portal := strings.Split(*target.Portal, ":")[0]
+		addr := strings.Split(*target.Portal, ":")[0]
 
 		if mode == pureModeISCSI && target.IQN != nil {
-			return portal, *target.IQN, nil
+			addrs = append(addrs, addr)
+			nq = *target.IQN
 		}
 
 		if mode == pureModeNVMe && target.NQN != nil {
-			return portal, *target.NQN, nil
+			addrs = append(addrs, addr)
+			nq = *target.NQN
 		}
 	}
 
-	return "", "", api.StatusErrorf(http.StatusNotFound, "No Pure Storage target found")
+	if nq == "" || len(addrs) == 0 {
+		return "", nil, api.StatusErrorf(http.StatusNotFound, "No Pure Storage target found")
+	}
+
+	return nq, addrs, nil
 }
 
 // ensureHost returns a name of the host that is configured with a given IQN. If such host
@@ -1158,7 +1168,7 @@ func (d *pure) connect() (revert.Hook, error) {
 	defer revert.Fail()
 
 	// Find the array's qualified name for the configured mode.
-	targetAddr, targetQN, err := d.client().getTarget()
+	targetQN, targetAddrs, err := d.client().getTarget()
 	if err != nil {
 		return nil, err
 	}
@@ -1168,6 +1178,8 @@ func (d *pure) connect() (revert.Hook, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	var connectFunc func(ctx context.Context, addr string) error
 
 	switch d.config["pure.mode"] {
 	case pureModeISCSI:
@@ -1190,16 +1202,31 @@ func (d *pure) connect() (revert.Hook, error) {
 			return cleanup, nil
 		}
 
-		// Discover iSCSI targets.
-		_, _, err = shared.RunCommandSplit(d.state.ShutdownCtx, nil, nil, "iscsiadm", "--mode", "discovery", "--type", "sendtargets", "--portal", targetAddr)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to discover Pure Storage targets on %q via iSCSI: %w", targetAddr, err)
-		}
+		// Function that connects to the iSCSI target on a given address.
+		connectFunc = func(ctx context.Context, addr string) error {
+			var err error
 
-		// Attempt to login into discovered iSCSI targets.
-		_, _, err = shared.RunCommandSplit(d.state.ShutdownCtx, nil, nil, "iscsiadm", "--mode", "node", "--targetname", targetQN, "--portal", targetAddr, "--login")
-		if err != nil {
-			return nil, fmt.Errorf("Failed to connect to Pure Storage array %q via iSCSI: %w", targetAddr, err)
+			// Log warning any connection errors, in case we establish connection to a subset of
+			// target addresses.
+			defer func() {
+				if err != nil {
+					logger.Warn("Failed to connect to PureStorage target", logger.Ctx{"target_address": addr, "mode": pureModeISCSI, "err": err})
+				}
+			}()
+
+			// Discover iSCSI target.
+			_, _, err = shared.RunCommandSplit(ctx, nil, nil, "iscsiadm", "--mode", "discovery", "--type", "sendtargets", "--portal", addr)
+			if err != nil {
+				return fmt.Errorf("Failed to discover Pure Storage targets on %q via iSCSI: %w", addr, err)
+			}
+
+			// Attempt to login into discovered iSCSI target.
+			_, _, err = shared.RunCommandSplit(ctx, nil, nil, "iscsiadm", "--mode", "node", "--targetname", targetQN, "--portal", addr, "--login")
+			if err != nil {
+				return fmt.Errorf("Failed to connect to Pure Storage array %q via iSCSI: %w", addr, err)
+			}
+
+			return nil
 		}
 
 	case pureModeNVMe:
@@ -1217,16 +1244,72 @@ func (d *pure) connect() (revert.Hook, error) {
 		}
 
 		serverUUID := d.state.ServerUUID
-		_, _, err = shared.RunCommandSplit(d.state.ShutdownCtx, nil, nil, "nvme", "connect", "--transport", "tcp", "--traddr", targetAddr, "--nqn", targetQN, "--hostnqn", hostQN, "--hostid", serverUUID)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to connect to Pure Storage array %q via NVMe: %w", targetAddr, err)
+
+		// Function that connects to the NVMe target on a given address.
+		connectFunc = func(ctx context.Context, addr string) error {
+			_, _, err := shared.RunCommandSplit(ctx, nil, nil, "nvme", "connect", "--transport", "tcp", "--traddr", addr, "--nqn", targetQN, "--hostnqn", hostQN, "--hostid", serverUUID)
+			if err != nil {
+				logger.Warn("Failed to connect to PureStorage target", logger.Ctx{"target_address": addr, "mode": pureModeNVMe, "err": err})
+				return fmt.Errorf("Failed to connect to Pure Storage array via NVMe: %w", err)
+			}
+
+			return nil
 		}
 
 	default:
 		return nil, fmt.Errorf("Unsupported Pure Storage mode %q", d.config["pure.mode"])
 	}
 
-	revert.Add(func() { _ = d.disconnect(targetQN) })
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(targetAddrs))
+
+	// Do not defer context cancellation to avoid stopping connection attempts if
+	// the function is left before all connection attempts are done.
+	timeoutCtx, cancel := context.WithTimeout(d.state.ShutdownCtx, 30*time.Second)
+
+	// Connect to all target addresses.
+	for _, addr := range targetAddrs {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+			errChan <- connectFunc(timeoutCtx, addr)
+		}()
+	}
+
+	// Ensure error channel is closed once all routines have finished.
+	go func() {
+		wg.Wait()
+		close(errChan)
+	}()
+
+	// Revert successful connections in case of an unexpected error.
+	revert.Add(func() {
+		// Cancel the context to immediately stop all connection attempts.
+		cancel()
+
+		// Wait until all connection attempts have finished.
+		wg.Wait()
+
+		// Revert any potential successful connections.
+		_ = d.disconnect(targetQN)
+	})
+
+	// Only one successful connection is required to succeed. Therefore, continue
+	// once the first connection is established, or exit if all connections fail.
+	errorCount := 0
+	for {
+		err := <-errChan
+		if err == nil {
+			break
+		}
+
+		errorCount++
+
+		if errorCount == len(targetAddrs) {
+			return nil, err
+		}
+	}
 
 	cleanup := revert.Clone().Fail
 	revert.Success()
@@ -1374,8 +1457,8 @@ func (d *pure) unmapVolume(vol Volume) error {
 
 	// If this was the last volume being unmapped from this system, terminate iSCSI session
 	// and remove the host from Pure Storage.
-	if host.ConnectionCount == 1 {
-		_, targetQN, err := d.client().getTarget()
+	if host.ConnectionCount <= 1 {
+		targetQN, _, err := d.client().getTarget()
 		if err != nil {
 			return err
 		}
