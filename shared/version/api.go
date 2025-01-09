@@ -431,6 +431,7 @@ var APIExtensions = []string{
 	"network_get_target",
 	"network_zones_all_projects",
 	"instance_root_volume_attachment",
+	"storage_driver_pure",
 }
 
 // APIExtensionsCount returns the number of available API extensions.
