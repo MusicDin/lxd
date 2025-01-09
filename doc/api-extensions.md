@@ -2568,3 +2568,7 @@ GET request to fetch the LXD entities has the `with-access-entitlements=<comma_s
 ## `profiles_all_projects`
 
 This adds support for listing profiles across all projects using the `all-projects` parameter in `GET /1.0/profiles` requests.
+
+## `storage_driver_pure`
+
+Adds support for Pure Storage storage driver.
