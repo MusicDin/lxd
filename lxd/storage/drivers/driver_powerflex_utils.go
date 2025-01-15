@@ -844,38 +844,33 @@ func (d *powerflex) deleteNVMeHost() error {
 }
 
 // mapVolume maps the given volume onto this host.
-func (d *powerflex) mapVolume(vol Volume) (revert.Hook, error) {
-	reverter := revert.New()
-	defer reverter.Fail()
-
+func (d *powerflex) mapVolume(vol Volume) error {
 	var hostID string
 
 	switch d.config["powerflex.mode"] {
 	case connectors.TypeNVME:
 		unlock, err := storageConnectorLock(d.connector().Type(), "powerflex")
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		defer unlock()
 
-		var cleanup revert.Hook
-		hostID, cleanup, err = d.createNVMeHost()
+		hostID, _, err = d.createNVMeHost()
 		if err != nil {
-			return nil, err
+			return err
 		}
 
-		reverter.Add(cleanup)
 	case connectors.TypeSDC:
 		hostGUID, err := d.getHostGUID()
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		client := d.client()
 		host, err := client.getSDCHostByGUID(hostGUID)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		hostID = host.ID
@@ -883,18 +878,18 @@ func (d *powerflex) mapVolume(vol Volume) (revert.Hook, error) {
 
 	volumeName, err := d.getVolumeName(vol)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	client := d.client()
 	volumeID, err := client.getVolumeID(volumeName)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	volume, err := client.getVolume(volumeID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	mapped := false
@@ -907,10 +902,8 @@ func (d *powerflex) mapVolume(vol Volume) (revert.Hook, error) {
 	if !mapped {
 		err = client.createHostVolumeMapping(hostID, volumeID)
 		if err != nil {
-			return nil, err
+			return err
 		}
-
-		reverter.Add(func() { _ = client.deleteHostVolumeMapping(hostID, volumeID) })
 	}
 
 	targetAddr := d.config["powerflex.sdt"]
@@ -921,14 +914,10 @@ func (d *powerflex) mapVolume(vol Volume) (revert.Hook, error) {
 	// to the host.
 	err = d.connector().ConnectAll(d.state.ShutdownCtx, targetAddr)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	reverter.Add(func() { _ = d.connector().DisconnectAll() })
-
-	cleanup := reverter.Clone().Fail
-	reverter.Success()
-	return cleanup, nil
+	return nil
 }
 
 // getMappedDevPath returns the local device path for the given volume.
@@ -938,12 +927,12 @@ func (d *powerflex) getMappedDevPath(vol Volume, mapVolume bool) (string, revert
 	defer revert.Fail()
 
 	if mapVolume {
-		cleanup, err := d.mapVolume(vol)
+		err := d.mapVolume(vol)
 		if err != nil {
 			return "", nil, err
 		}
 
-		revert.Add(cleanup)
+		revert.Add(func() { _ = d.unmapVolume(vol) })
 	}
 
 	volumeName, err := d.getVolumeName(vol)
@@ -1031,7 +1020,7 @@ func (d *powerflex) unmapVolume(vol Volume) error {
 	}
 
 	err = client.deleteHostVolumeMapping(host.ID, volume)
-	if err != nil {
+	if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
 		return err
 	}
 
