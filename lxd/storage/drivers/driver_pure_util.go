@@ -1016,6 +1016,20 @@ func (d *pure) unmapVolume(vol Volume) error {
 	volumePath, _, _ := d.getMappedDevPath(vol, false)
 	if volumePath != "" {
 		if d.config["pure.mode"] == pureModeISCSI {
+			// removeDevice removes device from the system.
+			removeDevice := func(devName string) error {
+				path := fmt.Sprintf("/sys/block/%s/device/delete", devName)
+				if shared.PathExists(path) {
+					// Delete device.
+					err := os.WriteFile(path, []byte("1"), 0400)
+					if err != nil {
+						return err
+					}
+				}
+
+				return nil
+			}
+
 			// When volume is disconnected from the host, the device will remain on the system.
 			//
 			// To remove the device, we need to either logout from the session or remove the
@@ -1026,9 +1040,28 @@ func (d *pure) unmapVolume(vol Volume) error {
 
 			path := fmt.Sprintf("/sys/block/%s/device/delete", devName)
 			if shared.PathExists(path) {
-				err := os.WriteFile(path, []byte("1"), 0400)
+				err := removeDevice(devName)
 				if err != nil {
 					return fmt.Errorf("Failed to unmap volume %q: Failed to remove device %q: %w", vol.name, devName, err)
+				}
+			} else {
+				// If delete file does not exist, the device is not removable.
+				// This indicates usage of a multipath device, therefore, check
+				// for its slaves and remove them.
+				slaves, err := filepath.Glob(fmt.Sprintf("/sys/block/%s/slaves/*", devName))
+				if err != nil {
+					return fmt.Errorf("Failed to unmap volume %q: Failed to list slaves for device %q: %w", vol.name, devName, err)
+				}
+
+				// Remove slave devices.
+				for _, slave := range slaves {
+					split := strings.Split(filepath.Base(slave), "/")
+					slaveDevName := split[len(split)-1]
+
+					err := removeDevice(slaveDevName)
+					if err != nil {
+						return fmt.Errorf("Failed to unmap volume %q: Failed to remove slave device %q: %w", vol.name, slaveDevName, err)
+					}
 				}
 			}
 		}
