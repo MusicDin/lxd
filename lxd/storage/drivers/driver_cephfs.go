@@ -51,7 +51,7 @@ func (d *cephfs) load() error {
 
 	// Detect and record the version.
 	if cephfsVersion == "" {
-		out, err := shared.RunCommand("rbd", "--version")
+		out, err := shared.RunCommandContext(d.state.ShutdownCtx, "rbd", "--version")
 		if err != nil {
 			return err
 		}
@@ -187,7 +187,7 @@ func (d *cephfs) Create() error {
 
 			if !osdPoolExists {
 				// Create new osd pool.
-				_, err := shared.RunCommand("ceph",
+				_, err := shared.RunCommandContext(d.state.ShutdownCtx, "ceph",
 					"--name", "client."+d.config["cephfs.user.name"],
 					"--cluster", d.config["cephfs.cluster_name"],
 					"osd",
@@ -202,7 +202,7 @@ func (d *cephfs) Create() error {
 
 				revert.Add(func() {
 					// Delete the OSD pool.
-					_, _ = shared.RunCommand("ceph",
+					_, _ = shared.RunCommandContext(d.state.ShutdownCtx, "ceph",
 						"--name", "client."+d.config["cephfs.user.name"],
 						"--cluster", d.config["cephfs.cluster_name"],
 						"osd",
@@ -238,7 +238,7 @@ func (d *cephfs) Create() error {
 		}
 
 		// Create the filesystem.
-		_, err := shared.RunCommand("ceph",
+		_, err := shared.RunCommandContext(d.state.ShutdownCtx, "ceph",
 			"--name", "client."+d.config["cephfs.user.name"],
 			"--cluster", d.config["cephfs.cluster_name"],
 			"fs",
@@ -253,7 +253,7 @@ func (d *cephfs) Create() error {
 
 		revert.Add(func() {
 			// Set the FS to fail so that we can remove it.
-			_, _ = shared.RunCommand("ceph",
+			_, _ = shared.RunCommandContext(d.state.ShutdownCtx, "ceph",
 				"--name", "client."+d.config["cephfs.user.name"],
 				"--cluster", d.config["cephfs.cluster_name"],
 				"fs",
@@ -262,7 +262,7 @@ func (d *cephfs) Create() error {
 			)
 
 			// Delete the FS.
-			_, _ = shared.RunCommand("ceph",
+			_, _ = shared.RunCommandContext(d.state.ShutdownCtx, "ceph",
 				"--name", "client."+d.config["cephfs.user.name"],
 				"--cluster", d.config["cephfs.cluster_name"],
 				"fs",
