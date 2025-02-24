@@ -251,6 +251,99 @@ func devlxdDevicesGetHandler(d *Daemon, w http.ResponseWriter, r *http.Request) 
 	return okResponse(devices, "json")
 }
 
+var devlxdInstanceDevices = devLxdHandler{
+	path:        "/1.0/instances/{instanceName}/devices",
+	handlerFunc: devlxdInstanceDevicesHandler,
+}
+
+func devlxdInstanceDevicesHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *devLxdResponse {
+	client, err := getVsockClient(d)
+	if err != nil {
+		return smartResponse(fmt.Errorf("Failed connecting to LXD over vsock: %w", err))
+	}
+
+	defer client.Disconnect()
+
+	instName := mux.Vars(r)["instanceName"]
+	url := api.NewURL().Path("1.0", "instances", instName, "devices")
+
+	switch r.Method {
+	case "GET":
+		resp, _, err := client.RawQuery("GET", url.String(), nil, "")
+		if err != nil {
+			return smartResponse(err)
+		}
+
+		var devices config.Devices
+
+		err = resp.MetadataAsStruct(&devices)
+		if err != nil {
+			return smartResponse(fmt.Errorf("Failed parsing response from LXD: %w", err))
+		}
+
+		return okResponse(devices, "json")
+	case "POST":
+		logger.Warn("DeviceAttachement started")
+		defer logger.Warn("DeviceAttachement finished")
+
+		type DeviceAttachment struct {
+			VolumeName  string `json:"volume"`
+			PoolName    string `json:"pool"`
+			Path        string `json:"path"` // Path within the instance
+			Propagation string `json:"propagation"`
+		}
+
+		reqBody := DeviceAttachment{}
+		err := json.NewDecoder(r.Body).Decode(&reqBody)
+		if err != nil {
+			return smartResponse(err)
+		}
+
+		reqBody.Propagation = "rshared"
+
+		logger.Warn("DeviceAttachement decoded request", logger.Ctx{"request": reqBody})
+
+		_, _, err = client.RawQuery("POST", url.String(), reqBody, "")
+		if err != nil {
+			return smartResponse(err)
+		}
+
+		return okResponse(nil, "json")
+	default:
+		return &devLxdResponse{`method "` + r.Method + `" not allowed`, http.StatusBadRequest, "raw"}
+	}
+}
+
+var devlxdInstanceDevicesDelete = devLxdHandler{
+	path:        "/1.0/instances/{instanceName}/devices/{devName}",
+	handlerFunc: devlxdInstanceDevicesDeleteHandler,
+}
+
+func devlxdInstanceDevicesDeleteHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *devLxdResponse {
+	client, err := getVsockClient(d)
+	if err != nil {
+		return smartResponse(fmt.Errorf("Failed connecting to LXD over vsock: %w", err))
+	}
+
+	defer client.Disconnect()
+
+	instName := mux.Vars(r)["instanceName"]
+	devName := mux.Vars(r)["devName"]
+	url := api.NewURL().Path("1.0", "instances", instName, "devices", devName)
+
+	switch r.Method {
+	case "DELETE":
+		_, _, err := client.RawQuery("DELETE", url.String(), nil, "")
+		if err != nil {
+			return smartResponse(err)
+		}
+
+		return okResponse(nil, "json")
+	default:
+		return &devLxdResponse{`method "` + r.Method + `" not allowed`, http.StatusBadRequest, "raw"}
+	}
+}
+
 var devlxdImageExport = devLxdHandler{
 	path:        "/1.0/images/{fingerprint}/export",
 	handlerFunc: devlxdImageExportHandler,
@@ -296,6 +389,229 @@ func devlxdImageExportHandler(d *Daemon, w http.ResponseWriter, r *http.Request)
 	}
 
 	return nil
+}
+
+var devlxdStoragePoolGet = devLxdHandler{
+	path:        "/1.0/sp/{pool}",
+	handlerFunc: devlxdStoragePoolGetHandler,
+}
+
+func devlxdStoragePoolGetHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *devLxdResponse {
+	if r.Method != "GET" {
+		return errorResponse(http.StatusMethodNotAllowed, "Method not allowed")
+	}
+
+	logger.Warn("devlxdStoragePoolGet started")
+	defer logger.Warn("devlxdStoragePoolGet finished")
+
+	poolName, err := url.PathUnescape(mux.Vars(r)["pool"])
+	if err != nil {
+		return smartResponse(err)
+	}
+
+	client, err := getClient(d.serverCID, int(d.serverPort), d.serverCertificate)
+	if err != nil {
+		return smartResponse(fmt.Errorf("Failed connecting to LXD over vsock: %w", err))
+	}
+
+	// Remove the request URI, this cannot be set on requests.
+	r.RequestURI = ""
+
+	// Set up the request URL with the correct host.
+	r.URL = &api.NewURL().Scheme("https").Host("custom.socket").Path(version.APIVersion, "storage-pools", poolName).URL
+
+	// Proxy the request.
+	resp, err := client.Do(r)
+	if err != nil {
+		return errorResponse(http.StatusInternalServerError, fmt.Errorf("Failed to proxy request: %w", err).Error())
+	}
+
+	// Set headers from the host LXD.
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Set(k, v)
+		}
+	}
+
+	// Copy headers and response body.
+	w.WriteHeader(resp.StatusCode)
+	_, err = io.Copy(w, resp.Body)
+	if err != nil {
+		return smartResponse(fmt.Errorf("Failed setting headers: %w", err))
+	}
+
+	logger.Info("devlxdStoragePoolGet OK")
+	return nil
+}
+
+var devlxdStoragePoolVolume = devLxdHandler{
+	path:        "/1.0/sp/{pool}/volumes/{volume}",
+	handlerFunc: devlxdStoragePoolVolumeHandler,
+}
+
+// TODO:
+func devlxdStoragePoolVolumeHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *devLxdResponse {
+	logger.Warn("devlxdStoragePoolVolumeHandler started")
+	defer logger.Warn("devlxdStoragePoolVolumeHandler finished")
+
+	switch r.Method {
+	case http.MethodGet:
+		poolName, err := url.PathUnescape(mux.Vars(r)["pool"])
+		if err != nil {
+			return smartResponse(err)
+		}
+
+		volName, err := url.PathUnescape(mux.Vars(r)["volume"])
+		if err != nil {
+			return smartResponse(err)
+		}
+
+		// Remove the request URI, this cannot be set on requests.
+		r.RequestURI = ""
+
+		// Set up the request URL with the correct host.
+		r.URL = &api.NewURL().Scheme("https").Host("custom.socket").Path(version.APIVersion, "storage-pools", poolName, "volumes", "custom", volName).URL
+
+	// case http.MethodPost:
+	// 	poolName, err := url.PathUnescape(mux.Vars(r)["pool"])
+	// 	if err != nil {
+	// 		return smartResponse(err)
+	// 	}
+
+	// 	volName, err := url.PathUnescape(mux.Vars(r)["volume"])
+	// 	if err != nil {
+	// 		return smartResponse(err)
+	// 	}
+
+	// 	// Remove the request URI, this cannot be set on requests.
+	// 	r.RequestURI = ""
+
+	// 	// Set up the request URL with the correct host.
+	// 	r.URL = &api.NewURL().Scheme("https").Host("custom.socket").Path(version.APIVersion, "storage-pools", poolName, "volumes", "custom").URL
+
+	// 	// Set the request body.
+	// 	reqBody := api.StorageVolumesPost{
+	// 		Name:        volName,
+	// 		Type:        "custom",
+	// 		ContentType: "filesystem",
+	// 		StorageVolumePut: api.StorageVolumePut{
+	// 			Config: map[string]string{
+	// 				"size": "1GiB",
+	// 			},
+	// 			Description: "K8s CSI volume",
+	// 		},
+	// 	}
+
+	// 	body, err := json.Marshal(reqBody)
+	// 	if err != nil {
+	// 		return errorResponse(http.StatusBadRequest, "Failed to marshal request body into JSON")
+	// 	}
+
+	// 	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	case http.MethodDelete:
+		poolName, err := url.PathUnescape(mux.Vars(r)["pool"])
+		if err != nil {
+			return smartResponse(err)
+		}
+
+		volName, err := url.PathUnescape(mux.Vars(r)["volume"])
+		if err != nil {
+			return smartResponse(err)
+		}
+
+		// Remove the request URI, this cannot be set on requests.
+		r.RequestURI = ""
+
+		// Set up the request URL with the correct host.
+		r.URL = &api.NewURL().Scheme("https").Host("custom.socket").Path(version.APIVersion, "storage-pools", poolName, "volumes", "custom", volName).URL
+
+	default:
+		return errorResponse(http.StatusMethodNotAllowed, fmt.Sprintf("Method %q not allowed", r.Method))
+	}
+
+	client, err := getClient(d.serverCID, int(d.serverPort), d.serverCertificate)
+	if err != nil {
+		return smartResponse(fmt.Errorf("Failed connecting to LXD over vsock: %w", err))
+	}
+
+	// Proxy the request.
+	resp, err := client.Do(r)
+	if err != nil {
+		return errorResponse(http.StatusInternalServerError, fmt.Errorf("Failed to proxy request: %w", err).Error())
+	}
+
+	// Set headers from the host LXD.
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Set(k, v)
+		}
+	}
+
+	// Copy headers and response body.
+	w.WriteHeader(resp.StatusCode)
+	_, err = io.Copy(w, resp.Body)
+	if err != nil {
+		return smartResponse(fmt.Errorf("Failed setting headers: %w", err))
+	}
+
+	logger.Info("devlxdStoragePoolVolumeGet OK")
+	return nil
+
+}
+
+var devlxdStoragePoolVolumePost = devLxdHandler{
+	path:        "/1.0/sp/{pool}/volumes",
+	handlerFunc: devlxdStoragePoolVolumePostHandler,
+}
+
+func devlxdStoragePoolVolumePostHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *devLxdResponse {
+	logger.Warn("devlxdStoragePoolVolumePostHandler started (agent)")
+	defer logger.Warn("devlxdStoragePoolVolumePostHandler finished (agent)")
+
+	if r.Method != http.MethodPost {
+		return errorResponse(http.StatusMethodNotAllowed, "Method not allowed")
+	}
+
+	poolName, err := url.PathUnescape(mux.Vars(r)["pool"])
+	if err != nil {
+		return smartResponse(err)
+	}
+
+	// Remove the request URI, this cannot be set on requests.
+	r.RequestURI = ""
+
+	// Set up the request URL with the correct host.
+	r.URL = &api.NewURL().Scheme("https").Host("custom.socket").Path(version.APIVersion, "storage-pools", poolName, "volumes").URL
+
+	client, err := getClient(d.serverCID, int(d.serverPort), d.serverCertificate)
+	if err != nil {
+		return smartResponse(fmt.Errorf("Failed connecting to LXD over vsock: %w", err))
+	}
+
+	// Proxy the request.
+	resp, err := client.Do(r)
+	if err != nil {
+		return errorResponse(http.StatusInternalServerError, fmt.Errorf("Failed to proxy request: %w", err).Error())
+	}
+
+	// Set headers from the host LXD.
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Set(k, v)
+		}
+	}
+
+	// Copy headers and response body.
+	w.WriteHeader(resp.StatusCode)
+	_, err = io.Copy(w, resp.Body)
+	if err != nil {
+		return smartResponse(fmt.Errorf("Failed setting headers: %w", err))
+	}
+
+	logger.Info("devlxdStoragePoolVolumeGet OK")
+	return nil
+
 }
 
 var devlxdUbuntuProGet = devLxdHandler{
@@ -398,10 +714,15 @@ var handlers = []devLxdHandler{
 	devlxdAPIGet,
 	devlxdConfigGet,
 	devlxdConfigKeyGet,
-	devlxdMetadataGet,
-	devLxdEventsGet,
+	devlxdInstanceDevices,
 	devlxdDevicesGet,
+	devlxdInstanceDevicesDelete,
+	devLxdEventsGet,
 	devlxdImageExport,
+	devlxdMetadataGet,
+	devlxdStoragePoolVolume,
+	devlxdStoragePoolVolumePost,
+	devlxdStoragePoolGet,
 	devlxdUbuntuProGet,
 	devlxdUbuntuProTokenPost,
 }

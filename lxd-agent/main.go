@@ -38,7 +38,7 @@ func main() {
 	app.SetVersionTemplate("{{.Version}}\n")
 	app.Version = version.Version
 	if version.IsLTSVersion {
-		app.Version = version.Version + " LTS"
+		app.Version = version.Version + " LTS (modified)"
 	}
 
 	// Run the main command and handle errors

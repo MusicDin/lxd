@@ -992,11 +992,15 @@ func storagePoolVolumesPost(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
+	logger.Warn("Storage pool", logger.Ctx{"pool": poolName, "action": "create storage volume"})
+
 	requestProjectName := request.ProjectParam(r)
 	projectName, err := project.StorageVolumeProject(s.DB.Cluster, requestProjectName, cluster.StoragePoolVolumeTypeCustom)
 	if err != nil {
 		return response.SmartError(err)
 	}
+
+	logger.Warn("Project name", logger.Ctx{"project": projectName, "action": "create storage volume"})
 
 	resp := forwardedResponseIfTargetIsRemote(s, r)
 	if resp != nil {
@@ -1019,6 +1023,8 @@ func storagePoolVolumesPost(d *Daemon, r *http.Request) response.Response {
 	if err != nil {
 		return response.BadRequest(err)
 	}
+
+	logger.Warn("Decoded request", logger.Ctx{"req": fmt.Sprintf("%#v", req)})
 
 	// Check new volume name is valid.
 	err = storagePools.ValidVolumeName(req.Name)
@@ -1059,6 +1065,8 @@ func storagePoolVolumesPost(d *Daemon, r *http.Request) response.Response {
 		if err != nil {
 			return err
 		}
+
+		logger.Warn("Got storage pool ID", logger.Ctx{"ID": poolID})
 
 		// Check if destination volume exists.
 		dbVolume, err = tx.GetStoragePoolVolume(ctx, poolID, projectName, cluster.StoragePoolVolumeTypeCustom, req.Name, true)
@@ -2017,6 +2025,8 @@ func storagePoolVolumeGet(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
+	logger.Warn("Got volume details", logger.Ctx{"pool": details.pool, "location": details.location, "volName": details.volumeName, "volType": details.volumeType, "volTypeName": details.volumeTypeName})
+
 	// Check that the storage volume type is valid.
 	if !shared.ValueInSlice(details.volumeType, supportedVolumeTypes) {
 		return response.BadRequest(fmt.Errorf("Invalid storage volume type %q", details.volumeTypeName))
@@ -2054,6 +2064,8 @@ func storagePoolVolumeGet(d *Daemon, r *http.Request) response.Response {
 	if err != nil {
 		return response.SmartError(err)
 	}
+
+	logger.Warn("Got DB volume", logger.Ctx{"project": requestProjectName, "dbVolume": dbVolume.Name})
 
 	volumeUsedBy, err := storagePoolVolumeUsedByGet(s, requestProjectName, dbVolume)
 	if err != nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/canonical/lxd/lxd/auth"
 	"github.com/canonical/lxd/lxd/cloudinit"
+	"github.com/canonical/lxd/lxd/db"
 	"github.com/canonical/lxd/lxd/events"
 	"github.com/canonical/lxd/lxd/instance"
 	"github.com/canonical/lxd/lxd/instance/instancetype"
@@ -381,6 +383,110 @@ func devlxdUbuntuProTokenPostHandler(d *Daemon, c instance.Instance, w http.Resp
 	return response.DevLxdResponse(http.StatusOK, tokenJSON, "json", c.Type() == instancetype.VM)
 }
 
+var devlxdStoragePoolGet = devLxdHandler{
+	path:        "/1.0/storage-pools/{poolName}",
+	handlerFunc: devlxdStoragePoolGetHandler,
+}
+
+func devlxdStoragePoolGetHandler(d *Daemon, c instance.Instance, w http.ResponseWriter, r *http.Request) response.Response {
+	if shared.IsFalse(c.ExpandedConfig()["security.devlxd"]) {
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), c.Type() == instancetype.VM)
+	}
+
+	var err error
+	var pool *api.StoragePool
+
+	poolName := mux.Vars(r)["poolName"]
+	err = d.db.Cluster.Transaction(d.shutdownCtx, func(ctx context.Context, tx *db.ClusterTx) error {
+		_, pool, _, err = tx.GetStoragePool(ctx, poolName)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+	if err != nil {
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusNotFound, "storage pool not found"), c.Type() == instancetype.VM)
+	}
+
+	return response.DevLxdResponse(http.StatusOK, pool, "json", c.Type() == instancetype.VM)
+}
+
+var devlxdStoragePoolVolumeGet = devLxdHandler{
+	path:        "/1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}",
+	handlerFunc: devlxdStoragePoolVolumeGetHandler,
+}
+
+func devlxdStoragePoolVolumeGetHandler(d *Daemon, c instance.Instance, w http.ResponseWriter, r *http.Request) response.Response {
+	if shared.IsFalse(c.ExpandedConfig()["security.devlxd"]) {
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), c.Type() == instancetype.VM)
+	}
+
+	// Allow access only to custom volumes.
+	volType := mux.Vars(r)["type"]
+	if volType != "custom" {
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), c.Type() == instancetype.VM)
+	}
+
+	err := addStoragePoolVolumeDetailsToRequestContext(d.State(), r)
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	// TODO:
+	// - Allow searching only custom volumes
+	// - Allow searching only volumes with config.kubernetes=true
+	// - We need to decide which storage pools are allowed.
+	// 	- We want to allow access to different storage pools (e.g. local storage for VMs, ceph-rados for buckets, pure storage for FS, etc.)
+	//      - We should still limit access to storage pools within default project and VMs project.
+
+	return storagePoolVolumeGet(d, r)
+
+	// var err error
+	// var pool *api.StoragePool
+
+	// poolName := mux.Vars(r)["pool"]
+	// volName := mux.Vars(r)["volume"]
+
+	// err = d.db.Cluster.Transaction(d.shutdownCtx, func(ctx context.Context, tx *db.ClusterTx) error {
+	// 	_, pool, _, err = tx.GetStoragePoolVolume(ctx, poolName)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+
+	// 	return nil
+	// })
+	// if err != nil {
+	// 	return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusNotFound, "storage pool not found"), c.Type() == instancetype.VM)
+	// }
+
+	// return response.DevLxdResponse(http.StatusOK, pool, "json", c.Type() == instancetype.VM)
+}
+
+var devlxdStoragePoolVolumePost = devLxdHandler{
+	path:        "/1.0/storage-pools/{pool}/volumes/{type}",
+	handlerFunc: devlxdStoragePoolVolumePostHandler,
+}
+
+func devlxdStoragePoolVolumePostHandler(d *Daemon, c instance.Instance, w http.ResponseWriter, r *http.Request) response.Response {
+	if shared.IsFalse(c.ExpandedConfig()["security.devlxd"]) {
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), c.Type() == instancetype.VM)
+	}
+
+	// Allow access only to custom volumes.
+	volType := mux.Vars(r)["type"]
+	if volType != "custom" {
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), c.Type() == instancetype.VM)
+	}
+
+	err := addStoragePoolVolumeDetailsToRequestContext(d.State(), r)
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	return storagePoolVolumesPost(d, r)
+}
+
 var handlers = []devLxdHandler{
 	{
 		path: "/",
@@ -395,6 +501,9 @@ var handlers = []devLxdHandler{
 	devlxdEventsGet,
 	devlxdImageExport,
 	devlxdDevicesGet,
+	devlxdStoragePoolGet,
+	devlxdStoragePoolVolumeGet,
+	devlxdStoragePoolVolumePost,
 	devlxdUbuntuProGet,
 	devlxdUbuntuProTokenPost,
 }
