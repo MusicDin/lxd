@@ -223,12 +223,12 @@ func devlxdAPIGetHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *dev
 	return &devLxdResponse{`method "` + r.Method + `" not allowed`, http.StatusBadRequest, "raw"}
 }
 
-var devlxdDevicesGet = devLxdHandler{
+var devlxdDevices = devLxdHandler{
 	path:        "/1.0/devices",
-	handlerFunc: devlxdDevicesGetHandler,
+	handlerFunc: devlxdDevicesHandler,
 }
 
-func devlxdDevicesGetHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *devLxdResponse {
+func devlxdDevicesHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *devLxdResponse {
 	client, err := getVsockClient(d)
 	if err != nil {
 		return smartResponse(fmt.Errorf("Failed connecting to LXD over vsock: %w", err))
@@ -236,19 +236,71 @@ func devlxdDevicesGetHandler(d *Daemon, w http.ResponseWriter, r *http.Request) 
 
 	defer client.Disconnect()
 
-	resp, _, err := client.RawQuery("GET", "/1.0/devices", nil, "")
+	switch r.Method {
+	case "GET":
+		resp, _, err := client.RawQuery("GET", "/1.0/devices", nil, "")
+		if err != nil {
+			return smartResponse(err)
+		}
+
+		var devices config.Devices
+
+		err = resp.MetadataAsStruct(&devices)
+		if err != nil {
+			return smartResponse(fmt.Errorf("Failed parsing response from LXD: %w", err))
+		}
+
+		return okResponse(devices, "json")
+	case "POST":
+
+		type DeviceAttachment struct {
+			VolumeName string `json:"volume"`
+			PoolName   string `json:"pool"`
+			Path       string `json:"path"` // Path within the instance
+		}
+
+		reqBody := DeviceAttachment{}
+		err := json.NewDecoder(r.Body).Decode(&reqBody)
+		if err != nil {
+			return smartResponse(err)
+		}
+
+		_, _, err = client.RawQuery("POST", "/1.0/devices", reqBody, "")
+		if err != nil {
+			return smartResponse(err)
+		}
+
+		return okResponse(nil, "json")
+	default:
+		return &devLxdResponse{`method "` + r.Method + `" not allowed`, http.StatusBadRequest, "raw"}
+	}
+}
+
+var devlxdDevicesDelete = devLxdHandler{
+	path:        "/1.0/devices/{devName}",
+	handlerFunc: devlxdDevicesDeleteHandler,
+}
+
+func devlxdDevicesDeleteHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *devLxdResponse {
+	client, err := getVsockClient(d)
 	if err != nil {
-		return smartResponse(err)
+		return smartResponse(fmt.Errorf("Failed connecting to LXD over vsock: %w", err))
 	}
 
-	var devices config.Devices
+	defer client.Disconnect()
 
-	err = resp.MetadataAsStruct(&devices)
-	if err != nil {
-		return smartResponse(fmt.Errorf("Failed parsing response from LXD: %w", err))
+	switch r.Method {
+	case "DELETE":
+		devName := mux.Vars(r)["devName"]
+		_, _, err := client.RawQuery("DELETE", fmt.Sprintf("/1.0/devices/%s", devName), nil, "")
+		if err != nil {
+			return smartResponse(err)
+		}
+
+		return okResponse(nil, "json")
+	default:
+		return &devLxdResponse{`method "` + r.Method + `" not allowed`, http.StatusBadRequest, "raw"}
 	}
-
-	return okResponse(devices, "json")
 }
 
 var devlxdInstanceDevices = devLxdHandler{
@@ -715,7 +767,7 @@ var handlers = []devLxdHandler{
 	devlxdConfigGet,
 	devlxdConfigKeyGet,
 	devlxdInstanceDevices,
-	devlxdDevicesGet,
+	devlxdDevices,
 	devlxdInstanceDevicesDelete,
 	devLxdEventsGet,
 	devlxdImageExport,

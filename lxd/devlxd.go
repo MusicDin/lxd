@@ -28,9 +28,11 @@ import (
 	"github.com/canonical/lxd/lxd/response"
 	"github.com/canonical/lxd/lxd/state"
 	"github.com/canonical/lxd/lxd/ucred"
+	"github.com/canonical/lxd/lxd/util"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/logger"
+	"github.com/canonical/lxd/shared/revert"
 	"github.com/canonical/lxd/shared/version"
 	"github.com/canonical/lxd/shared/ws"
 )
@@ -315,28 +317,236 @@ func devlxdAPIHandlerFunc(d *Daemon, c instance.Instance, w http.ResponseWriter,
 	return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusMethodNotAllowed, "method %q not allowed", r.Method), c.Type() == instancetype.VM)
 }
 
-var devlxdDevicesGet = devLxdHandler{
+var devlxdDevices = devLxdHandler{
 	path:        "/1.0/devices",
-	handlerFunc: devlxdDevicesGetHandler,
+	handlerFunc: devlxdDevicesHandler,
 }
 
-func devlxdDevicesGetHandler(d *Daemon, c instance.Instance, w http.ResponseWriter, r *http.Request) response.Response {
+func devlxdDevicesHandler(d *Daemon, c instance.Instance, w http.ResponseWriter, r *http.Request) response.Response {
 	if shared.IsFalse(c.ExpandedConfig()["security.devlxd"]) {
 		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), c.Type() == instancetype.VM)
 	}
 
-	// Populate NIC hwaddr from volatile if not explicitly specified.
-	// This is so cloud-init running inside the instance can identify the NIC when the interface name is
-	// different than the LXD device name (such as when run inside a VM).
-	localConfig := c.LocalConfig()
-	devices := c.ExpandedDevices()
-	for devName, devConfig := range devices {
-		if devConfig["type"] == "nic" && devConfig["hwaddr"] == "" && localConfig["volatile."+devName+".hwaddr"] != "" {
-			devices[devName]["hwaddr"] = localConfig["volatile."+devName+".hwaddr"]
+	logger.Warn("devlxdDevicesHandler started")
+	defer logger.Warn("devlxdDevicesHandler finished")
+
+	switch {
+	case r.Method == http.MethodGet:
+		// Populate NIC hwaddr from volatile if not explicitly specified.
+		// This is so cloud-init running inside the instance can identify the NIC when the interface name is
+		// different than the LXD device name (such as when run inside a VM).
+		localConfig := c.LocalConfig()
+		devices := c.ExpandedDevices()
+		for devName, devConfig := range devices {
+			if devConfig["type"] == "nic" && devConfig["hwaddr"] == "" && localConfig["volatile."+devName+".hwaddr"] != "" {
+				devices[devName]["hwaddr"] = localConfig["volatile."+devName+".hwaddr"]
+			}
 		}
+
+		return response.DevLxdResponse(http.StatusOK, c.ExpandedDevices(), "json", c.Type() == instancetype.VM)
+	case r.Method == http.MethodPost:
+		// Attach a new device to the instance.
+		// Currently, we only support attaching custom storage volumes.
+
+		if c.Type() == instancetype.Container {
+			return response.DevLxdErrorResponse(api.NewStatusError(http.StatusBadRequest, "Device attachment is only supported for virtual machines"), c.Type() == instancetype.VM)
+		}
+
+		s := d.State()
+
+		instName := c.Name()
+		projectName := c.Project().Name
+
+		logger.Warn("devlxdDevicesHandler POST started", logger.Ctx{"name": instName, "project": projectName})
+		defer logger.Warn("devlxdDevicesHandler POST finished", logger.Ctx{"project": projectName, "name": instName})
+
+		type DeviceAttachment struct {
+			VolumeName string `json:"volume"`
+			PoolName   string `json:"pool"`
+			Path       string `json:"path"` // Path within the instance
+		}
+
+		var req DeviceAttachment
+
+		// Parse the request.
+		err := json.NewDecoder(r.Body).Decode(&req)
+		if err != nil {
+			return response.BadRequest(fmt.Errorf("Failed to decode request: %w", err))
+		}
+
+		// Quick check.
+		if req.PoolName == "" {
+			return response.BadRequest(fmt.Errorf("Pool name in required"))
+		}
+
+		if req.VolumeName == "" {
+			return response.BadRequest(fmt.Errorf("Volume name in required"))
+		}
+
+		inst, err := instance.LoadByProjectAndName(d.State(), projectName, instName)
+		if err != nil {
+			return response.SmartError(fmt.Errorf("Failed to load instance: %w", err))
+		}
+
+		_, etag, err := inst.Render()
+		if err != nil {
+			return response.SmartError(fmt.Errorf("Failed to render instance: %w", err))
+		}
+
+		dev, ok := inst.ExpandedDevices()[req.VolumeName]
+		if ok {
+			if dev["type"] == "disk" && dev["source"] == req.VolumeName && dev["pool"] == req.PoolName {
+				return response.DevLxdResponse(http.StatusOK, "Device is already attached", "raw", c.Type() == instancetype.VM)
+			}
+
+			return response.BadRequest(fmt.Errorf("Device already exists: %s", req.VolumeName))
+		}
+
+		inst.LocalDevices()[req.VolumeName] = map[string]string{
+			"type":   "disk",
+			"pool":   req.PoolName,
+			"source": req.VolumeName,
+			"path":   req.Path,
+		}
+
+		unlock, err := instanceOperationLock(s.ShutdownCtx, projectName, instName)
+		if err != nil {
+			return response.SmartError(err)
+		}
+
+		defer unlock()
+
+		revert := revert.New()
+		defer revert.Fail()
+
+		revert.Add(func() {
+			unlock()
+		})
+
+		// Validate the ETag
+		err = util.EtagCheck(r, etag)
+		if err != nil {
+			return response.PreconditionFailed(err)
+		}
+
+		args := db.InstanceArgs{
+			Architecture: inst.Architecture(),
+			Config:       inst.LocalConfig(),
+			Description:  inst.Description(),
+			Devices:      inst.LocalDevices(),
+			Ephemeral:    inst.IsEphemeral(),
+			Profiles:     inst.Profiles(),
+			Project:      projectName,
+		}
+
+		err = inst.Update(args, true)
+		if err != nil {
+			return response.SmartError(err)
+		}
+
+		return response.DevLxdResponse(http.StatusOK, "", "raw", c.Type() == instancetype.VM)
+	default:
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusMethodNotAllowed, "Method %q not allowed", r.Method), c.Type() == instancetype.VM)
+	}
+}
+
+var devlxdDevicesSpecific = devLxdHandler{
+	path:        "/1.0/devices/{devName}",
+	handlerFunc: devlxdDevicesSpecificHandler,
+}
+
+func devlxdDevicesSpecificHandler(d *Daemon, c instance.Instance, w http.ResponseWriter, r *http.Request) response.Response {
+	if shared.IsFalse(c.ExpandedConfig()["security.devlxd"]) {
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), c.Type() == instancetype.VM)
 	}
 
-	return response.DevLxdResponse(http.StatusOK, c.ExpandedDevices(), "json", c.Type() == instancetype.VM)
+	switch {
+	case r.Method == http.MethodDelete:
+		if c.Type() == instancetype.Container {
+			return response.DevLxdErrorResponse(api.NewStatusError(http.StatusBadRequest, "Device attachment is only supported for virtual machines"), c.Type() == instancetype.VM)
+		}
+
+		// Detach an existing device from the instance.
+		// Currently, we only support dettaching custom storage volumes.
+
+		// Attach a new device to the instance.
+		// Currently, we only support attaching custom storage volumes.
+
+		s := d.State()
+
+		instName := c.Name()
+		projectName := c.Project().Name
+
+		devName := mux.Vars(r)["devName"]
+
+		logger.Warn("devlxdDevicesHandler DELETE started", logger.Ctx{"name": instName, "project": projectName})
+		defer logger.Warn("devlxdDevicesHandler DELETE finished", logger.Ctx{"project": projectName, "name": instName})
+
+		inst, err := instance.LoadByProjectAndName(d.State(), projectName, instName)
+		if err != nil {
+			return response.SmartError(fmt.Errorf("Failed to load instance: %w", err))
+		}
+
+		_, etag, err := inst.Render()
+		if err != nil {
+			return response.SmartError(fmt.Errorf("Failed to render instance: %w", err))
+		}
+
+		dev, ok := inst.LocalDevices()[devName]
+		if !ok {
+			return response.DevLxdResponse(http.StatusOK, "", "raw", c.Type() == instancetype.VM)
+		}
+
+		if dev["type"] != "disk" {
+			// Not authorized to detach non-disk devices.
+			return response.BadRequest(fmt.Errorf("Device %q is not a disk device", devName))
+		}
+
+		if dev["path"] == "/" {
+			return response.BadRequest(fmt.Errorf("Device %q is root disk device and cannot be detached", devName))
+		}
+
+		delete(inst.LocalDevices(), devName)
+
+		unlock, err := instanceOperationLock(s.ShutdownCtx, projectName, instName)
+		if err != nil {
+			return response.SmartError(err)
+		}
+
+		defer unlock()
+
+		revert := revert.New()
+		defer revert.Fail()
+
+		revert.Add(func() {
+			unlock()
+		})
+
+		// Validate the ETag
+		err = util.EtagCheck(r, etag)
+		if err != nil {
+			return response.PreconditionFailed(err)
+		}
+
+		args := db.InstanceArgs{
+			Architecture: inst.Architecture(),
+			Config:       inst.LocalConfig(),
+			Description:  inst.Description(),
+			Devices:      inst.LocalDevices(),
+			Ephemeral:    inst.IsEphemeral(),
+			Profiles:     inst.Profiles(),
+			Project:      projectName,
+		}
+
+		err = inst.Update(args, true)
+		if err != nil {
+			return response.SmartError(err)
+		}
+
+		return response.DevLxdResponse(http.StatusOK, "", "raw", c.Type() == instancetype.VM)
+	default:
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusMethodNotAllowed, "Method %q not allowed", r.Method), c.Type() == instancetype.VM)
+	}
 }
 
 var devlxdUbuntuProGet = devLxdHandler{
@@ -412,12 +622,12 @@ func devlxdStoragePoolGetHandler(d *Daemon, c instance.Instance, w http.Response
 	return response.DevLxdResponse(http.StatusOK, pool, "json", c.Type() == instancetype.VM)
 }
 
-var devlxdStoragePoolVolumeGet = devLxdHandler{
+var devlxdStoragePoolVolume = devLxdHandler{
 	path:        "/1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}",
-	handlerFunc: devlxdStoragePoolVolumeGetHandler,
+	handlerFunc: devlxdStoragePoolVolumeHandler,
 }
 
-func devlxdStoragePoolVolumeGetHandler(d *Daemon, c instance.Instance, w http.ResponseWriter, r *http.Request) response.Response {
+func devlxdStoragePoolVolumeHandler(d *Daemon, c instance.Instance, w http.ResponseWriter, r *http.Request) response.Response {
 	if shared.IsFalse(c.ExpandedConfig()["security.devlxd"]) {
 		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), c.Type() == instancetype.VM)
 	}
@@ -433,56 +643,46 @@ func devlxdStoragePoolVolumeGetHandler(d *Daemon, c instance.Instance, w http.Re
 		return response.SmartError(err)
 	}
 
-	// TODO:
-	// - Allow searching only custom volumes
-	// - Allow searching only volumes with config.kubernetes=true
-	// - We need to decide which storage pools are allowed.
-	// 	- We want to allow access to different storage pools (e.g. local storage for VMs, ceph-rados for buckets, pure storage for FS, etc.)
-	//      - We should still limit access to storage pools within default project and VMs project.
+	switch r.Method {
+	case http.MethodGet:
 
-	return storagePoolVolumeGet(d, r)
+		// TODO:
+		// - Allow searching only custom volumes
+		// - Allow searching only volumes with config.kubernetes=true
+		// - We need to decide which storage pools are allowed.
+		// 	- We want to allow access to different storage pools (e.g. local storage for VMs, ceph-rados for buckets, pure storage for FS, etc.)
+		//      - We should still limit access to storage pools within default project and VMs project.
 
-	// var err error
-	// var pool *api.StoragePool
-
-	// poolName := mux.Vars(r)["pool"]
-	// volName := mux.Vars(r)["volume"]
-
-	// err = d.db.Cluster.Transaction(d.shutdownCtx, func(ctx context.Context, tx *db.ClusterTx) error {
-	// 	_, pool, _, err = tx.GetStoragePoolVolume(ctx, poolName)
-	// 	if err != nil {
-	// 		return err
-	// 	}
-
-	// 	return nil
-	// })
-	// if err != nil {
-	// 	return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusNotFound, "storage pool not found"), c.Type() == instancetype.VM)
-	// }
-
-	// return response.DevLxdResponse(http.StatusOK, pool, "json", c.Type() == instancetype.VM)
+		return storagePoolVolumeGet(d, r)
+	case http.MethodDelete:
+		return storagePoolVolumeDelete(d, r)
+	default:
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusMethodNotAllowed, "Method %q not allowed", r.Method), c.Type() == instancetype.VM)
+	}
 }
 
 var devlxdStoragePoolVolumePost = devLxdHandler{
-	path:        "/1.0/storage-pools/{pool}/volumes/{type}",
+	path:        "/1.0/storage-pools/{poolName}/volumes",
 	handlerFunc: devlxdStoragePoolVolumePostHandler,
 }
 
 func devlxdStoragePoolVolumePostHandler(d *Daemon, c instance.Instance, w http.ResponseWriter, r *http.Request) response.Response {
+	logger.Warn("devlxdStoragePoolVolumePostHandler started")
+	defer logger.Warn("devlxdStoragePoolVolumePostHandler finished")
+
 	if shared.IsFalse(c.ExpandedConfig()["security.devlxd"]) {
 		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), c.Type() == instancetype.VM)
 	}
 
-	// Allow access only to custom volumes.
-	volType := mux.Vars(r)["type"]
-	if volType != "custom" {
-		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), c.Type() == instancetype.VM)
-	}
+	// req := api.StorageVolumesPost{}
+	// err := json.NewDecoder(r.Body).Decode(&req)
+	// if err != nil {
+	// 	return response.BadRequest(fmt.Errorf("Failed to decode input request: %w", err))
+	// }
 
-	err := addStoragePoolVolumeDetailsToRequestContext(d.State(), r)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	// if req.Type != "custom" {
+	// 	return response.BadRequest(fmt.Errorf("Invalid content type %q: Only custom volumes can be created", req.ContentType))
+	// }
 
 	return storagePoolVolumesPost(d, r)
 }
@@ -500,9 +700,10 @@ var handlers = []devLxdHandler{
 	devlxdMetadataGet,
 	devlxdEventsGet,
 	devlxdImageExport,
-	devlxdDevicesGet,
+	devlxdDevices,
+	devlxdDevicesSpecific,
 	devlxdStoragePoolGet,
-	devlxdStoragePoolVolumeGet,
+	devlxdStoragePoolVolume,
 	devlxdStoragePoolVolumePost,
 	devlxdUbuntuProGet,
 	devlxdUbuntuProTokenPost,

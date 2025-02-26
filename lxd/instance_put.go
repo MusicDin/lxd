@@ -24,6 +24,7 @@ import (
 	"github.com/canonical/lxd/lxd/util"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
+	"github.com/canonical/lxd/shared/logger"
 	"github.com/canonical/lxd/shared/osarch"
 	"github.com/canonical/lxd/shared/revert"
 	"github.com/canonical/lxd/shared/version"
@@ -64,6 +65,9 @@ func instancePut(d *Daemon, r *http.Request) response.Response {
 	// Don't mess with instance while in setup mode.
 	<-d.waitReady.Done()
 
+	logger.Warn("instancePut started", logger.Ctx{"path": r.URL.Path, "url": r.URL.String(), "query": r.URL.Query(), "method": r.Method, "req": fmt.Sprintf("%+v", r)})
+	defer logger.Warn("instancePut stopped", logger.Ctx{"req": fmt.Sprintf("%+v", r)})
+
 	s := d.State()
 
 	instanceType, err := urlInstanceTypeDetect(r)
@@ -78,6 +82,9 @@ func instancePut(d *Daemon, r *http.Request) response.Response {
 	if err != nil {
 		return response.SmartError(err)
 	}
+
+	logger.Warn("instancePut started", logger.Ctx{"name": name, "project": projectName})
+	defer logger.Warn("instancePut stopped", logger.Ctx{"name": name, "project": projectName})
 
 	if shared.IsSnapshot(name) {
 		return response.BadRequest(fmt.Errorf("Invalid instance name"))
@@ -105,10 +112,14 @@ func instancePut(d *Daemon, r *http.Request) response.Response {
 		unlock()
 	})
 
+	logger.Warn("Loading instance ...", logger.Ctx{"name": name, "project": projectName})
+
 	inst, err := instance.LoadByProjectAndName(s, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
+
+	logger.Warn("Instance loaded ...", logger.Ctx{"name": name, "project": projectName, "arch": inst.Architecture()})
 
 	// Validate the ETag
 	etag := []any{inst.Architecture(), inst.LocalConfig(), inst.LocalDevices(), inst.IsEphemeral(), inst.Profiles()}

@@ -985,6 +985,9 @@ func filterVolumes(volumes []*db.StorageVolume, clauses *filter.ClauseSet, allPr
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
 func storagePoolVolumesPost(d *Daemon, r *http.Request) response.Response {
+	logger.Warn("storagePoolVolumesPost started")
+	defer logger.Warn("storagePoolVolumesPost finished")
+
 	s := d.State()
 
 	poolName, err := url.PathUnescape(mux.Vars(r)["poolName"])
@@ -1021,7 +1024,7 @@ func storagePoolVolumesPost(d *Daemon, r *http.Request) response.Response {
 	// Parse the request.
 	err = json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
-		return response.BadRequest(err)
+		return response.BadRequest(fmt.Errorf("Bad request entity: Failed to decode request body: %v", err))
 	}
 
 	logger.Warn("Decoded request", logger.Ctx{"req": fmt.Sprintf("%#v", req)})
