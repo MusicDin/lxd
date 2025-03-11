@@ -22,6 +22,9 @@ type DevLXDGet struct {
 	// What cluster member this instance is located on
 	// Example: lxd01
 	Location string `json:"location" yaml:"location"`
+
+	// Whether the underlying LXD is clustered or not.
+	IsClustered bool `json:"is_clustered" yaml:"is_clustered"`
 }
 
 // UbuntuProGuestTokenResponse contains the expected fields of proAPIGetGuestTokenV1 that must be passed back to

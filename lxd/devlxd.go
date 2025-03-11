@@ -283,7 +283,7 @@ func devlxdAPIHandlerFunc(d *Daemon, c instance.Instance, w http.ResponseWriter,
 			state = api.Started
 		}
 
-		return response.DevLxdResponse(http.StatusOK, api.DevLXDGet{APIVersion: version.APIVersion, Location: location, InstanceType: c.Type().String(), DevLXDPut: api.DevLXDPut{State: state.String()}}, "json", c.Type() == instancetype.VM)
+		return response.DevLxdResponse(http.StatusOK, api.DevLXDGet{APIVersion: version.APIVersion, Location: location, InstanceType: c.Type().String(), IsClustered: d.serverClustered, DevLXDPut: api.DevLXDPut{State: state.String()}}, "json", c.Type() == instancetype.VM)
 	} else if r.Method == "PATCH" {
 		if shared.IsFalse(c.ExpandedConfig()["security.devlxd"]) {
 			return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), c.Type() == instancetype.VM)
@@ -318,7 +318,7 @@ func devlxdAPIHandlerFunc(d *Daemon, c instance.Instance, w http.ResponseWriter,
 }
 
 var devlxdDevices = devLxdHandler{
-	path:        "/1.0/devices",
+	path:        "/1.0/instances/{instanceName}/devices",
 	handlerFunc: devlxdDevicesHandler,
 }
 
@@ -354,16 +354,17 @@ func devlxdDevicesHandler(d *Daemon, c instance.Instance, w http.ResponseWriter,
 
 		s := d.State()
 
-		instName := c.Name()
 		projectName := c.Project().Name
+		instName := mux.Vars(r)["instanceName"]
 
 		logger.Warn("devlxdDevicesHandler POST started", logger.Ctx{"name": instName, "project": projectName})
 		defer logger.Warn("devlxdDevicesHandler POST finished", logger.Ctx{"project": projectName, "name": instName})
 
 		type DeviceAttachment struct {
-			VolumeName string `json:"volume"`
-			PoolName   string `json:"pool"`
-			Path       string `json:"path"` // Path within the instance
+			VolumeName  string `json:"volume"`
+			PoolName    string `json:"pool"`
+			Path        string `json:"path"` // Path within the instance
+			Propagation string `json:"propagation"`
 		}
 
 		var req DeviceAttachment
@@ -381,6 +382,10 @@ func devlxdDevicesHandler(d *Daemon, c instance.Instance, w http.ResponseWriter,
 
 		if req.VolumeName == "" {
 			return response.BadRequest(fmt.Errorf("Volume name in required"))
+		}
+
+		if req.Propagation != "rshared" {
+			return response.BadRequest(fmt.Errorf("Invalid propagation %q: Only \"rshared\" propagation is allowed", req.Propagation))
 		}
 
 		inst, err := instance.LoadByProjectAndName(d.State(), projectName, instName)
@@ -403,10 +408,11 @@ func devlxdDevicesHandler(d *Daemon, c instance.Instance, w http.ResponseWriter,
 		}
 
 		inst.LocalDevices()[req.VolumeName] = map[string]string{
-			"type":   "disk",
-			"pool":   req.PoolName,
-			"source": req.VolumeName,
-			"path":   req.Path,
+			"type":        "disk",
+			"pool":        req.PoolName,
+			"source":      req.VolumeName,
+			"path":        req.Path,
+			"propagation": req.Propagation,
 		}
 
 		unlock, err := instanceOperationLock(s.ShutdownCtx, projectName, instName)
@@ -451,7 +457,7 @@ func devlxdDevicesHandler(d *Daemon, c instance.Instance, w http.ResponseWriter,
 }
 
 var devlxdDevicesSpecific = devLxdHandler{
-	path:        "/1.0/devices/{devName}",
+	path:        "/1.0/instances/{instanceName}/devices/{deviceName}",
 	handlerFunc: devlxdDevicesSpecificHandler,
 }
 
@@ -474,10 +480,11 @@ func devlxdDevicesSpecificHandler(d *Daemon, c instance.Instance, w http.Respons
 
 		s := d.State()
 
-		instName := c.Name()
+		// It is not allowed to anything outside the project where instance is running.
 		projectName := c.Project().Name
 
-		devName := mux.Vars(r)["devName"]
+		instName := mux.Vars(r)["instanceName"]
+		devName := mux.Vars(r)["deviceName"]
 
 		logger.Warn("devlxdDevicesHandler DELETE started", logger.Ctx{"name": instName, "project": projectName})
 		defer logger.Warn("devlxdDevicesHandler DELETE finished", logger.Ctx{"project": projectName, "name": instName})

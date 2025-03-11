@@ -203,14 +203,14 @@ func devlxdAPIGetHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *dev
 			return smartResponse(err)
 		}
 
-		var instanceData api.DevLXDGet
+		// var instanceData api.DevLXDGet
 
-		err = resp.MetadataAsStruct(&instanceData)
-		if err != nil {
-			return smartResponse(fmt.Errorf("Failed parsing response from LXD: %w", err))
-		}
+		// err = resp.MetadataAsStruct(&instanceData)
+		// if err != nil {
+		// 	return smartResponse(fmt.Errorf("Failed parsing response from LXD: %w", err))
+		// }
 
-		return okResponse(instanceData, "json")
+		return okResponse(resp, "json")
 	} else if r.Method == "PATCH" {
 		_, _, err := client.RawQuery(r.Method, "/1.0", r.Body, "")
 		if err != nil {
@@ -224,7 +224,7 @@ func devlxdAPIGetHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *dev
 }
 
 var devlxdDevices = devLxdHandler{
-	path:        "/1.0/devices",
+	path:        "/1.0/instances/{instanceName}/devices",
 	handlerFunc: devlxdDevicesHandler,
 }
 
@@ -236,9 +236,12 @@ func devlxdDevicesHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *de
 
 	defer client.Disconnect()
 
+	instName := mux.Vars(r)["instanceName"]
+	url := api.NewURL().Path("1.0", "instances", instName, "devices")
+
 	switch r.Method {
 	case "GET":
-		resp, _, err := client.RawQuery("GET", "/1.0/devices", nil, "")
+		resp, _, err := client.RawQuery("GET", url.String(), nil, "")
 		if err != nil {
 			return smartResponse(err)
 		}
@@ -252,11 +255,14 @@ func devlxdDevicesHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *de
 
 		return okResponse(devices, "json")
 	case "POST":
+		logger.Warn("DeviceAttachement started")
+		defer logger.Warn("DeviceAttachement finished")
 
 		type DeviceAttachment struct {
-			VolumeName string `json:"volume"`
-			PoolName   string `json:"pool"`
-			Path       string `json:"path"` // Path within the instance
+			VolumeName  string `json:"volume"`
+			PoolName    string `json:"pool"`
+			Path        string `json:"path"` // Path within the instance
+			Propagation string `json:"propagation"`
 		}
 
 		reqBody := DeviceAttachment{}
@@ -265,7 +271,11 @@ func devlxdDevicesHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *de
 			return smartResponse(err)
 		}
 
-		_, _, err = client.RawQuery("POST", "/1.0/devices", reqBody, "")
+		reqBody.Propagation = "rshared"
+
+		logger.Warn("DeviceAttachement decoded request", logger.Ctx{"request": reqBody})
+
+		_, _, err = client.RawQuery("POST", url.String(), reqBody, "")
 		if err != nil {
 			return smartResponse(err)
 		}
@@ -277,7 +287,7 @@ func devlxdDevicesHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *de
 }
 
 var devlxdDevicesDelete = devLxdHandler{
-	path:        "/1.0/devices/{devName}",
+	path:        "/1.0/instances/{instanceName}/devices/{devName}",
 	handlerFunc: devlxdDevicesDeleteHandler,
 }
 
@@ -289,10 +299,13 @@ func devlxdDevicesDeleteHandler(d *Daemon, w http.ResponseWriter, r *http.Reques
 
 	defer client.Disconnect()
 
+	instName := mux.Vars(r)["instanceName"]
+	devName := mux.Vars(r)["devName"]
+	url := api.NewURL().Path("1.0", "instances", instName, "devices", devName)
+
 	switch r.Method {
 	case "DELETE":
-		devName := mux.Vars(r)["devName"]
-		_, _, err := client.RawQuery("DELETE", fmt.Sprintf("/1.0/devices/%s", devName), nil, "")
+		_, _, err := client.RawQuery("DELETE", url.String(), nil, "")
 		if err != nil {
 			return smartResponse(err)
 		}

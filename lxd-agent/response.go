@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/canonical/lxd/shared/api"
+	"github.com/canonical/lxd/shared/logger"
 )
 
 type devLxdResponse struct {
@@ -17,10 +18,13 @@ func errorResponse(code int, msg string) *devLxdResponse {
 }
 
 func okResponse(ct any, ctype string) *devLxdResponse {
+	logger.Infof("Success (%s): %v", ctype, ct)
 	return &devLxdResponse{ct, http.StatusOK, ctype}
 }
 
 func smartResponse(err error) *devLxdResponse {
+	logger.Errorf("An error occured: %v", err)
+
 	if err == nil {
 		return okResponse(nil, "")
 	}

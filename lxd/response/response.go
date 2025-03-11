@@ -84,6 +84,8 @@ func (r *devLxdResponse) String() string {
 
 // DevLxdErrorResponse returns an error response. If rawResponse is true, a api.ResponseRaw will be sent instead of a minimal devLxdResponse.
 func DevLxdErrorResponse(err error, rawResponse bool) Response {
+	logger.Errorf("Error: %v", err)
+
 	if rawResponse {
 		return SmartError(err)
 	}
@@ -98,6 +100,8 @@ func DevLxdErrorResponse(err error, rawResponse bool) Response {
 
 // DevLxdResponse represents a devLxdResponse. If rawResponse is true, a api.ResponseRaw will be sent instead of a minimal devLxdResponse.
 func DevLxdResponse(code int, content any, contentType string, rawResponse bool) Response {
+	logger.Infof("Success (%s): %v", contentType, content)
+
 	if rawResponse {
 		return SyncResponse(true, content)
 	}
