@@ -203,14 +203,15 @@ func devlxdAPIGetHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *dev
 			return smartResponse(err)
 		}
 
-		var instanceData api.DevLXDGet
+		// var instanceData api.DevLXDGet
 
-		err = resp.MetadataAsStruct(&instanceData)
-		if err != nil {
-			return smartResponse(fmt.Errorf("Failed parsing response from LXD: %w", err))
-		}
+		// err = resp.MetadataAsStruct(&instanceData)
+		// if err != nil {
+		// 	return smartResponse(fmt.Errorf("Failed parsing response from LXD: %w", err))
+		// }
 
-		return okResponse(instanceData, "json")
+		// return okResponse(instanceData, "json")
+		return okResponse(resp, "json")
 	} else if r.Method == "PATCH" {
 		_, _, err := client.RawQuery(r.Method, "/1.0", r.Body, "")
 		if err != nil {
