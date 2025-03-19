@@ -1,0 +1,2 @@
+# Enables legacy issue template that is found in ".github/issue_template.md".
+blank_issues_enabled: true
