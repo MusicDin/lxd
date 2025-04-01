@@ -23,11 +23,11 @@ func okResponse(ct any, ctype string) *devLxdResponse {
 }
 
 func smartResponse(err error) *devLxdResponse {
-	logger.Errorf("An error occured: %v", err)
-
 	if err == nil {
 		return okResponse(nil, "")
 	}
+
+	logger.Errorf("An error occured: %v", err)
 
 	statusCode, found := api.StatusErrorMatch(err)
 	if found {

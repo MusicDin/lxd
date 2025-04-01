@@ -384,10 +384,6 @@ func devlxdDevicesHandler(d *Daemon, c instance.Instance, w http.ResponseWriter,
 			return response.BadRequest(fmt.Errorf("Volume name in required"))
 		}
 
-		if req.Propagation != "rshared" {
-			return response.BadRequest(fmt.Errorf("Invalid propagation %q: Only \"rshared\" propagation is allowed", req.Propagation))
-		}
-
 		inst, err := instance.LoadByProjectAndName(d.State(), projectName, instName)
 		if err != nil {
 			return response.SmartError(fmt.Errorf("Failed to load instance: %w", err))
@@ -472,12 +468,6 @@ func devlxdDevicesSpecificHandler(d *Daemon, c instance.Instance, w http.Respons
 			return response.DevLxdErrorResponse(api.NewStatusError(http.StatusBadRequest, "Device attachment is only supported for virtual machines"), c.Type() == instancetype.VM)
 		}
 
-		// Detach an existing device from the instance.
-		// Currently, we only support dettaching custom storage volumes.
-
-		// Attach a new device to the instance.
-		// Currently, we only support attaching custom storage volumes.
-
 		s := d.State()
 
 		// It is not allowed to anything outside the project where instance is running.
@@ -504,13 +494,9 @@ func devlxdDevicesSpecificHandler(d *Daemon, c instance.Instance, w http.Respons
 			return response.DevLxdResponse(http.StatusOK, "", "raw", c.Type() == instancetype.VM)
 		}
 
-		if dev["type"] != "disk" {
-			// Not authorized to detach non-disk devices.
-			return response.BadRequest(fmt.Errorf("Device %q is not a disk device", devName))
-		}
-
-		if dev["path"] == "/" {
-			return response.BadRequest(fmt.Errorf("Device %q is root disk device and cannot be detached", devName))
+		if dev["type"] != "disk" || dev["path"] == "/" {
+			// Devlxd is not authorized to detach non-disk device or root disk device.
+			return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "Not authorized to detach device %q", devName), c.Type() == instancetype.VM)
 		}
 
 		delete(inst.LocalDevices(), devName)
@@ -629,6 +615,29 @@ func devlxdStoragePoolGetHandler(d *Daemon, c instance.Instance, w http.Response
 	return response.DevLxdResponse(http.StatusOK, pool, "json", c.Type() == instancetype.VM)
 }
 
+var devlxdStoragePoolVolumes = devLxdHandler{
+	path:        "/1.0/storage-pools/{poolName}/volumes",
+	handlerFunc: devlxdStoragePoolVolumesHandler,
+}
+
+func devlxdStoragePoolVolumesHandler(d *Daemon, c instance.Instance, w http.ResponseWriter, r *http.Request) response.Response {
+	logger.Warn("devlxdStoragePoolVolumesHandler started")
+	defer logger.Warn("devlxdStoragePoolVolumesHandler finished")
+
+	if shared.IsFalse(c.ExpandedConfig()["security.devlxd"]) {
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), c.Type() == instancetype.VM)
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		return storagePoolVolumesGet(d, r)
+	case http.MethodPost:
+		return storagePoolVolumesPost(d, r)
+	default:
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusMethodNotAllowed, "Method %q not allowed", r.Method), c.Type() == instancetype.VM)
+	}
+}
+
 var devlxdStoragePoolVolume = devLxdHandler{
 	path:        "/1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}",
 	handlerFunc: devlxdStoragePoolVolumeHandler,
@@ -652,15 +661,11 @@ func devlxdStoragePoolVolumeHandler(d *Daemon, c instance.Instance, w http.Respo
 
 	switch r.Method {
 	case http.MethodGet:
-
-		// TODO:
-		// - Allow searching only custom volumes
-		// - Allow searching only volumes with config.kubernetes=true
-		// - We need to decide which storage pools are allowed.
-		// 	- We want to allow access to different storage pools (e.g. local storage for VMs, ceph-rados for buckets, pure storage for FS, etc.)
-		//      - We should still limit access to storage pools within default project and VMs project.
-
 		return storagePoolVolumeGet(d, r)
+	case http.MethodPut:
+		return storagePoolVolumePut(d, r)
+	case http.MethodPatch:
+		return storagePoolVolumePatch(d, r)
 	case http.MethodDelete:
 		return storagePoolVolumeDelete(d, r)
 	default:
@@ -668,30 +673,70 @@ func devlxdStoragePoolVolumeHandler(d *Daemon, c instance.Instance, w http.Respo
 	}
 }
 
-var devlxdStoragePoolVolumePost = devLxdHandler{
-	path:        "/1.0/storage-pools/{poolName}/volumes",
-	handlerFunc: devlxdStoragePoolVolumePostHandler,
+var devlxdStoragePoolVolumeSnapshots = devLxdHandler{
+	path:        "/1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}/snapshots",
+	handlerFunc: devlxdStoragePoolVolumeSnapshotsHandler,
 }
 
-func devlxdStoragePoolVolumePostHandler(d *Daemon, c instance.Instance, w http.ResponseWriter, r *http.Request) response.Response {
-	logger.Warn("devlxdStoragePoolVolumePostHandler started")
-	defer logger.Warn("devlxdStoragePoolVolumePostHandler finished")
+func devlxdStoragePoolVolumeSnapshotsHandler(d *Daemon, c instance.Instance, w http.ResponseWriter, r *http.Request) response.Response {
+	logger.Warn("devlxdStoragePoolVolumeSnapshotsHandler started")
+	defer logger.Warn("devlxdStoragePoolVolumeSnapshotsHandler finished")
 
 	if shared.IsFalse(c.ExpandedConfig()["security.devlxd"]) {
 		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), c.Type() == instancetype.VM)
 	}
 
-	// req := api.StorageVolumesPost{}
-	// err := json.NewDecoder(r.Body).Decode(&req)
-	// if err != nil {
-	// 	return response.BadRequest(fmt.Errorf("Failed to decode input request: %w", err))
-	// }
+	err := addStoragePoolVolumeDetailsToRequestContext(d.State(), r)
+	if err != nil {
+		return response.SmartError(err)
+	}
 
-	// if req.Type != "custom" {
-	// 	return response.BadRequest(fmt.Errorf("Invalid content type %q: Only custom volumes can be created", req.ContentType))
-	// }
+	switch r.Method {
+	case http.MethodGet:
+		return storagePoolVolumeSnapshotsTypeGet(d, r)
+	case http.MethodPost:
+		return storagePoolVolumeSnapshotsTypePost(d, r)
+	default:
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusMethodNotAllowed, "Method %q not allowed", r.Method), c.Type() == instancetype.VM)
+	}
+}
 
-	return storagePoolVolumesPost(d, r)
+var devlxdStoragePoolVolumeSnapshot = devLxdHandler{
+	path:        "/1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}/snapshots/{snapshotName}",
+	handlerFunc: devlxdStoragePoolVolumeSnapshotHandler,
+}
+
+func devlxdStoragePoolVolumeSnapshotHandler(d *Daemon, c instance.Instance, w http.ResponseWriter, r *http.Request) response.Response {
+	logger.Warn("devlxdStoragePoolVolumeSnapshotHandler started")
+	defer logger.Warn("devlxdStoragePoolVolumeSnapshotHandler finished")
+
+	if shared.IsFalse(c.ExpandedConfig()["security.devlxd"]) {
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), c.Type() == instancetype.VM)
+	}
+
+	// Allow access only to custom volumes.
+	volType := mux.Vars(r)["type"]
+	if volType != "custom" {
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), c.Type() == instancetype.VM)
+	}
+
+	err := addStoragePoolVolumeDetailsToRequestContext(d.State(), r)
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		return storagePoolVolumeSnapshotTypeGet(d, r)
+	// case http.MethodPut:
+	// 	return storagePoolVolumeSnapshotTypePut(d, r)
+	// case http.MethodPatch:
+	// 	return storagePoolVolumeSnapshotTypePatch(d, r)
+	case http.MethodDelete:
+		return storagePoolVolumeSnapshotTypeDelete(d, r)
+	default:
+		return response.DevLxdErrorResponse(api.StatusErrorf(http.StatusMethodNotAllowed, "Method %q not allowed", r.Method), c.Type() == instancetype.VM)
+	}
 }
 
 var handlers = []devLxdHandler{
@@ -711,7 +756,9 @@ var handlers = []devLxdHandler{
 	devlxdDevicesSpecific,
 	devlxdStoragePoolGet,
 	devlxdStoragePoolVolume,
-	devlxdStoragePoolVolumePost,
+	devlxdStoragePoolVolumes,
+	devlxdStoragePoolVolumeSnapshot,
+	devlxdStoragePoolVolumeSnapshots,
 	devlxdUbuntuProGet,
 	devlxdUbuntuProTokenPost,
 }
