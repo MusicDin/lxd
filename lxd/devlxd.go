@@ -141,10 +141,6 @@ func devLXDAPIPatchHandler(d *Daemon, r *http.Request) response.Response {
 
 	s := d.State()
 
-	if shared.IsFalse(inst.ExpandedConfig()["security.devlxd"]) {
-		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusForbidden, "not authorized"), inst.Type() == instancetype.VM)
-	}
-
 	req := api.DevLXDPut{}
 
 	err = json.NewDecoder(r.Body).Decode(&req)
