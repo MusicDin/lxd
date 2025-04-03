@@ -30,6 +30,8 @@ type DevLXDGet struct {
 	// Example: 1.0
 	APIVersion string `json:"api_version" yaml:"api_version"`
 
+	APIExtensions []string `json:"api_extensions" yaml:"api_extensions"`
+
 	// Type (container or virtual-machine)
 	// Example: container
 	InstanceType string `json:"instance_type" yaml:"instance_type"`
