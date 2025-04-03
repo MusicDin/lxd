@@ -493,6 +493,14 @@ type DevLXDServer interface {
 	// DevLXD images.
 	ExportImage(fingerprint string, req ImageFileRequest) (resp *ImageFileResponse, err error)
 
+	// DevLXD storage pools.
+	GetStoragePools() (pools []api.StoragePool, err error)
+	GetStoragePool(poolName string) (pool *api.StoragePool, ETag string, err error)
+	GetStoragePoolVolumes(poolName string) (vols []api.StorageVolume, err error)
+	GetStoragePoolVolume(poolName string, volType string, volName string) (vol *api.StorageVolume, ETag string, err error)
+	CreateStoragePoolVolume(poolName string, vol api.StorageVolumesPost) error
+	DeleteStoragePoolVolume(poolName string, volType string, volName string) error
+
 	// DevLXD Ubuntu Pro.
 	GetUbuntuPro() (*api.UbuntuProSettings, error)
 	CreateUbuntuProToken() (*api.UbuntuProGuestTokenResponse, error)
