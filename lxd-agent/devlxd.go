@@ -569,3 +569,7 @@ func socketUnixListen(path string) (net.Listener, error) {
 
 	return listener, err
 }
+
+func parseRequestStruct(r *http.Request, target any) error {
+	return json.NewDecoder(r.Body).Decode(target)
+}
