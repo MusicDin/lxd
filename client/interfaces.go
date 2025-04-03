@@ -9,6 +9,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pkg/sftp"
 
+	"github.com/canonical/lxd/lxd/device/config"
 	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/cancel"
 	"github.com/canonical/lxd/shared/ioprogress"
@@ -508,6 +509,12 @@ type DevLXDServer interface {
 	CreateStoragePoolVolume(poolName string, vol api.DevLXDStorageVolumesPost) error
 	UpdateStoragePoolVolume(poolName string, volType string, volName string, vol api.DevLXDStorageVolumePut, ETag string) error
 	DeleteStoragePoolVolume(poolName string, volType string, volName string) error
+
+	// DevLXD instance devices.
+	GetInstanceDevices(instName string) (devices map[string]config.Device, err error)
+	GetInstanceDevice(instName string, deviceName string) (device config.Device, etag string, err error)
+	CreateInstanceDevice(instName string, device config.Device) (err error)
+	DeleteInstanceDevice(instName string, deviceName string) error
 
 	// DevLXD Ubuntu Pro.
 	GetUbuntuPro() (*api.UbuntuProSettings, error)
