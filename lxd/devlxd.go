@@ -128,9 +128,10 @@ func devLXDAPIGetHandler(d *Daemon, r *http.Request) response.Response {
 	}
 
 	resp := api.DevLXDGet{
-		APIVersion:   version.APIVersion,
-		Location:     location,
-		InstanceType: inst.Type().String(),
+		APIVersion:    version.APIVersion,
+		APIExtensions: version.APIExtensions,
+		Location:      location,
+		InstanceType:  inst.Type().String(),
 		DevLXDPut: api.DevLXDPut{
 			State: state.String(),
 		},
