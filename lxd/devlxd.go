@@ -155,6 +155,7 @@ func devLXDAPIGetHandler(d *Daemon, r *http.Request) response.Response {
 
 	resp := api.DevLXDGet{
 		APIVersion:              version.APIVersion,
+		APIExtensions:           version.APIExtensions,
 		Location:                location,
 		InstanceType:            inst.Type().String(),
 		SupportedStorageDrivers: supportedDrivers,
