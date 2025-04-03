@@ -18,7 +18,7 @@ var devLXDInstanceDevicesEndpoint = devLXDAPIEndpoint{
 	Post: devLXDAPIEndpointAction{Handler: devLXDInstanceDevicesPostHandler},
 }
 
-func devLXDInstanceDevicesGetHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *devLXDResponse {
+func devLXDInstanceDevicesGetHandler(d *Daemon, r *http.Request) *devLXDResponse {
 	client, err := getVsockClient(d)
 	if err != nil {
 		return smartResponse(err)
@@ -44,7 +44,7 @@ func devLXDInstanceDevicesGetHandler(d *Daemon, w http.ResponseWriter, r *http.R
 	return okResponse(devices, "json")
 }
 
-func devLXDInstanceDevicesPostHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *devLXDResponse {
+func devLXDInstanceDevicesPostHandler(d *Daemon, r *http.Request) *devLXDResponse {
 	client, err := getVsockClient(d)
 	if err != nil {
 		return smartResponse(err)
@@ -78,7 +78,7 @@ var devLXDInstanceDeviceEndpoint = devLXDAPIEndpoint{
 	Delete: devLXDAPIEndpointAction{Handler: devLXDInstanceDeviceDeleteHandler},
 }
 
-func devLXDInstanceDeviceGetHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *devLXDResponse {
+func devLXDInstanceDeviceGetHandler(d *Daemon, r *http.Request) *devLXDResponse {
 	client, err := getVsockClient(d)
 	if err != nil {
 		return smartResponse(err)
@@ -106,7 +106,7 @@ func devLXDInstanceDeviceGetHandler(d *Daemon, w http.ResponseWriter, r *http.Re
 	return okResponse(device, "json")
 }
 
-func devLXDInstanceDeviceDeleteHandler(d *Daemon, w http.ResponseWriter, r *http.Request) *devLXDResponse {
+func devLXDInstanceDeviceDeleteHandler(d *Daemon, r *http.Request) *devLXDResponse {
 	client, err := getVsockClient(d)
 	if err != nil {
 		return smartResponse(err)
