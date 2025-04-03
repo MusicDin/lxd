@@ -63,6 +63,51 @@ var devLXDEndpoints = []DevLXDAPIEndpoint{
 	devLXDUbuntuProTokenEndpoint,
 }
 
+<<<<<<< HEAD
+=======
+// DevlxdAPIEndpointAction represents an action on an devlxd API endpoint.
+type DevlxdAPIEndpointAction struct {
+	Handler devLXDHandlerFunc
+}
+
+// DevlxdAPIEndpoint represents a URL in devlxd API.
+type DevlxdAPIEndpoint struct {
+	Name   string // Name for this endpoint.
+	Path   string // Path pattern for this endpoint
+	Get    DevlxdAPIEndpointAction
+	Head   DevlxdAPIEndpointAction
+	Put    DevlxdAPIEndpointAction
+	Post   DevlxdAPIEndpointAction
+	Delete DevlxdAPIEndpointAction
+	Patch  DevlxdAPIEndpointAction
+}
+
+var devLXDEndpoints = []DevlxdAPIEndpoint{
+	{
+		Path: "/",
+		Get: DevlxdAPIEndpointAction{
+			Handler: func(d *Daemon, w http.ResponseWriter, r *http.Request) *devLxdResponse {
+				return okResponse([]string{"/1.0"}, "json")
+			},
+		},
+	},
+	devlxd10Endpoint,
+	devlxdConfigEndpoint,
+	devlxdConfigKeyEndpoint,
+	devlxdMetadataEndpoint,
+	devLxdEventsEndpoint,
+	devlxdDevicesEndpoint,
+	devlxdImageExportEndpoint,
+	devlxdStoragePoolEndpoint,
+	devlxdStoragePoolsEndpoint,
+	devlxdStoragePoolVolumeEndpoint,
+	devlxdStoragePoolVolumesEndpoint,
+	devlxdStoragePoolVolumesTypeEndpoint,
+	devlxdUbuntuProEndpoint,
+	devlxdUbuntuProTokenEndpoint,
+}
+
+>>>>>>> fbf5b1f699 (lxd-agent/devlxd: Storage endpoints)
 // DevLxdServer creates an http.Server capable of handling requests against the
 // /dev/lxd Unix socket endpoint created inside VMs.
 func devLXDServer(d *Daemon) *http.Server {
