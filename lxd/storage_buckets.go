@@ -473,7 +473,7 @@ func storagePoolBucketsPost(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(fmt.Errorf("Failed creating storage bucket admin key: %w", err))
 	}
 
-	s.Events.SendLifecycle(bucketProjectName, lifecycle.StorageBucketCreated.Event(pool, bucketProjectName, req.Name, request.CreateRequestor(r), nil))
+	s.Events.SendLifecycle(bucketProjectName, lifecycle.StorageBucketCreated.Event(pool, bucketProjectName, req.Name, request.CreateRequestor(r.Context()), nil))
 
 	u := api.NewURL().Path(version.APIVersion, "storage-pools", pool.Name(), "buckets", req.Name)
 
@@ -620,7 +620,7 @@ func storagePoolBucketPut(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(fmt.Errorf("Failed updating storage bucket: %w", err))
 	}
 
-	s.Events.SendLifecycle(effectiveProjectName, lifecycle.StorageBucketUpdated.Event(details.pool, effectiveProjectName, details.bucketName, request.CreateRequestor(r), nil))
+	s.Events.SendLifecycle(effectiveProjectName, lifecycle.StorageBucketUpdated.Event(details.pool, effectiveProjectName, details.bucketName, request.CreateRequestor(r.Context()), nil))
 
 	return response.EmptySyncResponse
 }
@@ -677,7 +677,7 @@ func storagePoolBucketDelete(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(fmt.Errorf("Failed deleting storage bucket: %w", err))
 	}
 
-	s.Events.SendLifecycle(effectiveProjectName, lifecycle.StorageBucketDeleted.Event(details.pool, effectiveProjectName, details.bucketName, request.CreateRequestor(r), nil))
+	s.Events.SendLifecycle(effectiveProjectName, lifecycle.StorageBucketDeleted.Event(details.pool, effectiveProjectName, details.bucketName, request.CreateRequestor(r.Context()), nil))
 
 	return response.EmptySyncResponse
 }
@@ -901,7 +901,7 @@ func storagePoolBucketKeysPost(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(fmt.Errorf("Failed creating storage bucket key: %w", err))
 	}
 
-	lc := lifecycle.StorageBucketKeyCreated.Event(details.pool, effectiveProjectName, details.pool.Name(), req.Name, request.CreateRequestor(r), nil)
+	lc := lifecycle.StorageBucketKeyCreated.Event(details.pool, effectiveProjectName, details.pool.Name(), req.Name, request.CreateRequestor(r.Context()), nil)
 	s.Events.SendLifecycle(effectiveProjectName, lc)
 
 	return response.SyncResponseLocation(true, key, lc.Source)
@@ -964,7 +964,7 @@ func storagePoolBucketKeyDelete(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(fmt.Errorf("Failed deleting storage bucket key: %w", err))
 	}
 
-	s.Events.SendLifecycle(effectiveProjectName, lifecycle.StorageBucketKeyDeleted.Event(details.pool, effectiveProjectName, details.pool.Name(), details.bucketName, request.CreateRequestor(r), nil))
+	s.Events.SendLifecycle(effectiveProjectName, lifecycle.StorageBucketKeyDeleted.Event(details.pool, effectiveProjectName, details.pool.Name(), details.bucketName, request.CreateRequestor(r.Context()), nil))
 
 	return response.EmptySyncResponse
 }
@@ -1134,7 +1134,7 @@ func storagePoolBucketKeyPut(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(fmt.Errorf("Failed updating storage bucket key: %w", err))
 	}
 
-	s.Events.SendLifecycle(effectiveProjectName, lifecycle.StorageBucketKeyUpdated.Event(details.pool, effectiveProjectName, details.pool.Name(), details.bucketName, request.CreateRequestor(r), nil))
+	s.Events.SendLifecycle(effectiveProjectName, lifecycle.StorageBucketKeyUpdated.Event(details.pool, effectiveProjectName, details.pool.Name(), details.bucketName, request.CreateRequestor(r.Context()), nil))
 
 	return response.EmptySyncResponse
 }

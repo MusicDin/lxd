@@ -568,7 +568,7 @@ func networksPost(d *Daemon, r *http.Request) response.Response {
 				return response.SmartError(fmt.Errorf("Failed loading network: %w", err))
 			}
 
-			requestor := request.CreateRequestor(r)
+			requestor := request.CreateRequestor(r.Context())
 			s.Events.SendLifecycle(projectName, lifecycle.NetworkCreated.Event(n, requestor, nil))
 		}
 
@@ -622,7 +622,7 @@ func networksPost(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	requestor := request.CreateRequestor(r)
+	requestor := request.CreateRequestor(r.Context())
 	s.Events.SendLifecycle(projectName, lifecycle.NetworkCreated.Event(n, requestor, nil))
 
 	revert.Success()
@@ -1146,7 +1146,7 @@ func networkDelete(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	requestor := request.CreateRequestor(r)
+	requestor := request.CreateRequestor(r.Context())
 	s.Events.SendLifecycle(effectiveProjectName, lifecycle.NetworkDeleted.Event(n, requestor, nil))
 
 	return response.EmptySyncResponse
@@ -1273,7 +1273,7 @@ func networkPost(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	requestor := request.CreateRequestor(r)
+	requestor := request.CreateRequestor(r.Context())
 	lc := lifecycle.NetworkRenamed.Event(n, requestor, map[string]any{"old_name": details.networkName})
 	s.Events.SendLifecycle(effectiveProjectName, lc)
 
@@ -1407,7 +1407,7 @@ func networkPut(d *Daemon, r *http.Request) response.Response {
 
 	response := doNetworkUpdate(n, req, targetNode, clientType, r.Method, s.ServerClustered)
 
-	requestor := request.CreateRequestor(r)
+	requestor := request.CreateRequestor(r.Context())
 	s.Events.SendLifecycle(effectiveProjectName, lifecycle.NetworkUpdated.Event(n, requestor, nil))
 
 	return response
