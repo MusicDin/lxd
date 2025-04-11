@@ -441,7 +441,7 @@ func pruneResolvedWarningsTask(d *Daemon) (task.Func, task.Schedule) {
 			return pruneResolvedWarnings(ctx, s)
 		}
 
-		op, err := operations.OperationCreate(s, "", operations.OperationClassTask, operationtype.WarningsPruneResolved, nil, nil, opRun, nil, nil, nil)
+		op, err := operations.OperationCreate(nil, s, "", operations.OperationClassTask, operationtype.WarningsPruneResolved, nil, nil, opRun, nil, nil)
 		if err != nil {
 			logger.Error("Failed creating prune resolved warnings operation", logger.Ctx{"err": err})
 			return

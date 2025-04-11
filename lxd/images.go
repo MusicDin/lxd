@@ -1338,7 +1338,7 @@ func imagesPost(d *Daemon, r *http.Request) response.Response {
 		}
 	}
 
-	imageOp, err := operations.OperationCreate(s, projectName, operations.OperationClassTask, operationtype.ImageDownload, nil, metadata, run, nil, nil, r)
+	imageOp, err := operations.OperationCreate(r.Context(), s, projectName, operations.OperationClassTask, operationtype.ImageDownload, nil, metadata, run, nil, nil)
 	if err != nil {
 		cleanup(builddir, post)
 		return response.InternalError(err)
@@ -1858,7 +1858,7 @@ func autoUpdateImagesTask(d *Daemon) (task.Func, task.Schedule) {
 			return autoUpdateImages(ctx, s)
 		}
 
-		op, err := operations.OperationCreate(s, "", operations.OperationClassTask, operationtype.ImagesUpdate, nil, nil, opRun, nil, nil, nil)
+		op, err := operations.OperationCreate(nil, s, "", operations.OperationClassTask, operationtype.ImagesUpdate, nil, nil, opRun, nil, nil)
 		if err != nil {
 			logger.Error("Failed creating image update operation", logger.Ctx{"err": err})
 			return
@@ -2507,7 +2507,7 @@ func pruneExpiredImagesTask(d *Daemon) (task.Func, task.Schedule) {
 			return pruneExpiredImages(ctx, s, op)
 		}
 
-		op, err := operations.OperationCreate(s, "", operations.OperationClassTask, operationtype.ImagesExpire, nil, nil, opRun, nil, nil, nil)
+		op, err := operations.OperationCreate(nil, s, "", operations.OperationClassTask, operationtype.ImagesExpire, nil, nil, opRun, nil, nil)
 		if err != nil {
 			logger.Error("Failed creating expired image prune operation", logger.Ctx{"err": err})
 			return
@@ -2625,7 +2625,7 @@ func pruneLeftoverImages(s *state.State) {
 		return nil
 	}
 
-	op, err := operations.OperationCreate(s, "", operations.OperationClassTask, operationtype.ImagesPruneLeftover, nil, nil, opRun, nil, nil, nil)
+	op, err := operations.OperationCreate(nil, s, "", operations.OperationClassTask, operationtype.ImagesPruneLeftover, nil, nil, opRun, nil, nil)
 	if err != nil {
 		logger.Error("Failed creating leftover image clean up operation", logger.Ctx{"err": err})
 		return
@@ -2979,7 +2979,7 @@ func imageDelete(d *Daemon, r *http.Request) response.Response {
 	resources := map[string][]api.URL{}
 	resources["images"] = []api.URL{*api.NewURL().Path(version.APIVersion, "images", details.image.Fingerprint)}
 
-	op, err := operations.OperationCreate(s, projectName, operations.OperationClassTask, operationtype.ImageDelete, resources, nil, do, nil, nil, r)
+	op, err := operations.OperationCreate(r.Context(), s, projectName, operations.OperationClassTask, operationtype.ImageDelete, resources, nil, do, nil, nil)
 	if err != nil {
 		return response.InternalError(err)
 	}
@@ -4539,7 +4539,7 @@ func imageExportPost(d *Daemon, r *http.Request) response.Response {
 		return nil
 	}
 
-	op, err := operations.OperationCreate(s, projectName, operations.OperationClassTask, operationtype.ImageDownload, nil, nil, run, nil, nil, r)
+	op, err := operations.OperationCreate(r.Context(), s, projectName, operations.OperationClassTask, operationtype.ImageDownload, nil, nil, run, nil, nil)
 	if err != nil {
 		return response.InternalError(err)
 	}
@@ -4726,7 +4726,7 @@ func imageRefresh(d *Daemon, r *http.Request) response.Response {
 		return err
 	}
 
-	op, err := operations.OperationCreate(s, projectName, operations.OperationClassTask, operationtype.ImageRefresh, nil, nil, run, nil, nil, r)
+	op, err := operations.OperationCreate(r.Context(), s, projectName, operations.OperationClassTask, operationtype.ImageRefresh, nil, nil, run, nil, nil)
 	if err != nil {
 		return response.InternalError(err)
 	}
@@ -4759,7 +4759,7 @@ func autoSyncImagesTask(d *Daemon) (task.Func, task.Schedule) {
 			return autoSyncImages(ctx, s)
 		}
 
-		op, err := operations.OperationCreate(s, "", operations.OperationClassTask, operationtype.ImagesSynchronize, nil, nil, opRun, nil, nil, nil)
+		op, err := operations.OperationCreate(nil, s, "", operations.OperationClassTask, operationtype.ImagesSynchronize, nil, nil, opRun, nil, nil)
 		if err != nil {
 			logger.Error("Failed creating image synchronization operation", logger.Ctx{"err": err})
 			return
@@ -4962,7 +4962,7 @@ func createTokenResponse(s *state.State, r *http.Request, projectName string, fi
 	resources := map[string][]api.URL{}
 	resources["images"] = []api.URL{*api.NewURL().Path(version.APIVersion, "images", fingerprint)}
 
-	op, err := operations.OperationCreate(s, projectName, operations.OperationClassToken, operationtype.ImageToken, resources, meta, nil, nil, nil, r)
+	op, err := operations.OperationCreate(r.Context(), s, projectName, operations.OperationClassToken, operationtype.ImageToken, resources, meta, nil, nil, nil)
 	if err != nil {
 		return response.InternalError(err)
 	}
