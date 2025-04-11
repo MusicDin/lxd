@@ -1241,7 +1241,7 @@ func doVolumeCreateOrCopy(s *state.State, r *http.Request, requestProjectName st
 		if req.Source.Name == "" {
 			// Use an empty operation for this sync response to pass the requestor
 			op := &operations.Operation{}
-			op.SetRequestor(r)
+			op.SetRequestor(r.Context())
 			return pool.CreateCustomVolume(projectName, req.Name, req.Description, req.Config, contentType, op)
 		}
 
@@ -1897,7 +1897,7 @@ func storagePoolVolumeTypePostRename(s *state.State, r *http.Request, poolName s
 
 	// Use an empty operation for this sync response to pass the requestor
 	op := &operations.Operation{}
-	op.SetRequestor(r)
+	op.SetRequestor(r.Context())
 
 	err = pool.RenameCustomVolume(projectName, vol.Name, req.Name, op)
 	if err != nil {
@@ -2165,7 +2165,7 @@ func storagePoolVolumePut(d *Daemon, r *http.Request) response.Response {
 
 	// Use an empty operation for this sync response to pass the requestor
 	op := &operations.Operation{}
-	op.SetRequestor(r)
+	op.SetRequestor(r.Context())
 
 	switch details.volumeType {
 	case cluster.StoragePoolVolumeTypeCustom:
@@ -2331,7 +2331,7 @@ func storagePoolVolumePatch(d *Daemon, r *http.Request) response.Response {
 
 	// Use an empty operation for this sync response to pass the requestor
 	op := &operations.Operation{}
-	op.SetRequestor(r)
+	op.SetRequestor(r.Context())
 
 	err = details.pool.UpdateCustomVolume(effectiveProjectName, dbVolume.Name, req.Description, req.Config, op)
 	if err != nil {
@@ -2441,7 +2441,7 @@ func storagePoolVolumeDelete(d *Daemon, r *http.Request) response.Response {
 
 	// Use an empty operation for this sync response to pass the requestor
 	op := &operations.Operation{}
-	op.SetRequestor(r)
+	op.SetRequestor(r.Context())
 
 	switch details.volumeType {
 	case cluster.StoragePoolVolumeTypeCustom:
