@@ -283,7 +283,7 @@ func devLXDImageExportHandler(d *Daemon, r *http.Request) response.Response {
 		return response.Forbidden(err)
 	}
 
-	return imageExport(d, r)
+	return imageExportHandler(d, r)
 }
 
 var devLXDMetadataEndpoint = devLXDAPIEndpoint{

@@ -81,7 +81,7 @@ var imageExportCmd = APIEndpoint{
 	Path:        "images/{fingerprint}/export",
 	MetricsType: entity.TypeImage,
 
-	Get:  APIEndpointAction{Handler: imageExport, AllowUntrusted: true},
+	Get:  APIEndpointAction{Handler: imageExportHandler, AllowUntrusted: true},
 	Post: APIEndpointAction{Handler: imageExportPost, AccessHandler: imageAccessHandler(auth.EntitlementCanEdit)},
 }
 
@@ -1107,7 +1107,7 @@ func imagesPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// We need to invalidate the secret whether the source is trusted or not.
-	op, err := imageValidSecret(s, r, projectName, fingerprint, secret)
+	op, err := imageValidSecret(r.Context(), s, projectName, fingerprint, secret)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -3028,8 +3028,8 @@ func doImageGet(ctx context.Context, tx *db.ClusterTx, project, fingerprint stri
 // imageValidSecret searches for an ImageToken operation running on any member in the default project that has an
 // images resource matching the specified fingerprint and the metadata secret field matches the specified secret.
 // If an operation is found it is returned and the operation is cancelled. Otherwise nil is returned if not found.
-func imageValidSecret(s *state.State, r *http.Request, projectName string, fingerprint string, secret string) (*api.Operation, error) {
-	ops, err := operationsGetByType(r.Context(), s, projectName, operationtype.ImageToken)
+func imageValidSecret(reqContext context.Context, s *state.State, projectName string, fingerprint string, secret string) (*api.Operation, error) {
+	ops, err := operationsGetByType(reqContext, s, projectName, operationtype.ImageToken)
 	if err != nil {
 		return nil, fmt.Errorf("Failed getting image token operations: %w", err)
 	}
@@ -3063,7 +3063,7 @@ func imageValidSecret(s *state.State, r *http.Request, projectName string, finge
 
 		if subtle.ConstantTimeCompare([]byte(opSecretStr), []byte(secret)) == 1 {
 			// Token is single-use, so cancel it now.
-			err = operationCancel(r.Context(), s, projectName, op)
+			err = operationCancel(reqContext, s, projectName, op)
 			if err != nil {
 				return nil, fmt.Errorf("Failed to cancel operation %q: %w", op.ID, err)
 			}
@@ -3211,7 +3211,7 @@ func imageGet(d *Daemon, r *http.Request) response.Response {
 	if secret != "" {
 		// If a secret was provided, validate it regardless of whether the image is public or the caller has sufficient
 		// privilege. This is to ensure the image token operation is cancelled.
-		op, err := imageValidSecret(s, r, projectName, info.Fingerprint, secret)
+		op, err := imageValidSecret(r.Context(), s, projectName, info.Fingerprint, secret)
 		if err != nil {
 			return response.SmartError(err)
 		}
@@ -4234,7 +4234,7 @@ func imageAliasPost(d *Daemon, r *http.Request) response.Response {
 //	    $ref: "#/responses/Forbidden"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func imageExport(d *Daemon, r *http.Request) response.Response {
+func imageExportHandler(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
 	projectName := request.ProjectParam(r)
@@ -4243,12 +4243,20 @@ func imageExport(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
+	files, err := imageExport(r.Context(), s, fingerprint, projectName, r.FormValue("secret"))
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	return response.FileResponse(files, nil)
+}
+
+func imageExport(reqContext context.Context, s *state.State, fingerprint string, projectName string, secret string) ([]response.FileResponseEntry, error) {
 	// Verify the auth method in the request context to determine if the request comes from the /dev/lxd socket.
-	authMethod, _ := auth.GetAuthenticationMethodFromCtx(r.Context())
+	authMethod, _ := auth.GetAuthenticationMethodFromCtx(reqContext)
 	isDevLXDQuery := authMethod == auth.AuthenticationMethodDevLXD
 
-	secret := r.FormValue("secret")
-	trusted := auth.IsTrusted(r.Context())
+	trusted := auth.IsTrusted(reqContext)
 
 	// Unauthenticated remote clients that do not provide a secret may only view public images.
 	// For devlxd, we allow querying for private images. We'll subsequently perform additional access checks.
@@ -4257,8 +4265,9 @@ func imageExport(d *Daemon, r *http.Request) response.Response {
 	// Get the image. We need to do this before the permission check because the URL in the permission check will not
 	// work with partial fingerprints.
 	var imgInfo *api.Image
+	var err error
 	effectiveProjectName := projectName
-	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+	err = s.DB.Cluster.Transaction(reqContext, func(ctx context.Context, tx *db.ClusterTx) error {
 		effectiveProjectName, err = projectutils.ImageProject(ctx, tx.Tx(), projectName)
 		if err != nil {
 			return err
@@ -4275,9 +4284,9 @@ func imageExport(d *Daemon, r *http.Request) response.Response {
 	if err != nil && api.StatusErrorCheck(err, http.StatusNotFound) {
 		// Return a generic not found. This is so that the caller cannot determine the existence of an image by the
 		// contents of the error message.
-		return response.NotFound(nil)
+		return nil, api.NewGenericStatusError(http.StatusNotFound)
 	} else if err != nil {
-		return response.SmartError(err)
+		return nil, err
 	}
 
 	// Access control.
@@ -4285,9 +4294,9 @@ func imageExport(d *Daemon, r *http.Request) response.Response {
 	if secret != "" {
 		// If a secret was provided, validate it regardless of whether the image is public or the caller has sufficient
 		// privilege. This is to ensure the image token operation is cancelled.
-		op, err := imageValidSecret(s, r, projectName, imgInfo.Fingerprint, secret)
+		op, err := imageValidSecret(reqContext, s, projectName, imgInfo.Fingerprint, secret)
 		if err != nil {
-			return response.SmartError(err)
+			return nil, err
 		}
 
 		// If an operation was found the caller has access, otherwise continue to other access checks.
@@ -4299,12 +4308,12 @@ func imageExport(d *Daemon, r *http.Request) response.Response {
 	if isDevLXDQuery {
 		// A devlxd query must contain the full fingerprint of the image (no partials).
 		if fingerprint != imgInfo.Fingerprint {
-			return response.NotFound(nil)
+			return nil, api.NewGenericStatusError(http.StatusNotFound)
 		}
 
 		// A devlxd query must be for a public or cached image.
 		if !imgInfo.Public && !imgInfo.Cached {
-			return response.NotFound(nil)
+			return nil, api.NewGenericStatusError(http.StatusNotFound)
 		}
 
 		userCanViewImage = true
@@ -4316,10 +4325,11 @@ func imageExport(d *Daemon, r *http.Request) response.Response {
 			userCanViewImage = true
 		} else {
 			// Otherwise perform an access check with the full image fingerprint.
-			request.SetCtxValue(r, request.CtxEffectiveProjectName, effectiveProjectName)
-			err = s.Authorizer.CheckPermission(r.Context(), entity.ImageURL(projectName, imgInfo.Fingerprint), auth.EntitlementCanView)
+			reqContext = context.WithValue(reqContext, request.CtxEffectiveProjectName, effectiveProjectName)
+			// request.SetCtxValue(r, request.CtxEffectiveProjectName, effectiveProjectName)
+			err = s.Authorizer.CheckPermission(reqContext, entity.ImageURL(projectName, imgInfo.Fingerprint), auth.EntitlementCanView)
 			if err != nil && !auth.IsDeniedError(err) {
-				return response.SmartError(err)
+				return nil, err
 			} else if err == nil {
 				userCanViewImage = true
 			}
@@ -4328,7 +4338,7 @@ func imageExport(d *Daemon, r *http.Request) response.Response {
 
 	// If the client still cannot view the image, return a generic not found error.
 	if !userCanViewImage {
-		return response.NotFound(nil)
+		return nil, api.NewGenericStatusError(http.StatusNotFound)
 	}
 
 	var address string
@@ -4336,21 +4346,17 @@ func imageExport(d *Daemon, r *http.Request) response.Response {
 	err = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
 		// Check if the image is only available on another node.
 		address, err = tx.LocateImage(ctx, imgInfo.Fingerprint)
-
 		return err
 	})
 	if err != nil {
-		return response.SmartError(err)
+		return nil, err
 	}
 
 	if address != "" {
-		// Forward the request to the other node
-		client, err := cluster.Connect(r.Context(), address, s.Endpoints.NetworkCert(), s.ServerCert(), false)
+		err = forwardToAddress(reqContext, s, address)
 		if err != nil {
-			return response.SmartError(err)
+			return nil, err
 		}
-
-		return response.ForwardedResponse(client)
 	}
 
 	imagePath := shared.VarPath("images", imgInfo.Fingerprint)
@@ -4388,10 +4394,10 @@ func imageExport(d *Daemon, r *http.Request) response.Response {
 		files[1].Path = rootfsPath
 		files[1].Filename = filename
 
-		requestor := request.CreateRequestor(r.Context())
+		requestor := request.CreateRequestor(reqContext)
 		s.Events.SendLifecycle(projectName, lifecycle.ImageRetrieved.Event(imgInfo.Fingerprint, projectName, requestor, nil))
 
-		return response.FileResponse(files, nil)
+		return files, nil
 	}
 
 	files := make([]response.FileResponseEntry, 1)
@@ -4399,10 +4405,10 @@ func imageExport(d *Daemon, r *http.Request) response.Response {
 	files[0].Path = imagePath
 	files[0].Filename = filename
 
-	requestor := request.CreateRequestor(r.Context())
+	requestor := request.CreateRequestor(reqContext)
 	s.Events.SendLifecycle(projectName, lifecycle.ImageRetrieved.Event(imgInfo.Fingerprint, projectName, requestor, nil))
 
-	return response.FileResponse(files, nil)
+	return files, nil
 }
 
 // swagger:operation POST /1.0/images/{fingerprint}/export images images_export_post
