@@ -271,7 +271,7 @@ var devLXDImageExportEndpoint = devLXDAPIEndpoint{
 }
 
 func devLXDImageExportHandler(d *Daemon, r *http.Request) response.Response {
-	_, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityImagesKey)
+	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityImagesKey)
 	if err != nil {
 		// XXX: The imageExport returns a non-devLXD error response which is
 		// inconsistent with the rest of the devLXD API. This is because the response
@@ -283,7 +283,14 @@ func devLXDImageExportHandler(d *Daemon, r *http.Request) response.Response {
 		return response.Forbidden(err)
 	}
 
-	return imageExport(d, r)
+	fingerprint := mux.Vars(r)["fingerprint"]
+
+	files, err := imageExport(r.Context(), d.State(), fingerprint, inst.Project().Name, "")
+	if err != nil {
+		return response.DevLXDErrorResponse(err, inst.Type() == instancetype.VM)
+	}
+
+	return response.FileResponse(files, nil)
 }
 
 var devLXDMetadataEndpoint = devLXDAPIEndpoint{
