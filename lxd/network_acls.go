@@ -199,7 +199,7 @@ func networkACLsGet(d *Daemon, r *http.Request) response.Response {
 
 			netACLInfo := netACL.Info()
 			netACLInfo.UsedBy, _ = netACL.UsedBy() // Ignore errors in UsedBy, will return nil.
-			netACLInfo.UsedBy = project.FilterUsedBy(s.Authorizer, r, netACLInfo.UsedBy)
+			netACLInfo.UsedBy = project.FilterUsedBy(r.Context(), s.Authorizer, netACLInfo.UsedBy)
 
 			resultMap = append(resultMap, netACLInfo)
 			urlToNetworkACL[entity.NetworkACLURL(requestProjectName, aclName)] = netACLInfo
@@ -410,7 +410,7 @@ func networkACLGet(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	info.UsedBy = project.FilterUsedBy(s.Authorizer, r, info.UsedBy)
+	info.UsedBy = project.FilterUsedBy(r.Context(), s.Authorizer, info.UsedBy)
 	if len(withEntitlements) > 0 {
 		err = reportEntitlements(r.Context(), s.Authorizer, s.IdentityCache, entity.TypeNetworkACL, withEntitlements, map[*api.URL]auth.EntitlementReporter{entity.NetworkACLURL(projectName, aclName): info})
 		if err != nil {
