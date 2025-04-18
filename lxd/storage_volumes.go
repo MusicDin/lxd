@@ -81,7 +81,7 @@ var storagePoolVolumeTypeCmd = APIEndpoint{
 	MetricsType: entity.TypeStoragePool,
 
 	Delete: APIEndpointAction{Handler: storagePoolVolumeDelete, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanDelete)},
-	Get:    APIEndpointAction{Handler: storagePoolVolumeGet, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanView)},
+	Get:    APIEndpointAction{Handler: storagePoolVolumeGetHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanView)},
 	Patch:  APIEndpointAction{Handler: storagePoolVolumePatch, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanEdit)},
 	Post:   APIEndpointAction{Handler: storagePoolVolumePost, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanEdit)},
 	Put:    APIEndpointAction{Handler: storagePoolVolumePut, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanEdit)},
@@ -2083,24 +2083,8 @@ func storagePoolVolumeTypePostMove(s *state.State, r *http.Request, poolName str
 //	    $ref: "#/responses/Forbidden"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func storagePoolVolumeGet(d *Daemon, r *http.Request) response.Response {
+func storagePoolVolumeGetHandler(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
-
-	details, err := request.GetCtxValue[storageVolumeDetails](r.Context(), ctxStorageVolumeDetails)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
-	// Check that the storage volume type is valid.
-	if !shared.ValueInSlice(details.volumeType, supportedVolumeTypes) {
-		return response.BadRequest(fmt.Errorf("Invalid storage volume type %q", details.volumeTypeName))
-	}
-
-	requestProjectName := request.ProjectParam(r)
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
 
 	// Detect if we want to also return entitlements for each volume.
 	withEntitlements, err := extractEntitlementsFromQuery(r, entity.TypeStorageVolume, false)
@@ -2108,44 +2092,71 @@ func storagePoolVolumeGet(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	resp := forwardedResponseIfTargetIsRemote(s, r)
-	if resp != nil {
-		return resp
+	requestProjectName := request.ProjectParam(r)
+	target := request.QueryParam(r, "target")
+
+	vol, etag, err := storagePoolVolumeGet(r.Context(), s, requestProjectName, withEntitlements, target)
+	if err != nil {
+		return response.SmartError(err)
 	}
 
-	resp = forwardedResponseIfVolumeIsRemote(s, r)
-	if resp != nil {
-		return resp
+	return response.SyncResponseETag(true, vol, etag)
+}
+
+func storagePoolVolumeGet(reqContext context.Context, s *state.State, requestProjectName string, withEntitlements []auth.Entitlement, target string) (vol *api.StorageVolume, etag any, err error) {
+	details, err := request.GetCtxValue[storageVolumeDetails](reqContext, ctxStorageVolumeDetails)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Check that the storage volume type is valid.
+	if !shared.ValueInSlice(details.volumeType, supportedVolumeTypes) {
+		return nil, nil, api.StatusErrorf(http.StatusBadRequest, "Invalid storage volume type %q", details.volumeTypeName)
+	}
+
+	err = forwardIfTargetIsRemote(reqContext, s, target)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	err = forwardIfVolumeIsRemote(reqContext, s)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	effectiveProjectName, err := request.GetCtxValue[string](reqContext, request.CtxEffectiveProjectName)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	var dbVolume *db.StorageVolume
 
-	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+	err = s.DB.Cluster.Transaction(reqContext, func(ctx context.Context, tx *db.ClusterTx) error {
 		// Get the storage volume.
 		dbVolume, err = tx.GetStoragePoolVolume(ctx, details.pool.ID(), effectiveProjectName, details.volumeType, details.volumeName, true)
 		return err
 	})
 	if err != nil {
-		return response.SmartError(err)
+		return nil, nil, err
 	}
 
 	volumeUsedBy, err := storagePoolVolumeUsedByGet(s, requestProjectName, dbVolume)
 	if err != nil {
-		return response.SmartError(err)
+		return nil, nil, err
 	}
 
-	dbVolume.UsedBy = project.FilterUsedBy(r.Context(), s.Authorizer, volumeUsedBy)
+	dbVolume.UsedBy = project.FilterUsedBy(reqContext, s.Authorizer, volumeUsedBy)
 
 	if len(withEntitlements) > 0 {
-		err = reportEntitlements(r.Context(), s.Authorizer, s.IdentityCache, entity.TypeStorageVolume, withEntitlements, map[*api.URL]auth.EntitlementReporter{entity.StorageVolumeURL(dbVolume.Project, dbVolume.Location, dbVolume.Pool, dbVolume.Type, dbVolume.Name): dbVolume})
+		err = reportEntitlements(reqContext, s.Authorizer, s.IdentityCache, entity.TypeStorageVolume, withEntitlements, map[*api.URL]auth.EntitlementReporter{entity.StorageVolumeURL(dbVolume.Project, dbVolume.Location, dbVolume.Pool, dbVolume.Type, dbVolume.Name): dbVolume})
 		if err != nil {
-			return response.SmartError(err)
+			return nil, nil, err
 		}
 	}
 
-	etag := []any{details.volumeName, dbVolume.Type, dbVolume.Config}
+	etag = []any{details.volumeName, dbVolume.Type, dbVolume.Config}
 
-	return response.SyncResponseETag(true, dbVolume.StorageVolume, etag)
+	return &dbVolume.StorageVolume, etag, nil
 }
 
 // swagger:operation PUT /1.0/storage-pools/{poolName}/volumes/{type}/{volumeName} storage storage_pool_volume_type_put
