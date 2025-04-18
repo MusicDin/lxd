@@ -42,7 +42,7 @@ var storagePoolsCmd = APIEndpoint{
 	MetricsType: entity.TypeStoragePool,
 
 	Get:  APIEndpointAction{Handler: storagePoolsGetHandler, AccessHandler: allowAuthenticated},
-	Post: APIEndpointAction{Handler: storagePoolsPost, AccessHandler: allowPermission(entity.TypeServer, auth.EntitlementCanCreateStoragePools)},
+	Post: APIEndpointAction{Handler: storagePoolsPostHandler, AccessHandler: allowPermission(entity.TypeServer, auth.EntitlementCanCreateStoragePools)},
 }
 
 var storagePoolCmd = APIEndpoint{
@@ -317,31 +317,39 @@ func getStoragePoolsDBNames(ctx context.Context, s *state.State, reqProjectName 
 //	    $ref: "#/responses/Forbidden"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func storagePoolsPost(d *Daemon, r *http.Request) response.Response {
+func storagePoolsPostHandler(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	storagePoolCreateLock.Lock()
-	defer storagePoolCreateLock.Unlock()
-
-	req := api.StoragePoolsPost{}
-
 	// Parse the request.
+	req := api.StoragePoolsPost{}
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
 		return response.BadRequest(err)
 	}
 
+	targetNode := request.QueryParam(r, "target")
+	clientType := clusterRequest.UserAgentClientType(r.Header.Get("User-Agent"))
+
+	lc, err := storagePoolsPost(r.Context(), s, req, clientType, isClusterNotification(r), targetNode)
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	return response.SyncResponseLocation(true, nil, lc.Source)
+}
+
+func storagePoolsPost(reqContext context.Context, s *state.State, req api.StoragePoolsPost, clientType clusterRequest.ClientType, isClusterNotification bool, target string) (*api.EventLifecycle, error) {
 	// Quick checks.
 	if req.Name == "" {
-		return response.BadRequest(errors.New("No name provided"))
+		return nil, api.NewStatusError(http.StatusBadRequest, "No name provided")
 	}
 
 	if strings.Contains(req.Name, "/") {
-		return response.BadRequest(errors.New("Storage pool names may not contain slashes"))
+		return nil, api.NewStatusError(http.StatusBadRequest, "Storage pool names may not contain slashes")
 	}
 
 	if req.Driver == "" {
-		return response.BadRequest(errors.New("No driver provided"))
+		return nil, api.NewStatusError(http.StatusBadRequest, "No driver provided")
 	}
 
 	if req.Config == nil {
@@ -349,24 +357,22 @@ func storagePoolsPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	ctx := logger.Ctx{}
-
-	targetNode := request.QueryParam(r, "target")
-	if targetNode != "" {
-		ctx["target"] = targetNode
+	if target != "" {
+		ctx["target"] = target
 	}
 
-	lc := lifecycle.StoragePoolCreated.Event(req.Name, request.CreateRequestor(r.Context()), ctx)
-	resp := response.SyncResponseLocation(true, nil, lc.Source)
+	storagePoolCreateLock.Lock()
+	defer storagePoolCreateLock.Unlock()
 
-	clientType := clusterRequest.UserAgentClientType(r.Header.Get("User-Agent"))
+	lc := lifecycle.StoragePoolCreated.Event(req.Name, request.CreateRequestor(reqContext), ctx)
 
-	if isClusterNotification(r) {
+	if isClusterNotification {
 		// This is an internal request which triggers the actual
 		// creation of the pool across all nodes, after they have been
 		// previously defined.
-		err = storagePoolValidate(s, req.Name, req.Driver, req.Config)
+		err := storagePoolValidate(s, req.Name, req.Driver, req.Config)
 		if err != nil {
-			return response.BadRequest(err)
+			return nil, api.NewStatusError(http.StatusBadRequest, err.Error())
 		}
 
 		var poolID int64
@@ -379,48 +385,48 @@ func storagePoolsPost(d *Daemon, r *http.Request) response.Response {
 			return err
 		})
 		if err != nil {
-			return response.SmartError(err)
+			return nil, err
 		}
 
 		_, err = storagePoolCreateLocal(s, poolID, req, clientType)
 		if err != nil {
-			return response.SmartError(err)
+			return nil, err
 		}
 
-		return resp
+		return &lc, nil
 	}
 
-	if targetNode != "" {
+	if target != "" {
 		// A targetNode was specified, let's just define the node's storage without actually creating it.
 		// The only legal key values for the storage config are the ones in NodeSpecificStorageConfig.
 		for key := range req.Config {
 			if !shared.ValueInSlice(key, db.NodeSpecificStorageConfig) {
-				return response.SmartError(fmt.Errorf("Config key %q may not be used as member-specific key", key))
+				return nil, fmt.Errorf("Config key %q may not be used as member-specific key", key)
 			}
 		}
 
-		err = storagePoolValidate(s, req.Name, req.Driver, req.Config)
+		err := storagePoolValidate(s, req.Name, req.Driver, req.Config)
 		if err != nil {
-			return response.BadRequest(err)
+			return nil, api.NewStatusError(http.StatusBadRequest, err.Error())
 		}
 
 		err = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-			return tx.CreatePendingStoragePool(ctx, targetNode, req.Name, req.Driver, req.Config)
+			return tx.CreatePendingStoragePool(ctx, target, req.Name, req.Driver, req.Config)
 		})
 		if err != nil {
 			if api.StatusErrorCheck(err, http.StatusConflict) {
-				return response.BadRequest(fmt.Errorf("The storage pool already defined on member %q", targetNode))
+				return nil, api.StatusErrorf(http.StatusBadRequest, "The storage pool already defined on member %q", target)
 			}
 
-			return response.SmartError(err)
+			return nil, err
 		}
 
-		return resp
+		return &lc, nil
 	}
 
 	var pool *api.StoragePool
 
-	err = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
+	err := s.DB.Cluster.Transaction(context.Background(), func(ctx context.Context, tx *db.ClusterTx) error {
 		var err error
 
 		// Load existing pool if exists, if not don't fail.
@@ -429,13 +435,13 @@ func storagePoolsPost(d *Daemon, r *http.Request) response.Response {
 		return err
 	})
 	if err != nil && !response.IsNotFoundError(err) {
-		return response.InternalError(err)
+		return nil, err
 	}
 
 	// Check if we're clustered.
 	count, err := cluster.Count(s)
 	if err != nil {
-		return response.SmartError(err)
+		return nil, err
 	}
 
 	// No targetNode was specified and we're clustered or there is an existing partially created single node
@@ -443,19 +449,19 @@ func storagePoolsPost(d *Daemon, r *http.Request) response.Response {
 	if count > 1 || (pool != nil && pool.Status != api.StoragePoolStatusCreated) {
 		err = storagePoolsPostCluster(s, pool, req, clientType)
 		if err != nil {
-			return response.InternalError(err)
+			return nil, err
 		}
 	} else {
 		// Create new single node storage pool.
 		err = storagePoolCreateGlobal(s, req, clientType)
 		if err != nil {
-			return response.SmartError(err)
+			return nil, err
 		}
 	}
 
 	s.Events.SendLifecycle(api.ProjectDefaultName, lc)
 
-	return resp
+	return &lc, nil
 }
 
 // storagePoolPartiallyCreated returns true of supplied storage pool has properties that indicate it has had
