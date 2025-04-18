@@ -82,7 +82,7 @@ var storagePoolVolumeTypeCmd = APIEndpoint{
 
 	Delete: APIEndpointAction{Handler: storagePoolVolumeDelete, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanDelete)},
 	Get:    APIEndpointAction{Handler: storagePoolVolumeGetHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanView)},
-	Patch:  APIEndpointAction{Handler: storagePoolVolumePatch, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanEdit)},
+	Patch:  APIEndpointAction{Handler: storagePoolVolumePatchHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanEdit)},
 	Post:   APIEndpointAction{Handler: storagePoolVolumePost, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanEdit)},
 	Put:    APIEndpointAction{Handler: storagePoolVolumePutHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanEdit)},
 }
@@ -2360,60 +2360,72 @@ func storagePoolVolumePut(reqContext context.Context, s *state.State, req api.St
 //	    $ref: "#/responses/PreconditionFailed"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func storagePoolVolumePatch(d *Daemon, r *http.Request) response.Response {
+func storagePoolVolumePatchHandler(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	details, err := request.GetCtxValue[storageVolumeDetails](r.Context(), ctxStorageVolumeDetails)
+	req := api.StorageVolumePut{}
+	err := request.DecodeAndRestoreJSONBody(r, &req)
 	if err != nil {
 		return response.SmartError(err)
 	}
 
+	target := request.QueryParam(r, "target")
+	etag := r.Header.Get("If-Match")
+
+	err = storagePoolVolumePatch(r.Context(), s, req, etag, target)
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	return response.EmptySyncResponse
+}
+
+func storagePoolVolumePatch(reqContext context.Context, s *state.State, req api.StorageVolumePut, reqETag string, target string) error {
+	details, err := request.GetCtxValue[storageVolumeDetails](reqContext, ctxStorageVolumeDetails)
+	if err != nil {
+		return err
+	}
+
+	effectiveProjectName, err := request.GetCtxValue[string](reqContext, request.CtxEffectiveProjectName)
+	if err != nil {
+		return err
+	}
+
 	if shared.IsSnapshot(details.volumeName) {
-		return response.BadRequest(errors.New("Invalid volume name"))
+		return api.NewStatusError(http.StatusBadRequest, "Invalid volume name")
 	}
 
 	// Check that the storage volume type is custom.
 	if details.volumeType != cluster.StoragePoolVolumeTypeCustom {
-		return response.BadRequest(fmt.Errorf("Invalid storage volume type %q", details.volumeTypeName))
+		return api.StatusErrorf(http.StatusBadRequest, "Invalid storage volume type %q", details.volumeTypeName)
 	}
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
+	err = forwardIfTargetIsRemote(reqContext, s, target)
 	if err != nil {
-		return response.SmartError(err)
+		return err
 	}
 
-	resp := forwardedResponseIfTargetIsRemote(s, r)
-	if resp != nil {
-		return resp
-	}
-
-	resp = forwardedResponseIfVolumeIsRemote(s, r)
-	if resp != nil {
-		return resp
+	err = forwardIfVolumeIsRemote(reqContext, s)
+	if err != nil {
+		return err
 	}
 
 	// Get the existing storage volume.
 	var dbVolume *db.StorageVolume
-	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+	err = s.DB.Cluster.Transaction(reqContext, func(ctx context.Context, tx *db.ClusterTx) error {
 		dbVolume, err = tx.GetStoragePoolVolume(ctx, details.pool.ID(), effectiveProjectName, details.volumeType, details.volumeName, true)
 		return err
 	})
 	if err != nil {
-		return response.SmartError(err)
+		return err
 	}
 
 	// Validate the ETag.
 	etag := []any{details.volumeName, dbVolume.Type, dbVolume.Config}
 
-	err = util.EtagCheck(r, etag)
+	err = util.EtagCheckString(reqETag, etag)
 	if err != nil {
-		return response.PreconditionFailed(err)
-	}
-
-	req := api.StorageVolumePut{}
-	err = json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		return response.BadRequest(err)
+		return api.NewStatusError(http.StatusPreconditionFailed, err.Error())
 	}
 
 	if req.Config == nil {
@@ -2430,14 +2442,14 @@ func storagePoolVolumePatch(d *Daemon, r *http.Request) response.Response {
 
 	// Use an empty operation for this sync response to pass the requestor
 	op := &operations.Operation{}
-	op.SetRequestor(r.Context())
+	op.SetRequestor(reqContext)
 
 	err = details.pool.UpdateCustomVolume(effectiveProjectName, dbVolume.Name, req.Description, req.Config, op)
 	if err != nil {
-		return response.SmartError(err)
+		return err
 	}
 
-	return response.EmptySyncResponse
+	return nil
 }
 
 // swagger:operation DELETE /1.0/storage-pools/{poolName}/volumes/{type}/{volumeName} storage storage_pool_volume_type_delete
