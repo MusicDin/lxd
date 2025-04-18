@@ -37,7 +37,7 @@ var storagePoolVolumeSnapshotsTypeCmd = APIEndpoint{
 	Path:        "storage-pools/{poolName}/volumes/{type}/{volumeName}/snapshots",
 	MetricsType: entity.TypeStoragePool,
 
-	Get:  APIEndpointAction{Handler: storagePoolVolumeSnapshotsTypeGet, AccessHandler: allowProjectResourceList},
+	Get:  APIEndpointAction{Handler: storagePoolVolumeSnapshotsTypeGetHandler, AccessHandler: allowProjectResourceList},
 	Post: APIEndpointAction{Handler: storagePoolVolumeSnapshotsTypePost, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanManageSnapshots)},
 }
 
@@ -330,7 +330,7 @@ func storagePoolVolumeSnapshotsTypePost(d *Daemon, r *http.Request) response.Res
 //	    $ref: "#/responses/Forbidden"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func storagePoolVolumeSnapshotsTypeGet(d *Daemon, r *http.Request) response.Response {
+func storagePoolVolumeSnapshotsTypeGetHandler(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
 	err := addStoragePoolVolumeDetailsToRequestContext(s, r)
@@ -338,96 +338,162 @@ func storagePoolVolumeSnapshotsTypeGet(d *Daemon, r *http.Request) response.Resp
 		return response.SmartError(err)
 	}
 
-	details, err := request.GetCtxValue[storageVolumeDetails](r.Context(), ctxStorageVolumeDetails)
+	projectName := request.ProjectParam(r)
+	target := request.QueryParam(r, "target")
+
+	if util.IsRecursionRequest(r) {
+		snapshots, err := storagePoolVolumeSnapshotsTypeGet(r.Context(), s, projectName, target)
+		if err != nil {
+			return response.SmartError(err)
+		}
+
+		return response.SyncResponse(true, snapshots)
+	}
+
+	urls, err := storagePoolVolumeSnapshotsTypeURLGet(r.Context(), s, projectName, target)
 	if err != nil {
 		return response.SmartError(err)
 	}
 
-	recursion := util.IsRecursionRequest(r)
+	return response.SyncResponse(true, urls)
+}
+
+func storagePoolVolumeSnapshotsTypeGet(reqContext context.Context, s *state.State, projectName string, target string) ([]*api.StorageVolumeSnapshot, error) {
+	details, err := request.GetCtxValue[storageVolumeDetails](reqContext, ctxStorageVolumeDetails)
+	if err != nil {
+		return nil, err
+	}
 
 	// Check that the storage volume type is valid.
 	if !shared.ValueInSlice(details.volumeType, supportedVolumeTypes) {
-		return response.BadRequest(fmt.Errorf("Invalid storage volume type %q", details.volumeTypeName))
+		return nil, api.StatusErrorf(http.StatusBadRequest, "Invalid storage volume type %q", details.volumeTypeName)
 	}
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
+	effectiveProjectName, err := request.GetCtxValue[string](reqContext, request.CtxEffectiveProjectName)
 	if err != nil {
-		return response.SmartError(err)
+		return nil, err
 	}
 
 	// Forward if needed.
-	resp := forwardedResponseIfTargetIsRemote(s, r)
-	if resp != nil {
-		return resp
+	err = forwardIfTargetIsRemote(reqContext, s, target)
+	if err != nil {
+		return nil, err
 	}
 
-	var volumes []db.StorageVolumeArgs
+	volumes, err := getDBStoragePoolVolumeSnapshots(reqContext, s, effectiveProjectName, details)
+	if err != nil {
+		return nil, err
+	}
 
-	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+	canView, err := s.Authorizer.GetPermissionChecker(reqContext, auth.EntitlementCanView, entity.TypeStorageVolumeSnapshot)
+	if err != nil {
+		return nil, err
+	}
+
+	// Prepare the response.
+	snapshots := []*api.StorageVolumeSnapshot{}
+	for _, volume := range volumes {
+		_, snapshotName, _ := api.GetParentAndSnapshotName(volume.Name)
+
+		if !canView(entity.StorageVolumeSnapshotURL(projectName, details.location, details.pool.Name(), details.volumeTypeName, details.volumeName, snapshotName)) {
+			continue
+		}
+
+		var vol *db.StorageVolume
+		err = s.DB.Cluster.Transaction(reqContext, func(ctx context.Context, tx *db.ClusterTx) error {
+			vol, err = tx.GetStoragePoolVolume(ctx, details.pool.ID(), effectiveProjectName, details.volumeType, volume.Name, true)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		volumeUsedBy, err := storagePoolVolumeUsedByGet(s, effectiveProjectName, vol)
+		if err != nil {
+			return nil, err
+		}
+
+		vol.UsedBy = project.FilterUsedBy(reqContext, s.Authorizer, volumeUsedBy)
+
+		snap := &api.StorageVolumeSnapshot{}
+		snap.Config = vol.Config
+		snap.Description = vol.Description
+		snap.Name = vol.Name
+		snap.CreatedAt = vol.CreatedAt
+		snap.ExpiresAt = &volume.ExpiryDate
+
+		snapshots = append(snapshots, snap)
+	}
+
+	return snapshots, nil
+}
+
+func storagePoolVolumeSnapshotsTypeURLGet(reqContext context.Context, s *state.State, projectName string, target string) ([]string, error) {
+	details, err := request.GetCtxValue[storageVolumeDetails](reqContext, ctxStorageVolumeDetails)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check that the storage volume type is valid.
+	if !shared.ValueInSlice(details.volumeType, supportedVolumeTypes) {
+		return nil, api.StatusErrorf(http.StatusBadRequest, "Invalid storage volume type %q", details.volumeTypeName)
+	}
+
+	effectiveProjectName, err := request.GetCtxValue[string](reqContext, request.CtxEffectiveProjectName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Forward if needed.
+	err = forwardIfTargetIsRemote(reqContext, s, target)
+	if err != nil {
+		return nil, err
+	}
+
+	volumes, err := getDBStoragePoolVolumeSnapshots(reqContext, s, effectiveProjectName, details)
+	if err != nil {
+		return nil, err
+	}
+
+	canView, err := s.Authorizer.GetPermissionChecker(reqContext, auth.EntitlementCanView, entity.TypeStorageVolumeSnapshot)
+	if err != nil {
+		return nil, err
+	}
+
+	// Prepare the response.
+	result := []string{}
+	for _, volume := range volumes {
+		_, snapshotName, _ := api.GetParentAndSnapshotName(volume.Name)
+
+		if !canView(entity.StorageVolumeSnapshotURL(projectName, details.location, details.pool.Name(), details.volumeTypeName, details.volumeName, snapshotName)) {
+			continue
+		}
+
+		result = append(result, fmt.Sprintf("/%s/storage-pools/%s/volumes/%s/%s/snapshots/%s", version.APIVersion, details.pool.Name(), details.volumeTypeName, details.volumeName, snapshotName))
+	}
+
+	return result, nil
+}
+
+func getDBStoragePoolVolumeSnapshots(ctx context.Context, s *state.State, projectName string, details storageVolumeDetails) ([]db.StorageVolumeArgs, error) {
+	var volumes []db.StorageVolumeArgs
+	err := s.DB.Cluster.Transaction(ctx, func(ctx context.Context, tx *db.ClusterTx) error {
 		var err error
 
 		// Get the names of all storage volume snapshots of a given volume.
-		volumes, err = tx.GetLocalStoragePoolVolumeSnapshotsWithType(ctx, effectiveProjectName, details.volumeName, details.volumeType, details.pool.ID())
+		volumes, err = tx.GetLocalStoragePoolVolumeSnapshotsWithType(ctx, projectName, details.volumeName, details.volumeType, details.pool.ID())
 		if err != nil {
 			return err
 		}
 
 		return nil
 	})
+
 	if err != nil {
-		return response.SmartError(err)
+		return nil, err
 	}
 
-	canView, err := s.Authorizer.GetPermissionChecker(r.Context(), auth.EntitlementCanView, entity.TypeStorageVolumeSnapshot)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
-	// Prepare the response.
-	resultString := []string{}
-	resultMap := []*api.StorageVolumeSnapshot{}
-	for _, volume := range volumes {
-		_, snapshotName, _ := api.GetParentAndSnapshotName(volume.Name)
-
-		if !canView(entity.StorageVolumeSnapshotURL(request.ProjectParam(r), details.location, details.pool.Name(), details.volumeTypeName, details.volumeName, snapshotName)) {
-			continue
-		}
-
-		if !recursion {
-			resultString = append(resultString, fmt.Sprintf("/%s/storage-pools/%s/volumes/%s/%s/snapshots/%s", version.APIVersion, details.pool.Name(), details.volumeTypeName, details.volumeName, snapshotName))
-		} else {
-			var vol *db.StorageVolume
-			err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
-				vol, err = tx.GetStoragePoolVolume(ctx, details.pool.ID(), effectiveProjectName, details.volumeType, volume.Name, true)
-				return err
-			})
-			if err != nil {
-				return response.SmartError(err)
-			}
-
-			volumeUsedBy, err := storagePoolVolumeUsedByGet(s, effectiveProjectName, vol)
-			if err != nil {
-				return response.SmartError(err)
-			}
-
-			vol.UsedBy = project.FilterUsedBy(r.Context(), s.Authorizer, volumeUsedBy)
-
-			snap := &api.StorageVolumeSnapshot{}
-			snap.Config = vol.Config
-			snap.Description = vol.Description
-			snap.Name = vol.Name
-			snap.CreatedAt = vol.CreatedAt
-			snap.ExpiresAt = &volume.ExpiryDate
-
-			resultMap = append(resultMap, snap)
-		}
-	}
-
-	if !recursion {
-		return response.SyncResponse(true, resultString)
-	}
-
-	return response.SyncResponse(true, resultMap)
+	return volumes, nil
 }
 
 // swagger:operation POST /1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}/snapshots/{snapshotName} storage storage_pool_volumes_type_snapshot_post
