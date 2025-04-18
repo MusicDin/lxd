@@ -49,7 +49,7 @@ var storagePoolCmd = APIEndpoint{
 	Path:        "storage-pools/{poolName}",
 	MetricsType: entity.TypeStoragePool,
 
-	Delete: APIEndpointAction{Handler: storagePoolDelete, AccessHandler: allowPermission(entity.TypeStoragePool, auth.EntitlementCanDelete, "poolName")},
+	Delete: APIEndpointAction{Handler: storagePoolDeleteHandler, AccessHandler: allowPermission(entity.TypeStoragePool, auth.EntitlementCanDelete, "poolName")},
 	Get:    APIEndpointAction{Handler: storagePoolGetHandler, AccessHandler: allowAuthenticated},
 	Patch:  APIEndpointAction{Handler: storagePoolPatchHandler, AccessHandler: allowPermission(entity.TypeStoragePool, auth.EntitlementCanEdit, "poolName")},
 	Put:    APIEndpointAction{Handler: storagePoolPutHandler, AccessHandler: allowPermission(entity.TypeStoragePool, auth.EntitlementCanEdit, "poolName")},
@@ -1063,46 +1063,54 @@ func doStoragePoolUpdate(s *state.State, pool storagePools.Pool, req api.Storage
 //	    $ref: "#/responses/Forbidden"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func storagePoolDelete(d *Daemon, r *http.Request) response.Response {
-	s := d.State()
-
+func storagePoolDeleteHandler(d *Daemon, r *http.Request) response.Response {
 	poolName, err := url.PathUnescape(mux.Vars(r)["poolName"])
-	if err != nil {
-		return response.SmartError(err)
-	}
-
-	pool, err := storagePools.LoadByName(s, poolName)
 	if err != nil {
 		return response.SmartError(err)
 	}
 
 	clientType := clusterRequest.UserAgentClientType(r.Header.Get("User-Agent"))
 	clusterNotification := isClusterNotification(r)
+
+	err = storagePoolDelete(r.Context(), d.State(), poolName, clientType, clusterNotification)
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	return response.EmptySyncResponse
+}
+
+func storagePoolDelete(reqContext context.Context, s *state.State, poolName string, clientType clusterRequest.ClientType, isClusterNotification bool) error {
+	pool, err := storagePools.LoadByName(s, poolName)
+	if err != nil {
+		return err
+	}
+
 	var notifier cluster.Notifier
-	if !clusterNotification {
+	if !isClusterNotification {
 		// Quick checks.
 		inUse, err := pool.IsUsed()
 		if err != nil {
-			return response.SmartError(err)
+			return err
 		}
 
 		if inUse {
-			return response.BadRequest(errors.New("The storage pool is currently in use"))
+			return api.NewStatusError(http.StatusBadRequest, "The storage pool is currently in use")
 		}
 
 		// Get the cluster notifier
 		notifier, err = cluster.NewNotifier(s, s.Endpoints.NetworkCert(), s.ServerCert(), cluster.NotifyAll)
 		if err != nil {
-			return response.SmartError(err)
+			return err
 		}
 	}
 
 	// Only perform the deletion of remote image volumes on the server handling the request.
 	// Otherwise delete local image volumes on each server.
-	if !clusterNotification || !pool.Driver().Info().Remote {
+	if !isClusterNotification || !pool.Driver().Info().Remote {
 		var removeImgFingerprints []string
 
-		err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+		err = s.DB.Cluster.Transaction(reqContext, func(ctx context.Context, tx *db.ClusterTx) error {
 			// Get all the volumes using the storage pool on this server.
 			// Only image volumes should remain now.
 			poolID := pool.ID() // Create local variable to get the pointer.
@@ -1122,13 +1130,13 @@ func storagePoolDelete(d *Daemon, r *http.Request) response.Response {
 			return nil
 		})
 		if err != nil {
-			return response.SmartError(err)
+			return err
 		}
 
 		for _, removeImgFingerprint := range removeImgFingerprints {
 			err = pool.DeleteImage(removeImgFingerprint, nil)
 			if err != nil {
-				return response.InternalError(fmt.Errorf("Error deleting image %q from storage pool %q: %w", removeImgFingerprint, pool.Name(), err))
+				return fmt.Errorf("Error deleting image %q from storage pool %q: %w", removeImgFingerprint, pool.Name(), err)
 			}
 		}
 	}
@@ -1136,14 +1144,14 @@ func storagePoolDelete(d *Daemon, r *http.Request) response.Response {
 	if pool.LocalStatus() != api.StoragePoolStatusPending {
 		err = pool.Delete(clientType, nil)
 		if err != nil {
-			return response.InternalError(err)
+			return err
 		}
 	}
 
 	// If this is a cluster notification, we're done, any database work will be done by the node that is
 	// originally serving the request.
-	if clusterNotification {
-		return response.EmptySyncResponse
+	if isClusterNotification {
+		return nil
 	}
 
 	// If we are clustered, also notify all other nodes.
@@ -1151,16 +1159,16 @@ func storagePoolDelete(d *Daemon, r *http.Request) response.Response {
 		return client.DeleteStoragePool(pool.Name())
 	})
 	if err != nil {
-		return response.SmartError(err)
+		return err
 	}
 
 	err = dbStoragePoolDeleteAndUpdateCache(s, pool.Name())
 	if err != nil {
-		return response.SmartError(err)
+		return err
 	}
 
-	requestor := request.CreateRequestor(r.Context())
+	requestor := request.CreateRequestor(reqContext)
 	s.Events.SendLifecycle(api.ProjectDefaultName, lifecycle.StoragePoolDeleted.Event(pool.Name(), requestor, nil))
 
-	return response.EmptySyncResponse
+	return nil
 }
