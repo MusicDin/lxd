@@ -41,7 +41,7 @@ var storagePoolsCmd = APIEndpoint{
 	Path:        "storage-pools",
 	MetricsType: entity.TypeStoragePool,
 
-	Get:  APIEndpointAction{Handler: storagePoolsGet, AccessHandler: allowAuthenticated},
+	Get:  APIEndpointAction{Handler: storagePoolsGetHandler, AccessHandler: allowAuthenticated},
 	Post: APIEndpointAction{Handler: storagePoolsPost, AccessHandler: allowPermission(entity.TypeServer, auth.EntitlementCanCreateStoragePools)},
 }
 
@@ -147,19 +147,115 @@ var storagePoolCmd = APIEndpoint{
 //	    $ref: "#/responses/Forbidden"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func storagePoolsGet(d *Daemon, r *http.Request) response.Response {
+func storagePoolsGetHandler(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	recursion := util.IsRecursionRequest(r)
-	withEntitlements, err := extractEntitlementsFromQuery(r, entity.TypeStoragePool, true)
+	if util.IsRecursionRequest(r) {
+		withEntitlements, err := extractEntitlementsFromQuery(r, entity.TypeStoragePool, true)
+		if err != nil {
+			return response.SmartError(err)
+		}
+
+		pools, err := storagePoolsGet(r.Context(), s, request.ProjectParam(r), withEntitlements)
+		if err != nil {
+			return response.SmartError(err)
+		}
+
+		return response.SyncResponse(true, pools)
+	}
+
+	urls, err := storagePoolsURLGet(r.Context(), s, request.ProjectParam(r))
 	if err != nil {
 		return response.SmartError(err)
 	}
 
-	var poolNames []string
-	var hiddenPoolNames []string
+	return response.SyncResponse(true, urls)
+}
 
-	err = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
+func storagePoolsGet(reqContext context.Context, s *state.State, requestProjectName string, withEntitlements []auth.Entitlement) ([]*api.StoragePool, error) {
+	poolNames, hiddenPoolNames, err := getStoragePoolsDBNames(reqContext, s, requestProjectName)
+	if err != nil {
+		return nil, err
+	}
+
+	hasEditPermission, err := s.Authorizer.GetPermissionChecker(reqContext, auth.EntitlementCanEdit, entity.TypeStoragePool)
+	if err != nil {
+		return nil, err
+	}
+
+	result := []*api.StoragePool{}
+	urlToPool := make(map[*api.URL]auth.EntitlementReporter)
+	for _, poolName := range poolNames {
+		// Hide storage pools with a 0 project limit.
+		if slices.Contains(hiddenPoolNames, poolName) {
+			continue
+		}
+
+		pool, err := storagePools.LoadByName(s, poolName)
+		if err != nil {
+			return nil, err
+		}
+
+		// Get all users of the storage pool.
+		poolUsedBy, err := storagePools.UsedBy(reqContext, s, pool, false, false)
+		if err != nil {
+			return nil, err
+		}
+
+		poolAPI := pool.ToAPI()
+		poolAPI.UsedBy = project.FilterUsedBy(reqContext, s.Authorizer, poolUsedBy)
+
+		if !hasEditPermission(entity.StoragePoolURL(poolName)) {
+			// Don't allow non-admins to see pool config as sensitive info can be stored there.
+			poolAPI.Config = nil
+		}
+
+		// If no member is specified and the daemon is clustered, we omit the node-specific fields.
+		if s.ServerClustered {
+			for _, key := range db.NodeSpecificStorageConfig {
+				delete(poolAPI.Config, key)
+			}
+		} else {
+			// Use local status if not clustered. To allow seeing unavailable pools.
+			poolAPI.Status = pool.LocalStatus()
+		}
+
+		result = append(result, &poolAPI)
+		urlToPool[entity.StoragePoolURL(poolName)] = &poolAPI
+	}
+
+	if len(withEntitlements) > 0 {
+		err = reportEntitlements(reqContext, s.Authorizer, s.IdentityCache, entity.TypeStorageVolume, withEntitlements, urlToPool)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return result, nil
+}
+
+func storagePoolsURLGet(reqContext context.Context, s *state.State, requestProjectName string) ([]string, error) {
+	poolNames, hiddenPoolNames, err := getStoragePoolsDBNames(reqContext, s, requestProjectName)
+	if err != nil {
+		return nil, err
+	}
+
+	result := []string{}
+	for _, poolName := range poolNames {
+		// Hide storage pools with a 0 project limit.
+		if slices.Contains(hiddenPoolNames, poolName) {
+			continue
+		}
+
+		result = append(result, fmt.Sprintf("/%s/storage-pools/%s", version.APIVersion, poolName))
+	}
+
+	return result, nil
+}
+
+// getStoragePoolsDBNames returns the storage pool names and hidden storage pool names for the given project.
+func getStoragePoolsDBNames(ctx context.Context, s *state.State, reqProjectName string) (poolNames []string, hiddenPoolNames []string, err error) {
+	err = s.DB.Cluster.Transaction(ctx, func(ctx context.Context, tx *db.ClusterTx) error {
 		var err error
 
 		// Load the pool names.
@@ -169,7 +265,7 @@ func storagePoolsGet(d *Daemon, r *http.Request) response.Response {
 		}
 
 		// Load the project limits.
-		hiddenPoolNames, err = limits.HiddenStoragePools(ctx, tx, request.ProjectParam(r))
+		hiddenPoolNames, err = limits.HiddenStoragePools(ctx, tx, reqProjectName)
 		if err != nil {
 			return err
 		}
@@ -177,72 +273,10 @@ func storagePoolsGet(d *Daemon, r *http.Request) response.Response {
 		return nil
 	})
 	if err != nil && !response.IsNotFoundError(err) {
-		return response.SmartError(err)
+		return nil, nil, err
 	}
 
-	hasEditPermission, err := s.Authorizer.GetPermissionChecker(r.Context(), auth.EntitlementCanEdit, entity.TypeStoragePool)
-	if err != nil {
-		return response.InternalError(err)
-	}
-
-	resultString := []string{}
-	resultMap := []*api.StoragePool{}
-	urlToPool := make(map[*api.URL]auth.EntitlementReporter)
-	for _, poolName := range poolNames {
-		// Hide storage pools with a 0 project limit.
-		if slices.Contains(hiddenPoolNames, poolName) {
-			continue
-		}
-
-		if !recursion {
-			resultString = append(resultString, fmt.Sprintf("/%s/storage-pools/%s", version.APIVersion, poolName))
-		} else {
-			pool, err := storagePools.LoadByName(s, poolName)
-			if err != nil {
-				return response.SmartError(err)
-			}
-
-			// Get all users of the storage pool.
-			poolUsedBy, err := storagePools.UsedBy(r.Context(), s, pool, false, false)
-			if err != nil {
-				return response.SmartError(err)
-			}
-
-			poolAPI := pool.ToAPI()
-			poolAPI.UsedBy = project.FilterUsedBy(r.Context(), s.Authorizer, poolUsedBy)
-
-			if !hasEditPermission(entity.StoragePoolURL(poolName)) {
-				// Don't allow non-admins to see pool config as sensitive info can be stored there.
-				poolAPI.Config = nil
-			}
-
-			// If no member is specified and the daemon is clustered, we omit the node-specific fields.
-			if s.ServerClustered {
-				for _, key := range db.NodeSpecificStorageConfig {
-					delete(poolAPI.Config, key)
-				}
-			} else {
-				// Use local status if not clustered. To allow seeing unavailable pools.
-				poolAPI.Status = pool.LocalStatus()
-			}
-
-			resultMap = append(resultMap, &poolAPI)
-			urlToPool[entity.StoragePoolURL(poolName)] = &poolAPI
-		}
-	}
-
-	if !recursion {
-		return response.SyncResponse(true, resultString)
-	}
-
-	if len(withEntitlements) > 0 {
-		err = reportEntitlements(r.Context(), s.Authorizer, s.IdentityCache, entity.TypeStorageVolume, withEntitlements, urlToPool)
-		if err != nil {
-			return response.SmartError(err)
-		}
-	}
-
-	return response.SyncResponse(true, resultMap)
+	return poolNames, hiddenPoolNames, nil
 }
 
 // swagger:operation POST /1.0/storage-pools storage storage_pools_post
