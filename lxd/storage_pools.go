@@ -50,7 +50,7 @@ var storagePoolCmd = APIEndpoint{
 	MetricsType: entity.TypeStoragePool,
 
 	Delete: APIEndpointAction{Handler: storagePoolDelete, AccessHandler: allowPermission(entity.TypeStoragePool, auth.EntitlementCanDelete, "poolName")},
-	Get:    APIEndpointAction{Handler: storagePoolGet, AccessHandler: allowAuthenticated},
+	Get:    APIEndpointAction{Handler: storagePoolGetHandler, AccessHandler: allowAuthenticated},
 	Patch:  APIEndpointAction{Handler: storagePoolPatch, AccessHandler: allowPermission(entity.TypeStoragePool, auth.EntitlementCanEdit, "poolName")},
 	Put:    APIEndpointAction{Handler: storagePoolPut, AccessHandler: allowPermission(entity.TypeStoragePool, auth.EntitlementCanEdit, "poolName")},
 }
@@ -666,14 +666,8 @@ func storagePoolsPostCluster(s *state.State, pool *api.StoragePool, req api.Stor
 //	    $ref: "#/responses/Forbidden"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func storagePoolGet(d *Daemon, r *http.Request) response.Response {
+func storagePoolGetHandler(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
-
-	// If a target was specified, forward the request to the relevant node.
-	resp := forwardedResponseIfTargetIsRemote(s, r)
-	if resp != nil {
-		return resp
-	}
 
 	poolName, err := url.PathUnescape(mux.Vars(r)["poolName"])
 	if err != nil {
@@ -685,14 +679,31 @@ func storagePoolGet(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	memberSpecific := request.QueryParam(r, "target") != ""
+	target := request.QueryParam(r, "target")
+
+	pool, etag, err := storagePoolGet(r.Context(), s, poolName, request.ProjectParam(r), withEntitlements, target)
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	return response.SyncResponseETag(true, pool, etag)
+}
+
+func storagePoolGet(reqContext context.Context, s *state.State, poolName string, requestProjectName string, withEntitlements []auth.Entitlement, target string) (storagePool *api.StoragePool, etag any, err error) {
+	// If a target was specified, forward the request to the relevant node.
+	err = forwardIfTargetIsRemote(reqContext, s, target)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	memberSpecific := target != ""
 
 	var hiddenPoolNames []string
-	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+	err = s.DB.Cluster.Transaction(reqContext, func(ctx context.Context, tx *db.ClusterTx) error {
 		var err error
 
 		// Load the project limits.
-		hiddenPoolNames, err = limits.HiddenStoragePools(ctx, tx, request.ProjectParam(r))
+		hiddenPoolNames, err = limits.HiddenStoragePools(ctx, tx, requestProjectName)
 		if err != nil {
 			return err
 		}
@@ -700,32 +711,32 @@ func storagePoolGet(d *Daemon, r *http.Request) response.Response {
 		return nil
 	})
 	if err != nil {
-		return response.SmartError(err)
+		return nil, nil, err
 	}
 
 	// Hide storage pools with a 0 project limit.
 	if slices.Contains(hiddenPoolNames, poolName) {
-		return response.NotFound(nil)
+		return nil, nil, api.NewGenericStatusError(http.StatusNotFound)
 	}
 
 	// Get the existing storage pool.
 	pool, err := storagePools.LoadByName(s, poolName)
 	if err != nil {
-		return response.SmartError(err)
+		return nil, nil, err
 	}
 
 	// Get all users of the storage pool.
-	poolUsedBy, err := storagePools.UsedBy(r.Context(), s, pool, false, memberSpecific)
+	poolUsedBy, err := storagePools.UsedBy(reqContext, s, pool, false, memberSpecific)
 	if err != nil {
-		return response.SmartError(err)
+		return nil, nil, err
 	}
 
 	poolAPI := pool.ToAPI()
-	poolAPI.UsedBy = project.FilterUsedBy(r.Context(), s.Authorizer, poolUsedBy)
+	poolAPI.UsedBy = project.FilterUsedBy(reqContext, s.Authorizer, poolUsedBy)
 
-	err = s.Authorizer.CheckPermission(r.Context(), entity.StoragePoolURL(poolName), auth.EntitlementCanEdit)
+	err = s.Authorizer.CheckPermission(reqContext, entity.StoragePoolURL(poolName), auth.EntitlementCanEdit)
 	if err != nil && !auth.IsDeniedError(err) {
-		return response.SmartError(err)
+		return nil, nil, err
 	} else if err != nil {
 		// Only allow users that can edit storage pool config to view it as sensitive info can be stored there.
 		poolAPI.Config = nil
@@ -742,15 +753,15 @@ func storagePoolGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if len(withEntitlements) > 0 {
-		err = reportEntitlements(r.Context(), s.Authorizer, s.IdentityCache, entity.TypeStoragePool, withEntitlements, map[*api.URL]auth.EntitlementReporter{entity.StoragePoolURL(poolName): &poolAPI})
+		err = reportEntitlements(reqContext, s.Authorizer, s.IdentityCache, entity.TypeStoragePool, withEntitlements, map[*api.URL]auth.EntitlementReporter{entity.StoragePoolURL(poolName): &poolAPI})
 		if err != nil {
-			return response.SmartError(err)
+			return nil, nil, err
 		}
 	}
 
-	etag := []any{pool.Name(), pool.Driver().Info().Name, pool.Description(), poolAPI.Config}
+	etag = []any{pool.Name(), pool.Driver().Info().Name, pool.Description(), poolAPI.Config}
 
-	return response.SyncResponseETag(true, &poolAPI, etag)
+	return &poolAPI, etag, nil
 }
 
 // swagger:operation PUT /1.0/storage-pools/{poolName} storage storage_pool_put
