@@ -45,7 +45,7 @@ var storagePoolVolumeSnapshotTypeCmd = APIEndpoint{
 	MetricsType: entity.TypeStoragePool,
 
 	Delete: APIEndpointAction{Handler: storagePoolVolumeSnapshotTypeDelete, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanDelete)},
-	Get:    APIEndpointAction{Handler: storagePoolVolumeSnapshotTypeGet, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanView)},
+	Get:    APIEndpointAction{Handler: storagePoolVolumeSnapshotTypeGetHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanView)},
 	Post:   APIEndpointAction{Handler: storagePoolVolumeSnapshotTypePost, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanEdit)},
 	Patch:  APIEndpointAction{Handler: storagePoolVolumeSnapshotTypePatch, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanEdit)},
 	Put:    APIEndpointAction{Handler: storagePoolVolumeSnapshotTypePut, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanEdit)},
@@ -665,21 +665,11 @@ func storagePoolVolumeSnapshotTypePost(d *Daemon, r *http.Request) response.Resp
 //	    $ref: "#/responses/Forbidden"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func storagePoolVolumeSnapshotTypeGet(d *Daemon, r *http.Request) response.Response {
+func storagePoolVolumeSnapshotTypeGetHandler(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
-
-	details, err := request.GetCtxValue[storageVolumeDetails](r.Context(), ctxStorageVolumeDetails)
-	if err != nil {
-		return response.SmartError(err)
-	}
 
 	// Get the name of the storage volume.
 	snapshotName, err := url.PathUnescape(mux.Vars(r)["snapshotName"])
-	if err != nil {
-		return response.SmartError(err)
-	}
-
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -695,12 +685,31 @@ func storagePoolVolumeSnapshotTypeGet(d *Daemon, r *http.Request) response.Respo
 		return resp
 	}
 
+	snapshot, etag, err := storagePoolVolumeSnapshotTypeGet(r.Context(), s, snapshotName)
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	return response.SyncResponseETag(true, snapshot, etag)
+}
+
+func storagePoolVolumeSnapshotTypeGet(reqContext context.Context, s *state.State, snapshotName string) (snapshot *api.StorageVolumeSnapshot, etag any, err error) {
+	details, err := request.GetCtxValue[storageVolumeDetails](reqContext, ctxStorageVolumeDetails)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	effectiveProjectName, err := request.GetCtxValue[string](reqContext, request.CtxEffectiveProjectName)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	fullSnapshotName := fmt.Sprintf("%s/%s", details.volumeName, snapshotName)
 
 	var dbVolume *db.StorageVolume
 	var expiry time.Time
 
-	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+	err = s.DB.Cluster.Transaction(reqContext, func(ctx context.Context, tx *db.ClusterTx) error {
 		dbVolume, err = tx.GetStoragePoolVolume(ctx, details.pool.ID(), effectiveProjectName, details.volumeType, fullSnapshotName, true)
 		if err != nil {
 			return err
@@ -714,10 +723,10 @@ func storagePoolVolumeSnapshotTypeGet(d *Daemon, r *http.Request) response.Respo
 		return nil
 	})
 	if err != nil {
-		return response.SmartError(err)
+		return nil, nil, err
 	}
 
-	snapshot := &api.StorageVolumeSnapshot{}
+	snapshot = &api.StorageVolumeSnapshot{}
 	snapshot.Config = dbVolume.Config
 	snapshot.Description = dbVolume.Description
 	snapshot.Name = snapshotName
@@ -725,8 +734,9 @@ func storagePoolVolumeSnapshotTypeGet(d *Daemon, r *http.Request) response.Respo
 	snapshot.ContentType = dbVolume.ContentType
 	snapshot.CreatedAt = dbVolume.CreatedAt
 
-	etag := []any{snapshot.Description, expiry}
-	return response.SyncResponseETag(true, snapshot, etag)
+	etag = []any{snapshot.Description, expiry}
+
+	return snapshot, etag, nil
 }
 
 // swagger:operation PUT /1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}/snapshots/{snapshotName} storage storage_pool_volumes_type_snapshot_put
