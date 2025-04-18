@@ -44,7 +44,7 @@ var storagePoolVolumeSnapshotTypeCmd = APIEndpoint{
 	Path:        "storage-pools/{poolName}/volumes/{type}/{volumeName}/snapshots/{snapshotName}",
 	MetricsType: entity.TypeStoragePool,
 
-	Delete: APIEndpointAction{Handler: storagePoolVolumeSnapshotTypeDelete, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanDelete)},
+	Delete: APIEndpointAction{Handler: storagePoolVolumeSnapshotTypeDeleteHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanDelete)},
 	Get:    APIEndpointAction{Handler: storagePoolVolumeSnapshotTypeGetHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanView)},
 	Post:   APIEndpointAction{Handler: storagePoolVolumeSnapshotTypePostHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanEdit)},
 	Patch:  APIEndpointAction{Handler: storagePoolVolumeSnapshotTypePatchHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanEdit)},
@@ -1048,27 +1048,11 @@ func doStoragePoolVolumeSnapshotUpdate(reqContext context.Context, s *state.Stat
 //	    $ref: "#/responses/Forbidden"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func storagePoolVolumeSnapshotTypeDelete(d *Daemon, r *http.Request) response.Response {
+func storagePoolVolumeSnapshotTypeDeleteHandler(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
-
-	details, err := request.GetCtxValue[storageVolumeDetails](r.Context(), ctxStorageVolumeDetails)
-	if err != nil {
-		return response.SmartError(err)
-	}
 
 	// Get the name of the storage volume.
 	snapshotName, err := url.PathUnescape(mux.Vars(r)["snapshotName"])
-	if err != nil {
-		return response.SmartError(err)
-	}
-
-	// Check that the storage volume type is valid.
-	if details.volumeType != dbCluster.StoragePoolVolumeTypeCustom {
-		return response.BadRequest(fmt.Errorf("Invalid storage volume type %q", details.volumeTypeName))
-	}
-
-	requestProjectName := request.ProjectParam(r)
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -1084,6 +1068,32 @@ func storagePoolVolumeSnapshotTypeDelete(d *Daemon, r *http.Request) response.Re
 		return resp
 	}
 
+	reqProjectName := request.ProjectParam(r)
+
+	op, err := storagePoolVolumeSnapshotTypeDelete(r.Context(), s, snapshotName, reqProjectName)
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	return operations.OperationResponse(op)
+}
+
+func storagePoolVolumeSnapshotTypeDelete(reqContext context.Context, s *state.State, snapshotName string, reqProjectName string) (*operations.Operation, error) {
+	details, err := request.GetCtxValue[storageVolumeDetails](reqContext, ctxStorageVolumeDetails)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check that the storage volume type is valid.
+	if details.volumeType != dbCluster.StoragePoolVolumeTypeCustom {
+		return nil, api.StatusErrorf(http.StatusBadRequest, "Invalid storage volume type %q", details.volumeTypeName)
+	}
+
+	effectiveProjectName, err := request.GetCtxValue[string](reqContext, request.CtxEffectiveProjectName)
+	if err != nil {
+		return nil, err
+	}
+
 	fullSnapshotName := fmt.Sprintf("%s/%s", details.volumeName, snapshotName)
 
 	snapshotDelete := func(op *operations.Operation) error {
@@ -1093,12 +1103,7 @@ func storagePoolVolumeSnapshotTypeDelete(d *Daemon, r *http.Request) response.Re
 	resources := map[string][]api.URL{}
 	resources["storage_volume_snapshots"] = []api.URL{*api.NewURL().Path(version.APIVersion, "storage-pools", details.pool.Name(), "volumes", details.volumeTypeName, details.volumeName, "snapshots", snapshotName)}
 
-	op, err := operations.OperationCreate(r.Context(), s, requestProjectName, operations.OperationClassTask, operationtype.VolumeSnapshotDelete, resources, nil, snapshotDelete, nil, nil)
-	if err != nil {
-		return response.InternalError(err)
-	}
-
-	return operations.OperationResponse(op)
+	return operations.OperationCreate(reqContext, s, reqProjectName, operations.OperationClassTask, operationtype.VolumeSnapshotDelete, resources, nil, snapshotDelete, nil, nil)
 }
 
 func pruneExpiredAndAutoCreateCustomVolumeSnapshotsTask(d *Daemon) (task.Func, task.Schedule) {
