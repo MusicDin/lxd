@@ -80,7 +80,7 @@ var storagePoolVolumeTypeCmd = APIEndpoint{
 	Path:        "storage-pools/{poolName}/volumes/{type}/{volumeName}",
 	MetricsType: entity.TypeStoragePool,
 
-	Delete: APIEndpointAction{Handler: storagePoolVolumeDelete, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanDelete)},
+	Delete: APIEndpointAction{Handler: storagePoolVolumeDeleteHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanDelete)},
 	Get:    APIEndpointAction{Handler: storagePoolVolumeGetHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanView)},
 	Patch:  APIEndpointAction{Handler: storagePoolVolumePatchHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanEdit)},
 	Post:   APIEndpointAction{Handler: storagePoolVolumePost, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanEdit)},
@@ -2481,56 +2481,67 @@ func storagePoolVolumePatch(reqContext context.Context, s *state.State, req api.
 //	    $ref: "#/responses/Forbidden"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func storagePoolVolumeDelete(d *Daemon, r *http.Request) response.Response {
+func storagePoolVolumeDeleteHandler(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	details, err := request.GetCtxValue[storageVolumeDetails](r.Context(), ctxStorageVolumeDetails)
+	requestProjectName := request.ProjectParam(r)
+	target := request.QueryParam(r, "target")
+
+	err := storagePoolVolumeDelete(r.Context(), s, requestProjectName, target)
 	if err != nil {
 		return response.SmartError(err)
 	}
 
+	return response.EmptySyncResponse
+}
+
+func storagePoolVolumeDelete(reqContext context.Context, s *state.State, requestProjectName string, target string) error {
+	details, err := request.GetCtxValue[storageVolumeDetails](reqContext, ctxStorageVolumeDetails)
+	if err != nil {
+		return err
+	}
+
+	effectiveProjectName, err := request.GetCtxValue[string](reqContext, request.CtxEffectiveProjectName)
+	if err != nil {
+		return err
+	}
+
 	if shared.IsSnapshot(details.volumeName) {
-		return response.BadRequest(fmt.Errorf("Invalid storage volume %q", details.volumeName))
+		return api.StatusErrorf(http.StatusBadRequest, "Invalid storage volume %q", details.volumeName)
 	}
 
 	// Check that the storage volume type is valid.
 	if !shared.ValueInSlice(details.volumeType, supportedVolumeTypes) {
-		return response.BadRequest(fmt.Errorf("Invalid storage volume type %q", details.volumeTypeName))
-	}
-
-	resp := forwardedResponseIfTargetIsRemote(s, r)
-	if resp != nil {
-		return resp
-	}
-
-	resp = forwardedResponseIfVolumeIsRemote(s, r)
-	if resp != nil {
-		return resp
-	}
-
-	requestProjectName := request.ProjectParam(r)
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
+		return api.StatusErrorf(http.StatusBadRequest, "Invalid storage volume type %q", details.volumeTypeName)
 	}
 
 	if details.volumeType != cluster.StoragePoolVolumeTypeCustom && details.volumeType != cluster.StoragePoolVolumeTypeImage {
-		return response.BadRequest(fmt.Errorf("Storage volumes of type %q cannot be deleted with the storage API", details.volumeTypeName))
+		return api.StatusErrorf(http.StatusBadRequest, "Storage volumes of type %q cannot be deleted with the storage API", details.volumeTypeName)
+	}
+
+	err = forwardIfTargetIsRemote(reqContext, s, target)
+	if err != nil {
+		return err
+	}
+
+	err = forwardIfVolumeIsRemote(reqContext, s)
+	if err != nil {
+		return err
 	}
 
 	// Get the storage volume.
 	var dbVolume *db.StorageVolume
-	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+	err = s.DB.Cluster.Transaction(reqContext, func(ctx context.Context, tx *db.ClusterTx) error {
 		dbVolume, err = tx.GetStoragePoolVolume(ctx, details.pool.ID(), effectiveProjectName, details.volumeType, details.volumeName, true)
 		return err
 	})
 	if err != nil {
-		return response.SmartError(err)
+		return err
 	}
 
 	volumeUsedBy, err := storagePoolVolumeUsedByGet(s, requestProjectName, dbVolume)
 	if err != nil {
-		return response.SmartError(err)
+		return err
 	}
 
 	// isImageURL checks whether the provided usedByURL represents an image resource for the fingerprint.
@@ -2546,28 +2557,22 @@ func storagePoolVolumeDelete(d *Daemon, r *http.Request) response.Response {
 
 	if len(volumeUsedBy) > 0 {
 		if len(volumeUsedBy) != 1 || details.volumeType != cluster.StoragePoolVolumeTypeImage || !isImageURL(volumeUsedBy[0], dbVolume.Name) {
-			return response.BadRequest(errors.New("The storage volume is still in use"))
+			return api.NewStatusError(http.StatusBadRequest, "The storage volume is still in use")
 		}
 	}
 
 	// Use an empty operation for this sync response to pass the requestor
 	op := &operations.Operation{}
-	op.SetRequestor(r.Context())
+	op.SetRequestor(reqContext)
 
 	switch details.volumeType {
 	case cluster.StoragePoolVolumeTypeCustom:
-		err = details.pool.DeleteCustomVolume(effectiveProjectName, details.volumeName, op)
+		return details.pool.DeleteCustomVolume(effectiveProjectName, details.volumeName, op)
 	case cluster.StoragePoolVolumeTypeImage:
-		err = details.pool.DeleteImage(details.volumeName, op)
+		return details.pool.DeleteImage(details.volumeName, op)
 	default:
-		return response.BadRequest(fmt.Errorf(`Storage volumes of type %q cannot be deleted with the storage API`, details.volumeTypeName))
+		return api.StatusErrorf(http.StatusBadRequest, "Storage volumes of type %q cannot be deleted with the storage API", details.volumeTypeName)
 	}
-
-	if err != nil {
-		return response.SmartError(err)
-	}
-
-	return response.EmptySyncResponse
 }
 
 func createStoragePoolVolumeFromISO(reqContext context.Context, s *state.State, requestProjectName string, projectName string, data io.Reader, pool string, volName string, target string) (*operations.Operation, error) {
