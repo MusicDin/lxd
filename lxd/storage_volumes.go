@@ -1666,7 +1666,12 @@ func storagePoolVolumePost(d *Daemon, r *http.Request) response.Response {
 
 	// This is a migration request so send back requested secrets.
 	if req.Migration {
-		return storagePoolVolumeTypePostMigration(s, r, requestProjectName, effectiveProjectName, details.pool.Name(), details.volumeName, req)
+		op, err := storagePoolVolumeTypePostMigration(r.Context(), s, requestProjectName, effectiveProjectName, details.pool.Name(), details.volumeName, req)
+		if err != nil {
+			return response.SmartError(err)
+		}
+
+		return operations.OperationResponse(op)
 	}
 
 	// Retrieve ID of the storage pool (and check if the storage pool exists).
@@ -1896,10 +1901,10 @@ func storageVolumePostClusteringMigrate(s *state.State, r *http.Request, srcPool
 }
 
 // storagePoolVolumeTypePostMigration handles volume migration type POST requests.
-func storagePoolVolumeTypePostMigration(state *state.State, r *http.Request, requestProjectName string, projectName string, poolName string, volumeName string, req api.StorageVolumePost) response.Response {
+func storagePoolVolumeTypePostMigration(reqContext context.Context, state *state.State, reqProjectName string, projectName string, poolName string, volumeName string, req api.StorageVolumePost) (*operations.Operation, error) {
 	ws, err := newStorageMigrationSource(req.VolumeOnly, req.Target)
 	if err != nil {
-		return response.InternalError(err)
+		return nil, err
 	}
 
 	resources := map[string][]api.URL{}
@@ -1916,21 +1921,11 @@ func storagePoolVolumeTypePostMigration(state *state.State, r *http.Request, req
 
 	if req.Target != nil {
 		// Push mode.
-		op, err := operations.OperationCreate(r.Context(), state, requestProjectName, operations.OperationClassTask, operationtype.VolumeMigrate, resources, nil, run, nil, nil)
-		if err != nil {
-			return response.InternalError(err)
-		}
-
-		return operations.OperationResponse(op)
+		return operations.OperationCreate(reqContext, state, reqProjectName, operations.OperationClassTask, operationtype.VolumeMigrate, resources, nil, run, nil, nil)
 	}
 
 	// Pull mode.
-	op, err := operations.OperationCreate(r.Context(), state, requestProjectName, operations.OperationClassWebsocket, operationtype.VolumeMigrate, resources, ws.Metadata(), run, nil, ws.Connect)
-	if err != nil {
-		return response.InternalError(err)
-	}
-
-	return operations.OperationResponse(op)
+	return operations.OperationCreate(reqContext, state, reqProjectName, operations.OperationClassWebsocket, operationtype.VolumeMigrate, resources, ws.Metadata(), run, nil, ws.Connect)
 }
 
 // storagePoolVolumeTypePostRename handles volume rename type POST requests.

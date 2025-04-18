@@ -46,7 +46,7 @@ var storagePoolVolumeSnapshotTypeCmd = APIEndpoint{
 
 	Delete: APIEndpointAction{Handler: storagePoolVolumeSnapshotTypeDelete, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanDelete)},
 	Get:    APIEndpointAction{Handler: storagePoolVolumeSnapshotTypeGetHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanView)},
-	Post:   APIEndpointAction{Handler: storagePoolVolumeSnapshotTypePost, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanEdit)},
+	Post:   APIEndpointAction{Handler: storagePoolVolumeSnapshotTypePostHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanEdit)},
 	Patch:  APIEndpointAction{Handler: storagePoolVolumeSnapshotTypePatch, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanEdit)},
 	Put:    APIEndpointAction{Handler: storagePoolVolumeSnapshotTypePut, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolumeSnapshot, auth.EntitlementCanEdit)},
 }
@@ -540,13 +540,8 @@ func getDBStoragePoolVolumeSnapshots(ctx context.Context, s *state.State, projec
 //	    $ref: "#/responses/Forbidden"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func storagePoolVolumeSnapshotTypePost(d *Daemon, r *http.Request) response.Response {
+func storagePoolVolumeSnapshotTypePostHandler(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
-
-	details, err := request.GetCtxValue[storageVolumeDetails](r.Context(), ctxStorageVolumeDetails)
-	if err != nil {
-		return response.SmartError(err)
-	}
 
 	// Get the name of the storage volume.
 	snapshotName, err := url.PathUnescape(mux.Vars(r)["snapshotName"])
@@ -554,16 +549,7 @@ func storagePoolVolumeSnapshotTypePost(d *Daemon, r *http.Request) response.Resp
 		return response.SmartError(err)
 	}
 
-	// Check that the storage volume type is valid.
-	if details.volumeType != dbCluster.StoragePoolVolumeTypeCustom {
-		return response.BadRequest(fmt.Errorf("Invalid storage volume type %q", details.volumeTypeName))
-	}
-
-	requestProjectName := request.ProjectParam(r)
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	reqProjectName := request.ProjectParam(r)
 
 	// Forward if needed.
 	resp := forwardedResponseIfTargetIsRemote(s, r)
@@ -576,8 +562,6 @@ func storagePoolVolumeSnapshotTypePost(d *Daemon, r *http.Request) response.Resp
 		return resp
 	}
 
-	fullSnapshotName := fmt.Sprintf("%s/%s", details.volumeName, snapshotName)
-
 	// Parse the request.
 	req := api.StorageVolumeSnapshotPost{}
 	err = json.NewDecoder(r.Body).Decode(&req)
@@ -585,10 +569,36 @@ func storagePoolVolumeSnapshotTypePost(d *Daemon, r *http.Request) response.Resp
 		return response.BadRequest(err)
 	}
 
+	op, err := storagePoolVolumeSnapshotTypePost(r.Context(), s, snapshotName, req, reqProjectName)
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	return operations.OperationResponse(op)
+}
+
+func storagePoolVolumeSnapshotTypePost(reqContext context.Context, s *state.State, snapshotName string, req api.StorageVolumeSnapshotPost, reqProjectName string) (*operations.Operation, error) {
+	details, err := request.GetCtxValue[storageVolumeDetails](reqContext, ctxStorageVolumeDetails)
+	if err != nil {
+		return nil, err
+	}
+
+	fullSnapshotName := fmt.Sprintf("%s/%s", details.volumeName, snapshotName)
+
+	// Check that the storage volume type is valid.
+	if details.volumeType != dbCluster.StoragePoolVolumeTypeCustom {
+		return nil, api.StatusErrorf(http.StatusBadRequest, "Invalid storage volume type %q", details.volumeTypeName)
+	}
+
+	effectiveProjectName, err := request.GetCtxValue[string](reqContext, request.CtxEffectiveProjectName)
+	if err != nil {
+		return nil, err
+	}
+
 	// Check new volume name is valid.
 	err = storagePools.ValidVolumeName(req.Name)
 	if err != nil {
-		return response.BadRequest(err)
+		return nil, api.NewStatusError(http.StatusBadRequest, err.Error())
 	}
 
 	// This is a migration request so send back requested secrets.
@@ -598,7 +608,7 @@ func storagePoolVolumeSnapshotTypePost(d *Daemon, r *http.Request) response.Resp
 			Target: req.Target,
 		}
 
-		return storagePoolVolumeTypePostMigration(s, r, requestProjectName, effectiveProjectName, details.pool.Name(), fullSnapshotName, req)
+		return storagePoolVolumeTypePostMigration(reqContext, s, reqProjectName, effectiveProjectName, details.pool.Name(), fullSnapshotName, req)
 	}
 
 	// Rename the snapshot.
@@ -609,12 +619,7 @@ func storagePoolVolumeSnapshotTypePost(d *Daemon, r *http.Request) response.Resp
 	resources := map[string][]api.URL{}
 	resources["storage_volume_snapshots"] = []api.URL{*api.NewURL().Path(version.APIVersion, "storage-pools", details.pool.Name(), "volumes", details.volumeTypeName, details.volumeName, "snapshots", snapshotName)}
 
-	op, err := operations.OperationCreate(r.Context(), s, requestProjectName, operations.OperationClassTask, operationtype.VolumeSnapshotRename, resources, nil, snapshotRename, nil, nil)
-	if err != nil {
-		return response.InternalError(err)
-	}
-
-	return operations.OperationResponse(op)
+	return operations.OperationCreate(reqContext, s, reqProjectName, operations.OperationClassTask, operationtype.VolumeSnapshotRename, resources, nil, snapshotRename, nil, nil)
 }
 
 // swagger:operation GET /1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}/snapshots/{snapshotName} storage storage_pool_volumes_type_snapshot_get
