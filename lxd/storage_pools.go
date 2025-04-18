@@ -51,8 +51,8 @@ var storagePoolCmd = APIEndpoint{
 
 	Delete: APIEndpointAction{Handler: storagePoolDelete, AccessHandler: allowPermission(entity.TypeStoragePool, auth.EntitlementCanDelete, "poolName")},
 	Get:    APIEndpointAction{Handler: storagePoolGetHandler, AccessHandler: allowAuthenticated},
-	Patch:  APIEndpointAction{Handler: storagePoolPatch, AccessHandler: allowPermission(entity.TypeStoragePool, auth.EntitlementCanEdit, "poolName")},
-	Put:    APIEndpointAction{Handler: storagePoolPut, AccessHandler: allowPermission(entity.TypeStoragePool, auth.EntitlementCanEdit, "poolName")},
+	Patch:  APIEndpointAction{Handler: storagePoolPatchHandler, AccessHandler: allowPermission(entity.TypeStoragePool, auth.EntitlementCanEdit, "poolName")},
+	Put:    APIEndpointAction{Handler: storagePoolPutHandler, AccessHandler: allowPermission(entity.TypeStoragePool, auth.EntitlementCanEdit, "poolName")},
 }
 
 // swagger:operation GET /1.0/storage-pools storage storage_pools_get
@@ -803,30 +803,48 @@ func storagePoolGet(reqContext context.Context, s *state.State, poolName string,
 //	    $ref: "#/responses/PreconditionFailed"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func storagePoolPut(d *Daemon, r *http.Request) response.Response {
+func storagePoolPutHandler(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
-
-	// If a target was specified, forward the request to the relevant node.
-	resp := forwardedResponseIfTargetIsRemote(s, r)
-	if resp != nil {
-		return resp
-	}
 
 	poolName, err := url.PathUnescape(mux.Vars(r)["poolName"])
 	if err != nil {
 		return response.SmartError(err)
 	}
 
-	// Get the existing storage pool.
-	pool, err := storagePools.LoadByName(s, poolName)
+	// Decode the request.
+	req := api.StoragePoolPut{}
+	err = request.DecodeAndRestoreJSONBody(r, &req)
 	if err != nil {
 		return response.SmartError(err)
 	}
 
-	targetNode := request.QueryParam(r, "target")
+	etag := r.Header.Get("If-Match")
+	target := request.QueryParam(r, "target")
+	clientType := clusterRequest.UserAgentClientType(r.Header.Get("User-Agent"))
 
-	if targetNode == "" && pool.Status() != api.StoragePoolStatusCreated {
-		return response.BadRequest(errors.New("Cannot update storage pool global config when not in created state"))
+	err = storagePoolPut(r.Context(), s, poolName, req, etag, clientType, target, false)
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	return response.EmptySyncResponse
+}
+
+func storagePoolPut(reqContext context.Context, s *state.State, poolName string, req api.StoragePoolPut, reqETag string, clientType clusterRequest.ClientType, target string, patchConfig bool) error {
+	// If a target was specified, forward the request to the relevant node.
+	err := forwardIfTargetIsRemote(reqContext, s, target)
+	if err != nil {
+		return err
+	}
+
+	// Get the existing storage pool.
+	pool, err := storagePools.LoadByName(s, poolName)
+	if err != nil {
+		return err
+	}
+
+	if target == "" && pool.Status() != api.StoragePoolStatusCreated {
+		return api.NewStatusError(http.StatusBadRequest, "Cannot update storage pool global config when not in created state")
 	}
 
 	// Duplicate config for etag modification and generation.
@@ -835,7 +853,7 @@ func storagePoolPut(d *Daemon, r *http.Request) response.Response {
 	// If no target node is specified and the daemon is clustered, we omit the node-specific fields so that
 	// the e-tag can be generated correctly. This is because the GET request used to populate the request
 	// will also remove node-specific keys when no target is specified.
-	if targetNode == "" && s.ServerClustered {
+	if target == "" && s.ServerClustered {
 		for _, key := range db.NodeSpecificStorageConfig {
 			delete(etagConfig, key)
 		}
@@ -844,26 +862,19 @@ func storagePoolPut(d *Daemon, r *http.Request) response.Response {
 	// Validate the ETag.
 	etag := []any{pool.Name(), pool.Driver().Info().Name, pool.Description(), etagConfig}
 
-	err = util.EtagCheck(r, etag)
+	err = util.EtagCheckString(reqETag, etag)
 	if err != nil {
-		return response.PreconditionFailed(err)
-	}
-
-	// Decode the request.
-	req := api.StoragePoolPut{}
-	err = json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		return response.BadRequest(err)
+		return api.NewStatusError(http.StatusPreconditionFailed, err.Error())
 	}
 
 	// In clustered mode, we differentiate between node specific and non-node specific config keys based on
 	// whether the user has specified a target to apply the config to.
 	if s.ServerClustered {
-		if targetNode == "" {
+		if target == "" {
 			// If no target is specified, then ensure only non-node-specific config keys are changed.
 			for k := range req.Config {
 				if shared.ValueInSlice(k, db.NodeSpecificStorageConfig) {
-					return response.BadRequest(fmt.Errorf("Config key %q is cluster member specific", k))
+					return api.StatusErrorf(http.StatusBadRequest, "Config key %q is cluster member specific", k)
 				}
 			}
 		} else {
@@ -872,26 +883,24 @@ func storagePoolPut(d *Daemon, r *http.Request) response.Response {
 			// If a target is specified, then ensure only node-specific config keys are changed.
 			for k, v := range req.Config {
 				if !shared.ValueInSlice(k, db.NodeSpecificStorageConfig) && curConfig[k] != v {
-					return response.BadRequest(fmt.Errorf("Config key %q may not be used as cluster member specific key", k))
+					return api.StatusErrorf(http.StatusBadRequest, "Config key %q may not be used as cluster member specific key", k)
 				}
 			}
 		}
 	}
 
-	clientType := clusterRequest.UserAgentClientType(r.Header.Get("User-Agent"))
+	err = doStoragePoolUpdate(s, pool, req, target, clientType, patchConfig)
 
-	response := doStoragePoolUpdate(s, pool, req, targetNode, clientType, r.Method, s.ServerClustered)
-
-	requestor := request.CreateRequestor(r.Context())
+	requestor := request.CreateRequestor(reqContext)
 
 	ctx := logger.Ctx{}
-	if targetNode != "" {
-		ctx["target"] = targetNode
+	if target != "" {
+		ctx["target"] = target
 	}
 
 	s.Events.SendLifecycle(api.ProjectDefaultName, lifecycle.StoragePoolUpdated.Event(pool.Name(), requestor, ctx))
 
-	return response
+	return err
 }
 
 // swagger:operation PATCH /1.0/storage-pools/{poolName} storage storage_pool_patch
@@ -933,29 +942,44 @@ func storagePoolPut(d *Daemon, r *http.Request) response.Response {
 //	    $ref: "#/responses/PreconditionFailed"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func storagePoolPatch(d *Daemon, r *http.Request) response.Response {
-	return storagePoolPut(d, r)
+func storagePoolPatchHandler(d *Daemon, r *http.Request) response.Response {
+	s := d.State()
+
+	poolName, err := url.PathUnescape(mux.Vars(r)["poolName"])
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	// Decode the request.
+	req := api.StoragePoolPut{}
+	err = request.DecodeAndRestoreJSONBody(r, &req)
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	etag := r.Header.Get("If-Match")
+	target := request.QueryParam(r, "target")
+	clientType := clusterRequest.UserAgentClientType(r.Header.Get("User-Agent"))
+	patchConfig := true
+
+	err = storagePoolPut(r.Context(), s, poolName, req, etag, clientType, target, patchConfig)
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	return response.EmptySyncResponse
 }
 
 // doStoragePoolUpdate takes the current local storage pool config, merges with the requested storage pool config,
 // validates and applies the changes. Will also notify other cluster nodes of non-node specific config if needed.
-func doStoragePoolUpdate(s *state.State, pool storagePools.Pool, req api.StoragePoolPut, targetNode string, clientType clusterRequest.ClientType, httpMethod string, clustered bool) response.Response {
+func doStoragePoolUpdate(s *state.State, pool storagePools.Pool, req api.StoragePoolPut, targetNode string, clientType clusterRequest.ClientType, patchConfig bool) error {
 	if req.Config == nil {
 		req.Config = map[string]string{}
 	}
 
 	// Normally a "put" request will replace all existing config, however when clustered, we need to account
 	// for the node specific config keys and not replace them when the request doesn't specify a specific node.
-	if targetNode == "" && httpMethod != http.MethodPatch && clustered {
-		// If non-node specific config being updated via "put" method in cluster, then merge the current
-		// node-specific network config with the submitted config to allow validation.
-		// This allows removal of non-node specific keys when they are absent from request config.
-		for k, v := range pool.Driver().Config() {
-			if shared.ValueInSlice(k, db.NodeSpecificStorageConfig) {
-				req.Config[k] = v
-			}
-		}
-	} else if httpMethod == http.MethodPatch {
+	if patchConfig {
 		// If config being updated via "patch" method, then merge all existing config with the keys that
 		// are present in the request config.
 		for k, v := range pool.Driver().Config() {
@@ -964,19 +988,28 @@ func doStoragePoolUpdate(s *state.State, pool storagePools.Pool, req api.Storage
 				req.Config[k] = v
 			}
 		}
+	} else if s.ServerClustered && targetNode == "" {
+		// If non-node specific config being updated via "put" method in cluster, then merge the current
+		// node-specific network config with the submitted config to allow validation.
+		// This allows removal of non-node specific keys when they are absent from request config.
+		for k, v := range pool.Driver().Config() {
+			if shared.ValueInSlice(k, db.NodeSpecificStorageConfig) {
+				req.Config[k] = v
+			}
+		}
 	}
 
 	// Validate the configuration.
 	err := pool.Validate(req.Config)
 	if err != nil {
-		return response.BadRequest(err)
+		return api.NewStatusError(http.StatusBadRequest, err.Error())
 	}
 
 	// Notify the other nodes, unless this is itself a notification.
-	if clustered && clientType != clusterRequest.ClientTypeNotifier && targetNode == "" {
+	if s.ServerClustered && clientType != clusterRequest.ClientTypeNotifier && targetNode == "" {
 		notifier, err := cluster.NewNotifier(s, s.Endpoints.NetworkCert(), s.ServerCert(), cluster.NotifyAll)
 		if err != nil {
-			return response.SmartError(err)
+			return err
 		}
 
 		sendPool := req
@@ -994,16 +1027,16 @@ func doStoragePoolUpdate(s *state.State, pool storagePools.Pool, req api.Storage
 			return client.UpdateStoragePool(pool.Name(), sendPool, "")
 		})
 		if err != nil {
-			return response.SmartError(err)
+			return err
 		}
 	}
 
 	err = pool.Update(clientType, req.Description, req.Config, nil)
 	if err != nil {
-		return response.InternalError(err)
+		return err
 	}
 
-	return response.EmptySyncResponse
+	return nil
 }
 
 // swagger:operation DELETE /1.0/storage-pools/{poolName} storage storage_pools_delete
