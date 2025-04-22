@@ -118,8 +118,10 @@ func DevLXDResponse(code int, content any, contentType string, rawResponse bool)
 	}
 }
 
-// DevLXDResponse represents a devLxdResponse. If rawResponse is true, a api.ResponseRaw will be sent instead of a minimal devLxdResponse.
-func DevLXDResponseEtag(code int, content any, contentType string, etag string, rawResponse bool) Response {
+// DevLXDResponseETag represents a devLXDResponse with ETag. If ETag is not nil, it is set in
+// response headers. If rawResponse is true, a api.ResponseRaw will be sent instead of a minimal
+// devLXDResponse.
+func DevLXDResponseETag(code int, content any, etag any, contentType string, rawResponse bool) Response {
 	if rawResponse {
 		return SyncResponse(true, content)
 	}
