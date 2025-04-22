@@ -50,10 +50,19 @@ type devLXDResponse struct {
 	content     any
 	code        int
 	contentType string
+	etag        any
 }
 
 // Render renders a response for requests against the /dev/lxd socket.
 func (r *devLXDResponse) Render(w http.ResponseWriter, req *http.Request) (err error) {
+	// Set an appropriate ETag header.
+	if r.etag != nil {
+		etag, err := util.EtagHash(r.etag)
+		if err == nil {
+			w.Header().Set("ETag", `"`+etag+`"`)
+		}
+	}
+
 	if r.code != http.StatusOK {
 		http.Error(w, fmt.Sprint(r.content), r.code)
 	} else if r.contentType == "json" {
@@ -102,7 +111,25 @@ func DevLXDResponse(code int, content any, contentType string, rawResponse bool)
 		return SyncResponse(true, content)
 	}
 
-	return &devLXDResponse{content: content, code: code, contentType: contentType}
+	return &devLXDResponse{
+		code:        code,
+		content:     content,
+		contentType: contentType,
+	}
+}
+
+// DevLXDResponse represents a devLxdResponse. If rawResponse is true, a api.ResponseRaw will be sent instead of a minimal devLxdResponse.
+func DevLXDResponseEtag(code int, content any, contentType string, etag string, rawResponse bool) Response {
+	if rawResponse {
+		return SyncResponse(true, content)
+	}
+
+	return &devLXDResponse{
+		code:        code,
+		content:     content,
+		contentType: contentType,
+		etag:        etag,
+	}
 }
 
 // Sync response.
