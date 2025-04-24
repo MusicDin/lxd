@@ -525,7 +525,12 @@ func storagePoolVolumeSnapshotTypePost(d *Daemon, r *http.Request) response.Resp
 			Target: req.Target,
 		}
 
-		return storagePoolVolumeTypePostMigration(s, r, requestProjectName, effectiveProjectName, details.pool.Name(), fullSnapshotName, req)
+		op, err := storagePoolVolumeTypePostMigration(r.Context(), s, requestProjectName, effectiveProjectName, details.pool.Name(), fullSnapshotName, req)
+		if err != nil {
+			return response.SmartError(err)
+		}
+
+		return operations.OperationResponse(op)
 	}
 
 	// Rename the snapshot.

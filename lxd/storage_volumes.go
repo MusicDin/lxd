@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -83,7 +81,7 @@ var storagePoolVolumeTypeCmd = APIEndpoint{
 	Delete: APIEndpointAction{Handler: storagePoolVolumeDeleteHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanDelete)},
 	Get:    APIEndpointAction{Handler: storagePoolVolumeGetHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanView)},
 	Patch:  APIEndpointAction{Handler: storagePoolVolumePatchHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanEdit)},
-	Post:   APIEndpointAction{Handler: storagePoolVolumePost, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanEdit)},
+	Post:   APIEndpointAction{Handler: storagePoolVolumePostHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanEdit)},
 	Put:    APIEndpointAction{Handler: storagePoolVolumePutHandler, AccessHandler: storagePoolVolumeTypeAccessHandler(entity.TypeStorageVolume, auth.EntitlementCanEdit)},
 }
 
@@ -1463,49 +1461,68 @@ func doVolumeMigration(reqContext context.Context, s *state.State, requestProjec
 //	    $ref: "#/responses/Forbidden"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func storagePoolVolumePost(d *Daemon, r *http.Request) response.Response {
+func storagePoolVolumePostHandler(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
-
-	details, err := request.GetCtxValue[storageVolumeDetails](r.Context(), ctxStorageVolumeDetails)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
-	if shared.IsSnapshot(details.volumeName) {
-		return response.BadRequest(errors.New("Invalid volume name"))
-	}
 
 	req := api.StorageVolumePost{}
 
 	// Parse the request.
-	err = json.NewDecoder(r.Body).Decode(&req)
+	err := request.DecodeAndRestoreJSONBody(r, &req)
 	if err != nil {
-		return response.BadRequest(err)
+		return response.SmartError(err)
+	}
+
+	requestProjectName := request.ProjectParam(r)
+	target := request.QueryParam(r, "target")
+
+	op, location, err := storagePoolVolumePost(r.Context(), s, req, requestProjectName, target)
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	if location != "" {
+		return response.SyncResponseLocation(true, nil, location)
+	}
+
+	if op != nil {
+		return operations.OperationResponse(op)
+	}
+
+	return response.EmptySyncResponse
+}
+
+func storagePoolVolumePost(reqContext context.Context, s *state.State, req api.StorageVolumePost, requestProjectName string, target string) (op *operations.Operation, location string, err error) {
+	details, err := request.GetCtxValue[storageVolumeDetails](reqContext, ctxStorageVolumeDetails)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if shared.IsSnapshot(details.volumeName) {
+		return nil, "", api.NewStatusError(http.StatusBadRequest, "Invalid volume name")
 	}
 
 	// Check new volume name is valid.
 	err = storagePools.ValidVolumeName(req.Name)
 	if err != nil {
-		return response.BadRequest(err)
+		return nil, "", api.NewStatusError(http.StatusBadRequest, err.Error())
 	}
 
 	// We currently only allow to create storage volumes of type storagePoolVolumeTypeCustom.
 	// So check, that nothing else was requested.
 	if details.volumeTypeName != cluster.StoragePoolVolumeTypeNameCustom {
-		return response.BadRequest(fmt.Errorf("Renaming storage volumes of type %q is not allowed", details.volumeTypeName))
+		return nil, "", api.StatusErrorf(http.StatusBadRequest, "Renaming storage volumes of type %q is not allowed", details.volumeTypeName)
 	}
 
-	requestProjectName := request.ProjectParam(r)
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
+	effectiveProjectName, err := request.GetCtxValue[string](reqContext, request.CtxEffectiveProjectName)
 	if err != nil {
-		return response.SmartError(err)
+		return nil, "", err
 	}
 
 	targetProjectName := effectiveProjectName
 	if req.Project != "" {
 		targetProjectName, err = project.StorageVolumeProject(s.DB.Cluster, req.Project, cluster.StoragePoolVolumeTypeCustom)
 		if err != nil {
-			return response.SmartError(err)
+			return nil, "", err
 		}
 
 		// Check whether the effective storage project differs from the requested target project.
@@ -1513,37 +1530,25 @@ func storagePoolVolumePost(d *Daemon, r *http.Request) response.Response {
 		// and this means that the volume would effectively be moved into the default project, and so we
 		// require the user explicitly indicates this by targeting it directly.
 		if targetProjectName != req.Project {
-			return response.BadRequest(errors.New("Target project does not have features.storage.volumes enabled"))
+			return nil, "", api.NewStatusError(http.StatusBadRequest, "Target project does not have features.storage.volumes enabled")
 		}
 
 		if targetProjectName != api.ProjectDefaultName && effectiveProjectName == targetProjectName {
-			return response.BadRequest(errors.New("Project and target project are the same"))
+			return nil, "", api.NewStatusError(http.StatusBadRequest, "Project and target project are the same")
 		}
 
 		// Check if user has permission to copy/move the volume into the effective project corresponding to the target.
-		err := s.Authorizer.CheckPermission(r.Context(), entity.ProjectURL(targetProjectName), auth.EntitlementCanCreateStorageVolumes)
+		err := s.Authorizer.CheckPermission(reqContext, entity.ProjectURL(targetProjectName), auth.EntitlementCanCreateStorageVolumes)
 		if err != nil {
-			return response.SmartError(err)
+			return nil, "", err
 		}
 	}
-
-	// We need to restore the body of the request since it has already been read, and if we
-	// forwarded it now no body would be written out.
-	buf := bytes.Buffer{}
-	err = json.NewEncoder(&buf).Encode(req)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
-	r.Body = shared.BytesReadCloser{Buf: &buf}
-
-	target := request.QueryParam(r, "target")
 
 	// Check if clustered.
 	if s.ServerClustered && target != "" && req.Source.Location != "" && req.Migration {
 		var sourceNodeOffline bool
 
-		err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+		err = s.DB.Cluster.Transaction(reqContext, func(ctx context.Context, tx *db.ClusterTx) error {
 			// Load source node.
 			nodeInfo, err := tx.GetNodeByName(ctx, req.Source.Location)
 			if err != nil {
@@ -1568,16 +1573,16 @@ func storagePoolVolumePost(d *Daemon, r *http.Request) response.Response {
 			return nil
 		})
 		if err != nil {
-			return response.SmartError(err)
+			return nil, "", err
 		}
 
 		var targetProject *api.Project
 		var targetMemberInfo *db.NodeInfo
 
 		if sourceNodeOffline {
-			resp := forwardedResponseIfTargetIsRemote(s, r)
-			if resp != nil {
-				return resp
+			err := forwardIfTargetIsRemote(reqContext, s, target)
+			if err != nil {
+				return nil, "", err
 			}
 
 			if details.pool.Driver().Info().Name == "ceph" {
@@ -1585,12 +1590,12 @@ func storagePoolVolumePost(d *Daemon, r *http.Request) response.Response {
 				var volumeNotFound bool
 				var targetIsSet bool
 
-				err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+				err = s.DB.Cluster.Transaction(reqContext, func(ctx context.Context, tx *db.ClusterTx) error {
 					dbVolume, err = tx.GetStoragePoolVolume(ctx, details.pool.ID(), effectiveProjectName, cluster.StoragePoolVolumeTypeCustom, details.volumeName, true)
 					if err != nil {
 						// Check if the user provided an incorrect target query parameter and return a helpful error message.
 						_, volumeNotFound = api.StatusErrorMatch(err, http.StatusNotFound)
-						targetIsSet = r.URL.Query().Get("target") != ""
+						targetIsSet = target != ""
 
 						return err
 					}
@@ -1599,26 +1604,31 @@ func storagePoolVolumePost(d *Daemon, r *http.Request) response.Response {
 				})
 				if err != nil {
 					if s.ServerClustered && targetIsSet && volumeNotFound {
-						return response.NotFound(errors.New("Storage volume not found on this cluster member"))
+						return nil, "", api.NewStatusError(http.StatusNotFound, "Storage volume not found on this cluster member")
 					}
 
-					return response.SmartError(err)
+					return nil, "", err
 				}
 
 				req := api.StorageVolumePost{
 					Name: req.Name,
 				}
 
-				return storagePoolVolumeTypePostRename(s, r, details.pool.Name(), effectiveProjectName, &dbVolume.StorageVolume, req)
+				location, err := storagePoolVolumeTypePostRename(reqContext, s, details.pool.Name(), effectiveProjectName, &dbVolume.StorageVolume, req)
+				if err != nil {
+					return nil, "", err
+				}
+
+				return nil, location, nil
 			}
 		} else {
-			resp := forwardedResponseToNode(s, r, req.Source.Location)
-			if resp != nil {
-				return resp
+			err := forwardToNode(reqContext, s, req.Source.Location)
+			if err != nil {
+				return nil, "", err
 			}
 		}
 
-		err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+		err = s.DB.Cluster.Transaction(reqContext, func(ctx context.Context, tx *db.ClusterTx) error {
 			p, err := cluster.GetProject(ctx, tx.Tx(), effectiveProjectName)
 			if err != nil {
 				return err
@@ -1634,7 +1644,7 @@ func storagePoolVolumePost(d *Daemon, r *http.Request) response.Response {
 				return fmt.Errorf("Failed getting cluster members: %w", err)
 			}
 
-			targetMemberInfo, _, err = limits.CheckTarget(ctx, r.Context(), s.Authorizer, tx, targetProject, target, allMembers)
+			targetMemberInfo, _, err = limits.CheckTarget(ctx, reqContext, s.Authorizer, tx, targetProject, target, allMembers)
 			if err != nil {
 				return err
 			}
@@ -1646,44 +1656,49 @@ func storagePoolVolumePost(d *Daemon, r *http.Request) response.Response {
 			return nil
 		})
 		if err != nil {
-			return response.SmartError(err)
+			return nil, "", err
 		}
 
 		if targetMemberInfo.IsOffline(s.GlobalConfig.OfflineThreshold()) {
-			return response.BadRequest(errors.New("Target cluster member is offline"))
+			return nil, "", api.NewStatusError(http.StatusBadRequest, "Target cluster member is offline")
 		}
 
 		run := func(op *operations.Operation) error {
-			return migrateStorageVolume(s, r, details.volumeName, details.pool.Name(), targetMemberInfo.Name, targetProjectName, req, op)
+			return migrateStorageVolume(reqContext, s, details.volumeName, details.pool.Name(), targetMemberInfo.Name, targetProjectName, req, op)
 		}
 
 		resources := map[string][]api.URL{}
 		resources["storage_volumes"] = []api.URL{*api.NewURL().Path(version.APIVersion, "storage-pools", details.pool.Name(), "volumes", "custom", details.volumeName)}
 
-		op, err := operations.OperationCreate(r.Context(), s, effectiveProjectName, operations.OperationClassTask, operationtype.VolumeMigrate, resources, nil, run, nil, nil)
+		op, err := operations.OperationCreate(reqContext, s, effectiveProjectName, operations.OperationClassTask, operationtype.VolumeMigrate, resources, nil, run, nil, nil)
 		if err != nil {
-			return response.InternalError(err)
+			return nil, "", err
 		}
 
-		return operations.OperationResponse(op)
+		return op, "", nil
 	}
 
-	resp := forwardedResponseIfTargetIsRemote(s, r)
-	if resp != nil {
-		return resp
+	err = forwardIfTargetIsRemote(reqContext, s, target)
+	if err != nil {
+		return nil, "", err
 	}
 
 	// If source is set, we know the source and the target, and therefore don't need this function to figure out where to forward the request to.
 	if req.Source.Location == "" {
-		resp := forwardedResponseIfVolumeIsRemote(s, r)
-		if resp != nil {
-			return resp
+		err = forwardIfVolumeIsRemote(reqContext, s)
+		if err != nil {
+			return nil, "", err
 		}
 	}
 
 	// This is a migration request so send back requested secrets.
 	if req.Migration {
-		return storagePoolVolumeTypePostMigration(s, r, requestProjectName, effectiveProjectName, details.pool.Name(), details.volumeName, req)
+		op, err := storagePoolVolumeTypePostMigration(reqContext, s, requestProjectName, effectiveProjectName, details.pool.Name(), details.volumeName, req)
+		if err != nil {
+			return nil, "", err
+		}
+
+		return op, "", nil
 	}
 
 	// Retrieve ID of the storage pool (and check if the storage pool exists).
@@ -1696,16 +1711,16 @@ func storagePoolVolumePost(d *Daemon, r *http.Request) response.Response {
 		targetPoolName = details.pool.Name()
 	}
 
-	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+	err = s.DB.Cluster.Transaction(reqContext, func(ctx context.Context, tx *db.ClusterTx) error {
 		targetPoolID, err = tx.GetStoragePoolID(ctx, targetPoolName)
 
 		return err
 	})
 	if err != nil {
-		return response.SmartError(err)
+		return nil, "", err
 	}
 
-	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+	err = s.DB.Cluster.Transaction(reqContext, func(ctx context.Context, tx *db.ClusterTx) error {
 		// Check that the name isn't already in use.
 		_, err = tx.GetStoragePoolNodeVolumeID(ctx, targetProjectName, req.Name, details.volumeType, targetPoolID)
 
@@ -1713,32 +1728,32 @@ func storagePoolVolumePost(d *Daemon, r *http.Request) response.Response {
 	})
 	if !response.IsNotFoundError(err) {
 		if err != nil {
-			return response.InternalError(err)
+			return nil, "", err
 		}
 
-		return response.Conflict(errors.New("Volume by that name already exists"))
+		return nil, "", api.NewStatusError(http.StatusConflict, "Volume by that name already exists")
 	}
 
 	// Check if the daemon itself is using it.
 	used, err := storagePools.VolumeUsedByDaemon(s, details.pool.Name(), details.volumeName)
 	if err != nil {
-		return response.SmartError(err)
+		return nil, "", err
 	}
 
 	if used {
-		return response.SmartError(errors.New("Volume is used by LXD itself and cannot be renamed"))
+		return nil, "", errors.New("Volume is used by LXD itself and cannot be renamed")
 	}
 
 	var dbVolume *db.StorageVolume
 	var volumeNotFound bool
 	var targetIsSet bool
 
-	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+	err = s.DB.Cluster.Transaction(reqContext, func(ctx context.Context, tx *db.ClusterTx) error {
 		dbVolume, err = tx.GetStoragePoolVolume(ctx, details.pool.ID(), effectiveProjectName, details.volumeType, details.volumeName, true)
 		if err != nil {
 			// Check if the user provided an incorrect target query parameter and return a helpful error message.
 			_, volumeNotFound = api.StatusErrorMatch(err, http.StatusNotFound)
-			targetIsSet = r.URL.Query().Get("target") != ""
+			targetIsSet = target != ""
 
 			return err
 		}
@@ -1747,10 +1762,10 @@ func storagePoolVolumePost(d *Daemon, r *http.Request) response.Response {
 	})
 	if err != nil {
 		if s.ServerClustered && targetIsSet && volumeNotFound {
-			return response.NotFound(errors.New("Storage volume not found on this cluster member"))
+			return nil, "", api.NewStatusError(http.StatusNotFound, "Storage volume not found on this cluster member")
 		}
 
-		return response.SmartError(err)
+		return nil, "", err
 	}
 
 	// Check if a running instance is using it.
@@ -1767,19 +1782,29 @@ func storagePoolVolumePost(d *Daemon, r *http.Request) response.Response {
 		return nil
 	})
 	if err != nil {
-		return response.SmartError(err)
+		return nil, "", err
 	}
 
 	// Detect a rename request.
 	if (req.Pool == "" || req.Pool == details.pool.Name()) && (effectiveProjectName == targetProjectName) {
-		return storagePoolVolumeTypePostRename(s, r, details.pool.Name(), effectiveProjectName, &dbVolume.StorageVolume, req)
+		location, err := storagePoolVolumeTypePostRename(reqContext, s, details.pool.Name(), effectiveProjectName, &dbVolume.StorageVolume, req)
+		if err != nil {
+			return nil, "", err
+		}
+
+		return nil, location, nil
 	}
 
 	// Otherwise this is a move request.
-	return storagePoolVolumeTypePostMove(s, r, details.pool.Name(), effectiveProjectName, targetProjectName, &dbVolume.StorageVolume, req)
+	op, err = storagePoolVolumeTypePostMove(reqContext, s, details.pool.Name(), effectiveProjectName, targetProjectName, &dbVolume.StorageVolume, req)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return op, "", nil
 }
 
-func migrateStorageVolume(s *state.State, r *http.Request, sourceVolumeName string, sourcePoolName string, targetNode string, projectName string, req api.StorageVolumePost, op *operations.Operation) error {
+func migrateStorageVolume(reqContext context.Context, s *state.State, sourceVolumeName string, sourcePoolName string, targetNode string, projectName string, req api.StorageVolumePost, op *operations.Operation) error {
 	if targetNode == req.Source.Location {
 		return errors.New("Target must be different than storage volumes' current location")
 	}
@@ -1811,7 +1836,7 @@ func migrateStorageVolume(s *state.State, r *http.Request, sourceVolumeName stri
 		return fmt.Errorf("Failed loading storage volume storage pool: %w", err)
 	}
 
-	f, err := storageVolumePostClusteringMigrate(s, r, srcPool, projectName, sourceVolumeName, req.Pool, req.Project, req.Name, srcMember, newMember, req.VolumeOnly)
+	f, err := storageVolumePostClusteringMigrate(reqContext, s, srcPool, projectName, sourceVolumeName, req.Pool, req.Project, req.Name, srcMember, newMember, req.VolumeOnly)
 	if err != nil {
 		return err
 	}
@@ -1819,7 +1844,7 @@ func migrateStorageVolume(s *state.State, r *http.Request, sourceVolumeName stri
 	return f(op)
 }
 
-func storageVolumePostClusteringMigrate(s *state.State, r *http.Request, srcPool storagePools.Pool, srcProjectName string, srcVolumeName string, newPoolName string, newProjectName string, newVolumeName string, srcMember db.NodeInfo, newMember db.NodeInfo, volumeOnly bool) (func(op *operations.Operation) error, error) {
+func storageVolumePostClusteringMigrate(reqContext context.Context, s *state.State, srcPool storagePools.Pool, srcProjectName string, srcVolumeName string, newPoolName string, newProjectName string, newVolumeName string, srcMember db.NodeInfo, newMember db.NodeInfo, volumeOnly bool) (func(op *operations.Operation) error, error) {
 	srcMemberOffline := srcMember.IsOffline(s.GlobalConfig.OfflineThreshold())
 
 	// Make sure that the source member is online if we end up being called from another member after a
@@ -1838,7 +1863,7 @@ func storageVolumePostClusteringMigrate(s *state.State, r *http.Request, srcPool
 		// Connect to the destination member, i.e. the member to migrate the custom volume to.
 		// Use the notify argument to indicate to the destination that we are moving a custom volume between
 		// cluster members.
-		dest, err := lxdCluster.Connect(r.Context(), newMember.Address, networkCert, s.ServerCert(), true)
+		dest, err := lxdCluster.Connect(reqContext, newMember.Address, networkCert, s.ServerCert(), true)
 		if err != nil {
 			return fmt.Errorf("Failed to connect to destination server %q: %w", newMember.Address, err)
 		}
@@ -1872,7 +1897,7 @@ func storageVolumePostClusteringMigrate(s *state.State, r *http.Request, srcPool
 			return nil
 		}
 
-		srcOp, err := operations.OperationCreate(r.Context(), s, srcProjectName, operations.OperationClassWebsocket, operationtype.VolumeMigrate, resources, srcMigration.Metadata(), run, cancel, srcMigration.Connect)
+		srcOp, err := operations.OperationCreate(reqContext, s, srcProjectName, operations.OperationClassWebsocket, operationtype.VolumeMigrate, resources, srcMigration.Metadata(), run, cancel, srcMigration.Connect)
 		if err != nil {
 			return err
 		}
@@ -1913,10 +1938,10 @@ func storageVolumePostClusteringMigrate(s *state.State, r *http.Request, srcPool
 }
 
 // storagePoolVolumeTypePostMigration handles volume migration type POST requests.
-func storagePoolVolumeTypePostMigration(state *state.State, r *http.Request, requestProjectName string, projectName string, poolName string, volumeName string, req api.StorageVolumePost) response.Response {
+func storagePoolVolumeTypePostMigration(reqContext context.Context, state *state.State, requestProjectName string, projectName string, poolName string, volumeName string, req api.StorageVolumePost) (*operations.Operation, error) {
 	ws, err := newStorageMigrationSource(req.VolumeOnly, req.Target)
 	if err != nil {
-		return response.InternalError(err)
+		return nil, err
 	}
 
 	resources := map[string][]api.URL{}
@@ -1933,31 +1958,21 @@ func storagePoolVolumeTypePostMigration(state *state.State, r *http.Request, req
 
 	if req.Target != nil {
 		// Push mode.
-		op, err := operations.OperationCreate(r.Context(), state, requestProjectName, operations.OperationClassTask, operationtype.VolumeMigrate, resources, nil, run, nil, nil)
-		if err != nil {
-			return response.InternalError(err)
-		}
-
-		return operations.OperationResponse(op)
+		return operations.OperationCreate(reqContext, state, requestProjectName, operations.OperationClassTask, operationtype.VolumeMigrate, resources, nil, run, nil, nil)
 	}
 
 	// Pull mode.
-	op, err := operations.OperationCreate(r.Context(), state, requestProjectName, operations.OperationClassWebsocket, operationtype.VolumeMigrate, resources, ws.Metadata(), run, nil, ws.Connect)
-	if err != nil {
-		return response.InternalError(err)
-	}
-
-	return operations.OperationResponse(op)
+	return operations.OperationCreate(reqContext, state, requestProjectName, operations.OperationClassWebsocket, operationtype.VolumeMigrate, resources, ws.Metadata(), run, nil, ws.Connect)
 }
 
 // storagePoolVolumeTypePostRename handles volume rename type POST requests.
-func storagePoolVolumeTypePostRename(s *state.State, r *http.Request, poolName string, projectName string, vol *api.StorageVolume, req api.StorageVolumePost) response.Response {
+func storagePoolVolumeTypePostRename(reqContext context.Context, s *state.State, poolName string, projectName string, vol *api.StorageVolume, req api.StorageVolumePost) (location string, err error) {
 	newVol := *vol
 	newVol.Name = req.Name
 
 	pool, err := storagePools.LoadByName(s, poolName)
 	if err != nil {
-		return response.SmartError(err)
+		return "", err
 	}
 
 	revert := revert.New()
@@ -1966,40 +1981,40 @@ func storagePoolVolumeTypePostRename(s *state.State, r *http.Request, poolName s
 	// Update devices using the volume in instances and profiles.
 	cleanup, err := storagePoolVolumeUpdateUsers(s, projectName, pool.Name(), vol, pool.Name(), &newVol)
 	if err != nil {
-		return response.SmartError(err)
+		return "", err
 	}
 
 	revert.Add(cleanup)
 
 	// Use an empty operation for this sync response to pass the requestor
 	op := &operations.Operation{}
-	op.SetRequestor(r.Context())
+	op.SetRequestor(reqContext)
 
 	err = pool.RenameCustomVolume(projectName, vol.Name, req.Name, op)
 	if err != nil {
-		return response.SmartError(err)
+		return "", err
 	}
 
 	revert.Success()
 
 	u := api.NewURL().Path(version.APIVersion, "storage-pools", pool.Name(), "volumes", cluster.StoragePoolVolumeTypeNameCustom, req.Name).Project(projectName)
 
-	return response.SyncResponseLocation(true, nil, u.String())
+	return u.String(), nil
 }
 
 // storagePoolVolumeTypePostMove handles volume move type POST requests.
-func storagePoolVolumeTypePostMove(s *state.State, r *http.Request, poolName string, requestProjectName string, projectName string, vol *api.StorageVolume, req api.StorageVolumePost) response.Response {
+func storagePoolVolumeTypePostMove(reqContext context.Context, s *state.State, poolName string, requestProjectName string, projectName string, vol *api.StorageVolume, req api.StorageVolumePost) (*operations.Operation, error) {
 	newVol := *vol
 	newVol.Name = req.Name
 
 	pool, err := storagePools.LoadByName(s, poolName)
 	if err != nil {
-		return response.SmartError(err)
+		return nil, err
 	}
 
 	newPool, err := storagePools.LoadByName(s, req.Pool)
 	if err != nil {
-		return response.SmartError(err)
+		return nil, err
 	}
 
 	run := func(op *operations.Operation) error {
@@ -2030,12 +2045,12 @@ func storagePoolVolumeTypePostMove(s *state.State, r *http.Request, poolName str
 		return nil
 	}
 
-	op, err := operations.OperationCreate(r.Context(), s, requestProjectName, operations.OperationClassTask, operationtype.VolumeMove, nil, nil, run, nil, nil)
+	op, err := operations.OperationCreate(reqContext, s, requestProjectName, operations.OperationClassTask, operationtype.VolumeMove, nil, nil, run, nil, nil)
 	if err != nil {
-		return response.InternalError(err)
+		return nil, err
 	}
 
-	return operations.OperationResponse(op)
+	return op, nil
 }
 
 // swagger:operation GET /1.0/storage-pools/{poolName}/volumes/{type}/{volumeName} storage storage_pool_volume_type_get
