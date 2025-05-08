@@ -25,6 +25,7 @@ on:
       - '**.md'
   schedule:
     - cron: '19 20 * * 5'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
