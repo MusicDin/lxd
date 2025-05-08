@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 
@@ -1030,7 +1031,14 @@ func instancesPost(d *Daemon, r *http.Request) response.Response {
 			}
 		}
 
-		return createFromBackup(s, r, targetProjectName, r.Body, r.Header.Get("X-LXD-pool"), r.Header.Get("X-LXD-name"), deviceMap)
+		poolName := r.Header.Get("X-LXD-pool")
+		instName := r.Header.Get("X-LXD-name")
+
+		if filepath.Base(instName) != instName {
+			return response.BadRequest(fmt.Errorf("Invalid instance name: %q", instName))
+		}
+
+		return createFromBackup(s, r, targetProjectName, r.Body, poolName, instName, deviceMap)
 	}
 
 	// Parse the request
