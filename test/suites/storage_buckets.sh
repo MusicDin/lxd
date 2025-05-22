@@ -28,6 +28,8 @@ s3cmdrun () {
 test_storage_buckets() {
   local lxd_backend
 
+  export PATH="${PATH}:/usr/local/bin/mc:/usr/local/bin/minio"
+
   lxd_backend=$(storage_backend "$LXD_DIR")
 
   if [ "$lxd_backend" = "ceph" ]; then
@@ -59,6 +61,35 @@ test_storage_buckets() {
   ! lxc storage bucket create "${poolName}" fo || false
   ! lxc storage bucket create "${poolName}" fooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo || false
   ! lxc storage bucket create "${poolName}" "foo bar" || false
+
+  # Ensure storage bucket size can be configured.
+  if [ "$lxd_backend" != "dir" ]; then
+    lxc storage bucket create "${poolName}" "${bucketPrefix}.foo-size" size=128MiB
+    lxc storage bucket delete "${poolName}" "${bucketPrefix}.foo-size"
+  else
+    # dir backend doesn't support size.
+    ! lxc storage bucket create "${poolName}" "${bucketPrefix}.foo-size" size=128MiB || false
+  fi
+
+  # Test some storage backend specific options.
+  if [ "$lxd_backend" = "zfs" ]; then
+    # Ensure block.* options are not allowed on non-block-backed volumes.
+    ! lxc storage bucket create "${poolName}" "${bucketPrefix}" block.filesystem=btrfs || false
+    ! lxc storage bucket create "${poolName}" "${bucketPrefix}" block.filesystem=btrfs zfs.block_mode=false || false
+
+    # Ensure block.* options are allowed on block-backed volumes.
+    lxc storage bucket create "${poolName}" "${bucketPrefix}.foo-fs" block.filesystem=btrfs zfs.block_mode=true
+    [ "$(lxc storage bucket get "${poolName}" "${bucketPrefix}.foo-fs" block.filesystem)" = "btrfs" ]
+    [ "$(lxc storage bucket get "${poolName}" "${bucketPrefix}.foo-fs" block.mount_options)" = "discard" ]
+    [ "$(lxc storage bucket get "${poolName}" "${bucketPrefix}.foo-fs" zfs.block_mode)" = "true" ]
+    lxc storage bucket delete "${poolName}" "${bucketPrefix}.foo-fs"
+  elif [ "$lxd_backend" = "lvm" ]; then
+    # Ensure filesystem can be configured on LVM pools.
+    lxc storage bucket create "${poolName}" "${bucketPrefix}.foo-fs" block.filesystem=btrfs
+    [ "$(lxc storage bucket get "${poolName}" "${bucketPrefix}.foo-fs" block.filesystem)" = "btrfs" ]
+    [ "$(lxc storage bucket get "${poolName}" "${bucketPrefix}.foo-fs" block.mount_options)" = "discard" ]
+    lxc storage bucket delete "${poolName}" "${bucketPrefix}.foo-fs"
+  fi
 
   # Create bucket.
   initCreds=$(lxc storage bucket create "${poolName}" "${bucketPrefix}.foo" user.foo=comment)
