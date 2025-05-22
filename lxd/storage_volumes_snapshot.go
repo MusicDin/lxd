@@ -102,11 +102,9 @@ func storagePoolVolumeSnapshotsTypePost(d *Daemon, r *http.Request) response.Res
 		return response.BadRequest(fmt.Errorf("Invalid storage volume type %q", details.volumeTypeName))
 	}
 
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 	requestProjectName := request.ProjectParam(r)
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
 
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
 		dbProject, err := dbCluster.GetProject(context.Background(), tx.Tx(), effectiveProjectName)
@@ -351,10 +349,8 @@ func storagePoolVolumeSnapshotsTypeGet(d *Daemon, r *http.Request) response.Resp
 		return response.BadRequest(fmt.Errorf("Invalid storage volume type %q", details.volumeTypeName))
 	}
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 
 	// Forward if needed.
 	target := request.QueryParam(r, "target")
@@ -488,11 +484,9 @@ func storagePoolVolumeSnapshotTypePost(d *Daemon, r *http.Request) response.Resp
 		return response.BadRequest(fmt.Errorf("Invalid storage volume type %q", details.volumeTypeName))
 	}
 
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 	requestProjectName := request.ProjectParam(r)
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
 
 	// Forward if needed.
 	target := request.QueryParam(r, "target")
@@ -606,10 +600,8 @@ func storagePoolVolumeSnapshotTypeGet(d *Daemon, r *http.Request) response.Respo
 		return response.SmartError(err)
 	}
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 
 	// Forward if needed.
 	target := request.QueryParam(r, "target")
@@ -710,10 +702,8 @@ func storagePoolVolumeSnapshotTypePut(d *Daemon, r *http.Request) response.Respo
 		return response.SmartError(err)
 	}
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 
 	// Forward if needed.
 	target := request.QueryParam(r, "target")
@@ -819,10 +809,8 @@ func storagePoolVolumeSnapshotTypePatch(d *Daemon, r *http.Request) response.Res
 		return response.SmartError(err)
 	}
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 
 	// Forward if needed.
 	target := request.QueryParam(r, "target")
@@ -964,11 +952,9 @@ func storagePoolVolumeSnapshotTypeDelete(d *Daemon, r *http.Request) response.Re
 		return response.BadRequest(fmt.Errorf("Invalid storage volume type %q", details.volumeTypeName))
 	}
 
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 	requestProjectName := request.ProjectParam(r)
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
 
 	// Forward if needed.
 	target := request.QueryParam(r, "target")

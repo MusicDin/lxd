@@ -182,7 +182,8 @@ func networkACLsGet(d *Daemon, r *http.Request) response.Response {
 		}
 
 		// If the request is project specific, then set effective project name in the request context so that the authorizer can generate the correct URL.
-		request.SetCtxValue(r, request.CtxEffectiveProjectName, effectiveProjectName)
+		info, _ := request.GetCtxInfo(r.Context())
+		info.EffectiveProjectName = effectiveProjectName
 	}
 
 	recursion := util.IsRecursionRequest(r)

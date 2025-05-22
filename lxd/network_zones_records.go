@@ -134,10 +134,8 @@ var networkZoneRecordCmd = APIEndpoint{
 func networkZoneRecordsGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 
 	details, err := request.GetCtxValue[networkZoneDetails](r.Context(), ctxNetworkZoneDetails)
 	if err != nil {
@@ -210,10 +208,8 @@ func networkZoneRecordsGet(d *Daemon, r *http.Request) response.Response {
 func networkZoneRecordsPost(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 
 	details, err := request.GetCtxValue[networkZoneDetails](r.Context(), ctxNetworkZoneDetails)
 	if err != nil {
@@ -272,10 +268,8 @@ func networkZoneRecordsPost(d *Daemon, r *http.Request) response.Response {
 func networkZoneRecordDelete(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 
 	details, err := request.GetCtxValue[networkZoneDetails](r.Context(), ctxNetworkZoneDetails)
 	if err != nil {
@@ -347,10 +341,8 @@ func networkZoneRecordDelete(d *Daemon, r *http.Request) response.Response {
 func networkZoneRecordGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 
 	details, err := request.GetCtxValue[networkZoneDetails](r.Context(), ctxNetworkZoneDetails)
 	if err != nil {
@@ -449,10 +441,8 @@ func networkZoneRecordGet(d *Daemon, r *http.Request) response.Response {
 func networkZoneRecordPut(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 
 	details, err := request.GetCtxValue[networkZoneDetails](r.Context(), ctxNetworkZoneDetails)
 	if err != nil {

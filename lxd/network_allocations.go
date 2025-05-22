@@ -85,7 +85,9 @@ func networkAllocationsGet(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	request.SetCtxValue(r, request.CtxEffectiveProjectName, effectiveProjectName)
+	info, _ := request.GetCtxInfo(r.Context())
+	info.EffectiveProjectName = effectiveProjectName
+
 	allProjects := shared.IsTrue(request.QueryParam(r, "all-projects"))
 
 	var projectNames []string

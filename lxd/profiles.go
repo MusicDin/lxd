@@ -78,7 +78,9 @@ func addProfileDetailsToRequestContext(s *state.State, r *http.Request) error {
 		return fmt.Errorf("Failed to check project %q profile feature: %w", requestProjectName, err)
 	}
 
-	request.SetCtxValue(r, request.CtxEffectiveProjectName, effectiveProject.Name)
+	info, _ := request.GetCtxInfo(r.Context())
+	info.EffectiveProjectName = effectiveProject.Name
+
 	request.SetCtxValue(r, ctxProfileDetails, profileDetails{
 		profileName:      profileName,
 		effectiveProject: *effectiveProject,
@@ -235,7 +237,9 @@ func profilesGet(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	request.SetCtxValue(r, request.CtxEffectiveProjectName, p.Name)
+	info, _ := request.GetCtxInfo(r.Context())
+	info.EffectiveProjectName = p.Name
+
 	userHasPermission, err := s.Authorizer.GetPermissionChecker(r.Context(), auth.EntitlementCanView, entity.TypeProfile)
 	if err != nil {
 		return response.InternalError(err)

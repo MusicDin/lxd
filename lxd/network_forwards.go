@@ -138,10 +138,8 @@ var networkForwardCmd = APIEndpoint{
 func networkForwardsGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 
 	details, err := request.GetCtxValue[networkDetails](r.Context(), ctxNetworkDetails)
 	if err != nil {
@@ -244,10 +242,8 @@ func networkForwardsPost(d *Daemon, r *http.Request) response.Response {
 		return resp
 	}
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 
 	details, err := request.GetCtxValue[networkDetails](r.Context(), ctxNetworkDetails)
 	if err != nil {
@@ -323,10 +319,8 @@ func networkForwardDelete(d *Daemon, r *http.Request) response.Response {
 		return resp
 	}
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 
 	details, err := request.GetCtxValue[networkDetails](r.Context(), ctxNetworkDetails)
 	if err != nil {
@@ -413,10 +407,8 @@ func networkForwardGet(d *Daemon, r *http.Request) response.Response {
 		return resp
 	}
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 
 	details, err := request.GetCtxValue[networkDetails](r.Context(), ctxNetworkDetails)
 	if err != nil {
@@ -537,10 +529,8 @@ func networkForwardPut(d *Daemon, r *http.Request) response.Response {
 		return resp
 	}
 
-	effectiveProjectName, err := request.GetCtxValue[string](r.Context(), request.CtxEffectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
-	}
+	info, _ := request.GetCtxInfo(r.Context())
+	effectiveProjectName := info.EffectiveProjectName
 
 	details, err := request.GetCtxValue[networkDetails](r.Context(), ctxNetworkDetails)
 	if err != nil {
