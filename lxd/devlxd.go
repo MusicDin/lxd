@@ -455,7 +455,7 @@ func registerDevLXDEndpoint(d *Daemon, apiRouter *mux.Router, apiVersion string,
 		request.SetCtxInfo(r, info)
 
 		// Set devLXD auth method to identify this request as coming from the /dev/lxd socket.
-		request.SetCtxValue(r, request.CtxProtocol, auth.AuthenticationMethodDevLXD)
+		info.Protocol = auth.AuthenticationMethodDevLXD
 
 		// Set request source address value to the request context.
 		info.SourceAddress = r.RemoteAddr

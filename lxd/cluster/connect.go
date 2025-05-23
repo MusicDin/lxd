@@ -57,25 +57,13 @@ func Connect(reqContext context.Context, address string, networkCert *shared.Cer
 	if found {
 		proxy := func(req *http.Request) (*url.URL, error) {
 			req.Header.Add(request.HeaderForwardedAddress, info.SourceAddress)
+			req.Header.Add(request.HeaderForwardedUsername, info.Username)
+			req.Header.Add(request.HeaderForwardedProtocol, info.Protocol)
 
-			val, ok := reqContext.Value(request.CtxUsername).(string)
-			if ok {
-				req.Header.Add(request.HeaderForwardedUsername, val)
-			}
-
-			val, ok = reqContext.Value(request.CtxProtocol).(string)
-			if ok {
-				req.Header.Add(request.HeaderForwardedProtocol, val)
-			}
-
-			identityProviderGroupsAny := reqContext.Value(request.CtxIdentityProviderGroups)
-			if ok {
-				identityProviderGroups, ok := identityProviderGroupsAny.([]string)
-				if ok {
-					b, err := json.Marshal(identityProviderGroups)
-					if err == nil {
-						req.Header.Add(request.HeaderForwardedIdentityProviderGroups, string(b))
-					}
+			if info.IdentityProviderGroups != nil {
+				b, err := json.Marshal(info.IdentityProviderGroups)
+				if err == nil {
+					req.Header.Add(request.HeaderForwardedIdentityProviderGroups, string(b))
 				}
 			}
 

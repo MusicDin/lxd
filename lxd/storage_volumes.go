@@ -2798,8 +2798,8 @@ func addStoragePoolVolumeDetailsToRequestContext(s *state.State, r *http.Request
 
 	// If the request has already been forwarded, the other member already performed the logic to determine the volume
 	// location, so we can set the location in the volume details as ourselves.
-	_, err = request.GetCtxValue[string](r.Context(), request.CtxForwardedProtocol)
-	if err == nil {
+	reqInfo, _ := request.GetCtxInfo(r.Context())
+	if reqInfo.ForwardedProtocol != "" {
 		location = s.ServerName
 		return nil
 	}

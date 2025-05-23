@@ -10,35 +10,24 @@ import (
 // CreateRequestor extracts the lifecycle event requestor data from the request context.
 func CreateRequestor(ctx context.Context) *api.EventLifecycleRequestor {
 	info, _ := GetCtxInfo(ctx)
-
 	requestor := &api.EventLifecycleRequestor{}
-	requestor.Address = info.SourceAddress
 
 	// Normal requestor.
-	val, ok := ctx.Value(CtxUsername).(string)
-	if ok {
-		requestor.Username = val
-	}
-
-	val, ok = ctx.Value(CtxProtocol).(string)
-	if ok {
-		requestor.Protocol = val
-	}
+	requestor.Address = info.SourceAddress
+	requestor.Username = info.Username
+	requestor.Protocol = info.Protocol
 
 	// Forwarded requestor override.
-	val, ok = ctx.Value(CtxForwardedUsername).(string)
-	if ok {
-		requestor.Username = val
+	if info.ForwardedAddress != "" {
+		requestor.Address = info.ForwardedAddress
 	}
 
-	val, ok = ctx.Value(CtxForwardedProtocol).(string)
-	if ok {
-		requestor.Protocol = val
+	if info.ForwardedUsername != "" {
+		requestor.Username = info.ForwardedUsername
 	}
 
-	val, ok = ctx.Value(CtxForwardedAddress).(string)
-	if ok {
-		requestor.Address = val
+	if info.ForwardedProtocol != "" {
+		requestor.Protocol = info.ForwardedProtocol
 	}
 
 	return requestor
