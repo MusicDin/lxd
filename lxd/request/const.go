@@ -8,9 +8,6 @@ const (
 	// CtxDevLXDInstance is the instance that made a request over the devLXD API.
 	CtxDevLXDInstance CtxKey = "devlxd_instance"
 
-	// CtxAccess is the access field in request context.
-	CtxAccess CtxKey = "access"
-
 	// CtxConn is the connection field in the request context.
 	CtxConn CtxKey = "conn"
 
