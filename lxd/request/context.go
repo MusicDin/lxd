@@ -6,15 +6,9 @@ import (
 	"net/http"
 )
 
-// IsRequestContext checks if the given context is a request context.
-// The request context is identified by the presence of the CtxRequestSourceAddress key.
-func IsRequestContext(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-
-	return ctx.Value(CtxRequestSourceAddress) != nil
-}
+// Info represents the request information that are stored in the request
+// context, which is passed around.
+type Info struct{}
 
 // GetCtxValue gets a value of type T from the context using the given key.
 func GetCtxValue[T any](ctx context.Context, key CtxKey) (T, error) {
@@ -34,6 +28,32 @@ func GetCtxValue[T any](ctx context.Context, key CtxKey) (T, error) {
 
 // SetCtxValue sets the given value in the request context with the given key.
 func SetCtxValue(r *http.Request, key CtxKey, value any) {
-	rWithCtx := r.WithContext(context.WithValue(r.Context(), key, value))
-	*r = *rWithCtx
+	ctx := context.WithValue(r.Context(), key, value)
+	*r = *r.WithContext(ctx)
+}
+
+// IsRequestContext checks if the given context is a request context.
+// This is determined by checking the presence of the request information in the context.
+func IsRequestContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+
+	_, ok := GetCtxInfo(ctx)
+	return ok
+}
+
+// GetCtxInfo gets the request information from the request context.
+func GetCtxInfo(reqContext context.Context) (*Info, bool) {
+	info, ok := reqContext.Value(CtxRequestInfo).(*Info)
+	if !ok {
+		return &Info{}, false
+	}
+
+	return info, true
+}
+
+// SetCtxInfo sets the request information in the request context.
+func SetCtxInfo(r *http.Request, info *Info) {
+	SetCtxValue(r, CtxRequestInfo, info)
 }
