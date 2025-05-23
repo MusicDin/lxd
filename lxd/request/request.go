@@ -36,5 +36,7 @@ func CreateRequestor(ctx context.Context) *api.EventLifecycleRequestor {
 // SaveConnectionInContext can be set as the ConnContext field of a http.Server to set the connection
 // in the request context for later use.
 func SaveConnectionInContext(ctx context.Context, connection net.Conn) context.Context {
-	return context.WithValue(ctx, CtxConn, connection)
+	reqInfo, _ := GetCtxInfo(ctx)
+	reqInfo.Conn = connection
+	return context.WithValue(ctx, CtxRequestInfo, reqInfo)
 }

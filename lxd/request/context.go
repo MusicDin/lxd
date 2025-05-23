@@ -3,6 +3,7 @@ package request
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 )
 
@@ -41,6 +42,9 @@ type Info struct {
 
 	// Trusted indicates whether the request was authenticated or not.
 	Trusted bool
+
+	// Conn represents the request connection.
+	Conn net.Conn
 }
 
 // GetCtxValue gets a value of type T from the context using the given key.

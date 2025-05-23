@@ -11,9 +11,6 @@ const (
 	// CtxDevLXDInstance is the instance that made a request over the devLXD API.
 	CtxDevLXDInstance CtxKey = "devlxd_instance"
 
-	// CtxConn is the connection field in the request context.
-	CtxConn CtxKey = "conn"
-
 	// CtxEffectiveProjectName is used to indicate that the effective project of a resource is different from the project
 	// specified in the URL. (For example, if a project has `features.networks=false`, any networks in this project actually
 	// belong to the default project).
