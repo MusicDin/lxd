@@ -8,7 +8,10 @@ import (
 
 // Info represents the request information that are stored in the request
 // context, which is passed around.
-type Info struct{}
+type Info struct {
+	// SourceAddress is the request's source address.
+	SourceAddress string
+}
 
 // GetCtxValue gets a value of type T from the context using the given key.
 func GetCtxValue[T any](ctx context.Context, key CtxKey) (T, error) {
