@@ -83,6 +83,7 @@ var apiDevLXD = []devLXDAPIEndpoint{
 	devLXDMetadataEndpoint,
 	devLXDEventsEndpoint,
 	devLXDDevicesEndpoint,
+	devLXDInstanceEndpoint,
 	devLXDStoragePoolEndpoint,
 	devLXDStoragePoolsEndpoint,
 	devLXDStoragePoolVolumeTypeEndpoint,
