@@ -218,3 +218,61 @@ func devLXDStoragePoolVolumesPostHandler(d *Daemon, r *http.Request) response.Re
 
 	return response.DevLXDResponse(http.StatusOK, "", "raw")
 }
+
+var devLXDStoragePoolVolumeTypeEndpoint = devLXDAPIEndpoint{
+	Path: "storage-pools/{poolName}/volumes/{type}/{volumeName}",
+	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumeGetHandler},
+}
+
+func devLXDStoragePoolVolumeGetHandler(d *Daemon, r *http.Request) response.Response {
+	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	poolName := mux.Vars(r)["poolName"]
+	volName := mux.Vars(r)["volumeName"]
+	volType := mux.Vars(r)["type"]
+	projectName := inst.Project().Name
+
+	// Restrict access to custom volumes.
+	if volType != "custom" {
+		return response.DevLXDErrorResponse(api.NewStatusError(http.StatusBadRequest, "Only custom storage volumes can be retrieved"))
+	}
+
+	// Get storage volumes.
+	vol := api.StorageVolume{}
+
+	url := api.NewURL().Path("1.0", "storage-pools", poolName, "volumes", "custom", volName).WithQuery("project", projectName)
+	target := r.URL.Query().Get("target")
+	if target != "" {
+		url = url.WithQuery("target", target)
+	}
+
+	req, err := NewRequestWithContext(r.Context(), http.MethodGet, url.String(), nil, "")
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	err = addStoragePoolVolumeDetailsToRequestContext(d.State(), req)
+	if err != nil {
+		response.DevLXDErrorResponse(err)
+	}
+
+	resp := storagePoolVolumeGet(d, req)
+	etag, err := RenderToStruct(req, resp, &vol)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	respVol := api.DevLXDStorageVolume{
+		Name:        vol.Name,
+		Description: vol.Description,
+		Pool:        vol.Pool,
+		Type:        vol.Type,
+		Config:      vol.Config,
+		Location:    vol.Location,
+	}
+
+	return response.DevLXDResponseETag(http.StatusOK, respVol, "json", etag)
+}
