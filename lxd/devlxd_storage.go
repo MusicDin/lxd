@@ -6,8 +6,54 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/canonical/lxd/lxd/response"
+	"github.com/canonical/lxd/lxd/util"
 	"github.com/canonical/lxd/shared/api"
 )
+
+var devLXDStoragePoolsEndpoint = devLXDAPIEndpoint{
+	Path: "storage-pools",
+	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolsGetHandler},
+}
+
+func devLXDStoragePoolsGetHandler(d *Daemon, r *http.Request) response.Response {
+	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Non-recursive requests are currently not supported.
+	if !util.IsRecursionRequest(r) {
+		return response.DevLXDErrorResponse(api.NewStatusError(http.StatusNotImplemented, "Only recursive requests are currently supported"))
+	}
+
+	// Get storage pools.
+	pools := []api.StoragePool{}
+	projectName := inst.Project().Name
+
+	url := api.NewURL().Path("1.0", "storage-pools").WithQuery("project", projectName).WithQuery("recursion", "1")
+	req, err := NewRequestWithContext(r.Context(), http.MethodGet, url.String(), nil, "")
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	resp := storagePoolsGet(d, req)
+	_, err = RenderToStruct(req, resp, &pools)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Map to devLXD response.
+	respPools := make([]api.DevLXDStoragePool, len(pools))
+	for i, pool := range pools {
+		respPools[i] = api.DevLXDStoragePool{
+			Name:   pool.Name,
+			Driver: pool.Driver,
+			Status: pool.Status,
+		}
+	}
+
+	return response.DevLXDResponse(http.StatusOK, respPools, "json")
+}
 
 var devLXDStoragePoolEndpoint = devLXDAPIEndpoint{
 	Path: "storage-pools/{poolName}",
