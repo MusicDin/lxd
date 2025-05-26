@@ -220,8 +220,9 @@ func devLXDStoragePoolVolumesPostHandler(d *Daemon, r *http.Request) response.Re
 }
 
 var devLXDStoragePoolVolumeTypeEndpoint = devLXDAPIEndpoint{
-	Path: "storage-pools/{poolName}/volumes/{type}/{volumeName}",
-	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumeGetHandler, AllowUntrusted: true},
+	Path:   "storage-pools/{poolName}/volumes/{type}/{volumeName}",
+	Get:    devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumeGetHandler, AllowUntrusted: true},
+	Delete: devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumeDeleteHandler, AllowUntrusted: true},
 }
 
 func devLXDStoragePoolVolumeGetHandler(d *Daemon, r *http.Request) response.Response {
@@ -275,4 +276,45 @@ func devLXDStoragePoolVolumeGetHandler(d *Daemon, r *http.Request) response.Resp
 	}
 
 	return response.DevLXDResponseETag(http.StatusOK, respVol, "json", etag)
+}
+
+func devLXDStoragePoolVolumeDeleteHandler(d *Daemon, r *http.Request) response.Response {
+	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	poolName := mux.Vars(r)["poolName"]
+	volName := mux.Vars(r)["volumeName"]
+	volType := mux.Vars(r)["type"]
+	projectName := inst.Project().Name
+
+	// Restrict access to custom volumes.
+	if volType != "custom" {
+		return response.DevLXDErrorResponse(api.NewStatusError(http.StatusBadRequest, "Only custom storage volumes can be deleted"))
+	}
+
+	url := api.NewURL().Path("1.0", "storage-pools", poolName, "volumes", "custom", volName).WithQuery("project", projectName)
+	target := r.URL.Query().Get("target")
+	if target != "" {
+		url = url.WithQuery("target", target)
+	}
+
+	req, err := NewRequestWithContext(r.Context(), http.MethodDelete, url.String(), nil, "")
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	err = addStoragePoolVolumeDetailsToRequestContext(d.State(), req)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	resp := storagePoolVolumeDelete(d, req)
+	err = Render(req, resp)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	return response.DevLXDResponse(http.StatusOK, "", "raw")
 }
