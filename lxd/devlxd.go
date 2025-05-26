@@ -137,20 +137,6 @@ func devLXDAPIGetHandler(d *Daemon, r *http.Request) response.Response {
 		}
 	}
 
-	var supportedStorageDrivers []api.DevLXDServerStorageDriverInfo
-
-	// Include supported storage drivers if the instance has the devLXD volume
-	// management security flag enabled.
-	if shared.IsTrue(inst.ExpandedConfig()[string(devLXDSecurityMgmtVolumesKey)]) {
-		storageDrivers, _ := readStoragePoolDriversCache()
-		for _, driver := range storageDrivers {
-			supportedStorageDrivers = append(supportedStorageDrivers, api.DevLXDServerStorageDriverInfo{
-				Name:   driver.Name,
-				Remote: driver.Remote,
-			})
-		}
-	}
-
 	resp := api.DevLXDGet{
 		APIVersion:              version.APIVersion,
 		Location:                location,
