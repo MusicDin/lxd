@@ -159,3 +159,43 @@ func devLXDInstanceDevicesPostHandler(d *Daemon, r *http.Request) response.Respo
 
 	return response.DevLXDResponse(http.StatusOK, "", "raw")
 }
+
+var devLXDInstanceDeviceEndpoint = devLXDAPIEndpoint{
+	Path: "instances/{name}/devices/{deviceName}",
+	Get:  devLXDAPIEndpointAction{Handler: devLXDInstanceDeviceGetHandler},
+}
+
+func devLXDInstanceDeviceGetHandler(d *Daemon, r *http.Request) response.Response {
+	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// It is not allowed to anything outside the project where the current instance is running.
+	projectName := inst.Project().Name
+
+	targetInstName := mux.Vars(r)["name"]
+	devName := mux.Vars(r)["deviceName"]
+
+	// Fetch instance.
+	targetInst := api.Instance{}
+
+	url := api.NewURL().Path("1.0", "instances", targetInstName).WithQuery("recursion", "1").WithQuery("project", projectName).URL
+	req, err := NewRequestWithContext(r.Context(), http.MethodGet, url.String(), nil, "")
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	resp := instanceGet(d, req)
+	etag, err := RenderToStruct(req, resp, &targetInst)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	dev, ok := targetInst.ExpandedDevices[devName]
+	if !ok {
+		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusNotFound, "Device %q not found", devName))
+	}
+
+	return response.DevLXDResponseETag(http.StatusOK, dev, "json", etag)
+}
