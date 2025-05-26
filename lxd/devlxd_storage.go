@@ -187,10 +187,12 @@ func devLXDStoragePoolVolumesPostHandler(d *Daemon, r *http.Request) response.Re
 	reqBody := api.StorageVolumesPost{
 		Name:        vol.Name,
 		Type:        volType,
+		Source:      vol.Source,
 		ContentType: vol.ContentType,
 		StorageVolumePut: api.StorageVolumePut{
 			Config:      vol.Config,
 			Description: vol.Description,
+			Restore:     vol.Restore,
 		},
 	}
 
