@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/gorilla/mux"
@@ -96,11 +97,13 @@ func devLXDStoragePoolGetHandler(d *Daemon, r *http.Request) response.Response {
 var devLXDStoragePoolVolumesEndpoint = devLXDAPIEndpoint{
 	Path: "storage-pools/{poolName}/volumes",
 	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumesGetHandler},
+	Post: devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumesPostHandler},
 }
 
 var devLXDStoragePoolVolumesTypeEndpoint = devLXDAPIEndpoint{
 	Path: "storage-pools/{poolName}/volumes/{type}",
 	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumesGetHandler},
+	Post: devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumesPostHandler},
 }
 
 func devLXDStoragePoolVolumesGetHandler(d *Daemon, r *http.Request) response.Response {
@@ -161,4 +164,67 @@ func devLXDStoragePoolVolumesGetHandler(d *Daemon, r *http.Request) response.Res
 	}
 
 	return response.DevLXDResponse(http.StatusOK, respVols, "json")
+}
+
+func devLXDStoragePoolVolumesPostHandler(d *Daemon, r *http.Request) response.Response {
+	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityVolumeMgmtKey)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	poolName := mux.Vars(r)["poolName"]
+	volType := mux.Vars(r)["type"]
+	projectName := inst.Project().Name
+
+	// Decode the request body.
+	vol := api.DevLXDStorageVolumesPost{}
+	err = json.NewDecoder(r.Body).Decode(&vol)
+	if err != nil {
+		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusInternalServerError, "Failed decoding request body: %w", err))
+	}
+
+	// Reject non-custom volume type.
+	if volType == "" && vol.Type == "" {
+		return response.DevLXDErrorResponse(api.NewStatusError(http.StatusBadRequest, "Missing storage volume type"))
+	}
+
+	if volType != "" {
+		vol.Type = volType
+	}
+
+	if vol.Type != "custom" {
+		return response.DevLXDErrorResponse(api.NewStatusError(http.StatusBadRequest, "Only custom storage volumes can be created"))
+	}
+
+	// Create storage volume.
+	reqBody := api.StorageVolumesPost{
+		Name:        vol.Name,
+		Type:        vol.Type,
+		Source:      vol.Source,
+		ContentType: vol.ContentType,
+		StorageVolumePut: api.StorageVolumePut{
+			Config:      vol.Config,
+			Description: vol.Description,
+			Restore:     vol.Restore,
+		},
+	}
+
+	url := api.NewURL().Path("1.0", "storage-pools", poolName, "volumes", "custom").WithQuery("project", projectName).WithQuery("recursion", "1")
+	target := r.URL.Query().Get("target")
+	if target != "" {
+		url = url.WithQuery("target", target)
+	}
+
+	req, err := NewRequestWithContext(r.Context(), http.MethodPost, url.String(), reqBody, "")
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	resp := storagePoolVolumesPost(d, req)
+	err = Render(req, resp)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	return response.DevLXDResponse(http.StatusOK, "", "raw")
 }
