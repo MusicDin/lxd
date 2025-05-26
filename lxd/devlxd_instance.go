@@ -161,8 +161,9 @@ func devLXDInstanceDevicesPostHandler(d *Daemon, r *http.Request) response.Respo
 }
 
 var devLXDInstanceDeviceEndpoint = devLXDAPIEndpoint{
-	Path: "instances/{name}/devices/{deviceName}",
-	Get:  devLXDAPIEndpointAction{Handler: devLXDInstanceDeviceGetHandler},
+	Path:   "instances/{name}/devices/{deviceName}",
+	Get:    devLXDAPIEndpointAction{Handler: devLXDInstanceDeviceGetHandler},
+	Delete: devLXDAPIEndpointAction{Handler: devLXDInstanceDeviceDeleteHandler},
 }
 
 func devLXDInstanceDeviceGetHandler(d *Daemon, r *http.Request) response.Response {
@@ -198,4 +199,61 @@ func devLXDInstanceDeviceGetHandler(d *Daemon, r *http.Request) response.Respons
 	}
 
 	return response.DevLXDResponseETag(http.StatusOK, dev, "json", etag)
+}
+
+func devLXDInstanceDeviceDeleteHandler(d *Daemon, r *http.Request) response.Response {
+	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	projectName := inst.Project().Name
+	targetInstName := mux.Vars(r)["name"]
+	devName := mux.Vars(r)["deviceName"]
+
+	// Fetch instance.
+	targetInst := api.Instance{}
+
+	url := api.NewURL().Path("1.0", "instances", targetInstName).WithQuery("recursion", "1").WithQuery("project", projectName).URL
+	req, err := NewRequestWithContext(r.Context(), http.MethodGet, url.String(), nil, "")
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	resp := instanceGet(d, req)
+	_, err = RenderToStruct(req, resp, &targetInst)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Search only local devices.
+	dev, ok := targetInst.Devices[devName]
+	if !ok {
+		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusNotFound, "Device %q not found", devName))
+	}
+
+	if dev["type"] != "disk" || dev["path"] == "/" {
+		// DevLXD is not authorized to detach non-disk device or root disk device.
+		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusForbidden, "Not authorized to detach device %q", devName))
+	}
+
+	// Detach device.
+	delete(targetInst.Devices, devName)
+	reqBody := targetInst.Writable()
+
+	etag := r.Header.Get("If-Match")
+
+	url = api.NewURL().Path("1.0", "instances", targetInstName).WithQuery("project", projectName).URL
+	req, err = NewRequestWithContext(r.Context(), http.MethodDelete, url.String(), reqBody, etag)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	resp = instancePut(d, req)
+	err = Render(req, resp)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	return response.DevLXDResponse(http.StatusOK, "", "raw")
 }
