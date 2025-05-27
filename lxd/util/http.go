@@ -80,17 +80,22 @@ func EtagHash(data any) (string, error) {
 // EtagCheck validates the hash of the current state with the hash
 // provided by the client.
 func EtagCheck(r *http.Request, data any) error {
+	hash, err := EtagHash(data)
+	if err != nil {
+		return err
+	}
+
+	return EtagCheckString(r, hash)
+}
+
+// EtagCheckString validates the given hash with the hash provided by the client.
+func EtagCheckString(r *http.Request, hash string) error {
 	match := r.Header.Get("If-Match")
 	if match == "" {
 		return nil
 	}
 
 	match = strings.Trim(match, "\"")
-
-	hash, err := EtagHash(data)
-	if err != nil {
-		return err
-	}
 
 	if hash != match {
 		return api.StatusErrorf(http.StatusPreconditionFailed, "ETag doesn't match: %s vs %s. The configuration has been modified since this change began. Please retrieve the updated configuration before proceeding.", hash, match)
