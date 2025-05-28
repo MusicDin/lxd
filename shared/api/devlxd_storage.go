@@ -57,6 +57,10 @@ type DevLXDStorageVolumePut struct {
 	// Description of the storage volume
 	// Example: My custom volume
 	Description string `json:"description" yaml:"description"`
+
+	// Name of a snapshot to restore
+	// Example: snap0
+	Restore string `json:"restore,omitempty" yaml:"restore,omitempty"`
 }
 
 // DevLXDStorageVolumesPost represents the fields of a new LXD storage pool volume
@@ -71,6 +75,9 @@ type DevLXDStorageVolumesPost struct {
 	// Volume type.
 	// Example: custom
 	Type string `json:"type" yaml:"type"`
+
+	// Migration source.
+	Source StorageVolumeSource `json:"source" yaml:"source"`
 
 	// Volume content type (filesystem or block)
 	// Example: filesystem
