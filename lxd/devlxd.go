@@ -530,6 +530,9 @@ func registerDevLXDEndpoint(d *Daemon, apiRouter *mux.Router, apiVersion string,
 		// Initialise the request context info.
 		reqInfo := request.InitContextInfo(r)
 
+		// XXX: Dev - remove.
+		reqInfo.Trusted = true
+
 		// Set devLXD auth method to identify this request as coming from the /dev/lxd socket.
 		reqInfo.Protocol = auth.AuthenticationMethodDevLXD
 

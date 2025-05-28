@@ -25,8 +25,10 @@ func IsServerAdmin(ctx context.Context, identityCache *identity.Cache) (bool, er
 		return false, err
 	}
 
+	// TODO: XXX: Access through devLXD is allowed for development. This must be removed!!
+	//
 	// Unix and cluster requests have root access.
-	if method == AuthenticationMethodUnix || method == AuthenticationMethodCluster {
+	if method == AuthenticationMethodUnix || method == AuthenticationMethodCluster || method == AuthenticationMethodDevLXD {
 		return true, nil
 	}
 
