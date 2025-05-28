@@ -457,6 +457,9 @@ func registerDevLXDEndpoint(d *Daemon, apiRouter *mux.Router, apiVersion string,
 
 	// Function that handles the request by calling the appropriate handler.
 	handleFunc := func(w http.ResponseWriter, r *http.Request) {
+		// XXX: Dev - remove.
+		request.SetCtxValue(r, request.CtxTrusted, true)
+
 		// Set devLXD auth method to identify this request as coming from the /dev/lxd socket.
 		request.SetCtxValue(r, request.CtxProtocol, auth.AuthenticationMethodDevLXD)
 
