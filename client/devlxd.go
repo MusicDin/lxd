@@ -38,6 +38,10 @@ type ProtocolDevLXD struct {
 	// isDevLXDOverVsock indicates whether the client is interacting with devLXD over vsock.
 	// In such case, the responses are expected to be in api.Response format.
 	isDevLXDOverVsock bool
+
+	// clusterTarget is the name of the cluster member
+	// that this client is targeting.
+	clusterTarget string
 }
 
 // GetConnectionInfo returns the basic connection information used to interact with the server.
@@ -46,6 +50,7 @@ func (r *ProtocolDevLXD) GetConnectionInfo() (*ConnectionInfo, error) {
 		Protocol:   "devlxd",
 		URL:        r.httpBaseURL.String(),
 		SocketPath: r.httpUnixPath,
+		Target:     r.clusterTarget,
 	}, nil
 }
 
@@ -71,6 +76,24 @@ func (r *ProtocolDevLXD) DoHTTP(req *http.Request) (resp *http.Response, err err
 // Disconnect is a no-op for devLXD.
 func (r *ProtocolDevLXD) Disconnect() {
 	r.ctxConnectedCancel()
+}
+
+// UseTarget returns a client that will target a specific cluster member.
+// Use this for member-specific operations such as creating a local storage
+// volume on a specific cluster member.
+func (r *ProtocolDevLXD) UseTarget(name string) DevLXDServer {
+	return &ProtocolDevLXD{
+		ctx:                  r.ctx,
+		ctxConnected:         r.ctxConnected,
+		ctxConnectedCancel:   r.ctxConnectedCancel,
+		http:                 r.http,
+		httpBaseURL:          r.httpBaseURL,
+		httpUnixPath:         r.httpUnixPath,
+		httpUserAgent:        r.httpUserAgent,
+		eventListenerManager: r.eventListenerManager,
+		isDevLXDOverVsock:    r.isDevLXDOverVsock,
+		clusterTarget:        name,
+	}
 }
 
 // RawQuery allows directly querying the devLXD.
@@ -254,6 +277,16 @@ func (r *ProtocolDevLXD) rawWebsocket(url string) (*websocket.Conn, error) {
 	logger.Debugf("Connected to the websocket: %v", url)
 
 	return conn, nil
+}
+
+// setURLQueryAttributes modifies the supplied URL's query string with the client's current target.
+func (r *ProtocolDevLXD) setURLQueryAttributes(url *url.URL) {
+	values := url.Query()
+	if r.clusterTarget != "" && values.Get("target") == "" {
+		values.Set("target", r.clusterTarget)
+	}
+
+	url.RawQuery = values.Encode()
 }
 
 // devLXDParseResponse processes the HTTP response from the devLXD. It reads the response body,
