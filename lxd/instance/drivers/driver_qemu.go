@@ -5695,6 +5695,7 @@ func (d *qemu) Update(args db.InstanceArgs, userRequested bool) error {
 			"security.csm",
 			"security.devlxd",
 			"security.devlxd.images",
+			"security.devlxd.volume_management",
 			"security.secureboot",
 		}
 
