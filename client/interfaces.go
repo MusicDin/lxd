@@ -500,6 +500,9 @@ type DevLXDServer interface {
 	// DevLXD images.
 	GetImageFile(fingerprint string, req ImageFileRequest) (resp *ImageFileResponse, err error)
 
+	// DevLXD instance devices.
+	GetInstanceDevices(instName string) (devices map[string]map[string]string, err error)
+
 	// DevLXD storage pools.
 	GetStoragePools() (pools []api.DevLXDStoragePool, err error)
 	GetStoragePool(poolName string) (pool *api.DevLXDStoragePool, ETag string, err error)
