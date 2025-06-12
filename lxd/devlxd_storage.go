@@ -214,7 +214,7 @@ func devLXDStoragePoolVolumeGetHandler(d *Daemon, r *http.Request) response.Resp
 
 	err = addStoragePoolVolumeDetailsToRequestContext(d.State(), req)
 	if err != nil {
-		response.DevLXDErrorResponse(err)
+		return response.DevLXDErrorResponse(err)
 	}
 
 	resp := storagePoolVolumeGet(d, req)
