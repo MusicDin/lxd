@@ -500,6 +500,9 @@ type DevLXDServer interface {
 	// DevLXD images.
 	GetImageFile(fingerprint string, req ImageFileRequest) (resp *ImageFileResponse, err error)
 
+	// DevLXD storage pools.
+	GetStoragePools() (pools []api.DevLXDStoragePool, err error)
+
 	// DevLXD Ubuntu Pro.
 	GetUbuntuPro() (*api.DevLXDUbuntuProSettings, error)
 	CreateUbuntuProToken() (*api.DevLXDUbuntuProGuestTokenResponse, error)
