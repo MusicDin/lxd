@@ -7,7 +7,6 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/canonical/lxd/lxd/device/config"
 	"github.com/canonical/lxd/lxd/response"
 	"github.com/canonical/lxd/shared/api"
 )
@@ -131,7 +130,7 @@ func devLXDInstanceDevicesPostHandler(d *Daemon, r *http.Request) response.Respo
 		targetInst.Devices = make(map[string]map[string]string)
 	}
 
-	targetInst.Devices[volName] = config.Device{
+	targetInst.Devices[volName] = map[string]string{
 		"type":   "disk",
 		"pool":   poolName,
 		"source": volName,
