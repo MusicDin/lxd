@@ -506,6 +506,9 @@ type DevLXDServer interface {
 	// DevLXD Operations.
 	GetOperationWait(uuid string, timeout int) (op *api.DevLXDOperation, ETag string, err error)
 
+	// DevLXD instance devices.
+	GetInstance(instName string) (inst *api.DevLXDInstance, etag string, err error)
+
 	// DevLXD storage pools.
 	GetStoragePools() (pools []api.DevLXDStoragePool, err error)
 	GetStoragePool(poolName string) (pool *api.DevLXDStoragePool, ETag string, err error)
