@@ -504,6 +504,7 @@ type DevLXDServer interface {
 	// DevLXD instance devices.
 	GetInstanceDevices(instName string) (devices map[string]config.Device, err error)
 	GetInstanceDevice(instName string, deviceName string) (device config.Device, etag string, err error)
+	CreateInstanceDevice(instName string, device config.Device) (err error)
 
 	// DevLXD storage pools.
 	GetStoragePools() (pools []api.DevLXDStoragePool, err error)
