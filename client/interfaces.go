@@ -9,6 +9,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pkg/sftp"
 
+	"github.com/canonical/lxd/lxd/device/config"
 	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/cancel"
 	"github.com/canonical/lxd/shared/ioprogress"
@@ -499,6 +500,9 @@ type DevLXDServer interface {
 
 	// DevLXD images.
 	GetImageFile(fingerprint string, req ImageFileRequest) (resp *ImageFileResponse, err error)
+
+	// DevLXD instance devices.
+	GetInstanceDevices(instName string) (devices map[string]config.Device, err error)
 
 	// DevLXD storage pools.
 	GetStoragePools() (pools []api.DevLXDStoragePool, err error)
