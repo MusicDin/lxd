@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 
 	"github.com/gorilla/mux"
 
 	"github.com/canonical/lxd/lxd/util"
+	"github.com/canonical/lxd/shared/api"
 )
 
 var devLXDStoragePoolsEndpoint = devLXDAPIEndpoint{
@@ -64,6 +67,7 @@ func devLXDStoragePoolGetHandler(d *Daemon, r *http.Request) *devLXDResponse {
 var devLXDStoragePoolVolumesTypeEndpoint = devLXDAPIEndpoint{
 	Path: "storage-pools/{pool}/volumes/{type}",
 	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumesGetHandler},
+	Post: devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumesPostHandler},
 }
 
 func devLXDStoragePoolVolumesGetHandler(d *Daemon, r *http.Request) *devLXDResponse {
@@ -91,4 +95,41 @@ func devLXDStoragePoolVolumesGetHandler(d *Daemon, r *http.Request) *devLXDRespo
 	}
 
 	return okResponse(vols, "json")
+}
+
+func devLXDStoragePoolVolumesPostHandler(d *Daemon, r *http.Request) *devLXDResponse {
+	poolName, err := url.PathUnescape(mux.Vars(r)["pool"])
+	if err != nil {
+		return errorResponse(http.StatusBadRequest, err.Error())
+	}
+
+	volType, err := url.PathUnescape(mux.Vars(r)["type"])
+	if err != nil {
+		return errorResponse(http.StatusBadRequest, err.Error())
+	}
+
+	var vol api.DevLXDStorageVolumesPost
+	err = json.NewDecoder(r.Body).Decode(&vol)
+	if err != nil {
+		return smartResponse(fmt.Errorf("Failed to parse request: %w", err))
+	}
+
+	if vol.Type == "" {
+		vol.Type = volType
+	}
+
+	client, err := getDevLXDVsockClient(d, r)
+	if err != nil {
+		return smartResponse(err)
+	}
+
+	client = client.UseTarget(r.URL.Query().Get("target"))
+	defer client.Disconnect()
+
+	err = client.CreateStoragePoolVolume(poolName, vol)
+	if err != nil {
+		return smartResponse(err)
+	}
+
+	return okResponse("", "raw")
 }
