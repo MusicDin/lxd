@@ -505,6 +505,7 @@ type DevLXDServer interface {
 
 	// DevLXD storage pools.
 	GetStoragePools() (pools []api.DevLXDStoragePool, err error)
+	GetStoragePool(poolName string) (pool *api.DevLXDStoragePool, ETag string, err error)
 
 	// DevLXD Ubuntu Pro.
 	GetUbuntuPro() (*api.DevLXDUbuntuProSettings, error)
