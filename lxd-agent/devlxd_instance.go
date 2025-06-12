@@ -63,8 +63,9 @@ func devLXDInstanceDevicesPostHandler(d *Daemon, r *http.Request) *devLXDRespons
 }
 
 var devLXDInstanceDeviceEndpoint = devLXDAPIEndpoint{
-	Path: "instances/{instanceName}/devices/{devName}",
-	Get:  devLXDAPIEndpointAction{Handler: devLXDInstanceDeviceGetHandler},
+	Path:   "instances/{instanceName}/devices/{devName}",
+	Get:    devLXDAPIEndpointAction{Handler: devLXDInstanceDeviceGetHandler},
+	Delete: devLXDAPIEndpointAction{Handler: devLXDInstanceDeviceDeleteHandler},
 }
 
 func devLXDInstanceDeviceGetHandler(d *Daemon, r *http.Request) *devLXDResponse {
@@ -91,4 +92,30 @@ func devLXDInstanceDeviceGetHandler(d *Daemon, r *http.Request) *devLXDResponse 
 	}
 
 	return okResponseETag(device, "json", etag)
+}
+
+func devLXDInstanceDeviceDeleteHandler(d *Daemon, r *http.Request) *devLXDResponse {
+	instName, err := url.PathUnescape(mux.Vars(r)["instanceName"])
+	if err != nil {
+		return errorResponse(http.StatusBadRequest, err.Error())
+	}
+
+	devName, err := url.PathUnescape(mux.Vars(r)["devName"])
+	if err != nil {
+		return errorResponse(http.StatusBadRequest, err.Error())
+	}
+
+	client, err := getDevLXDVsockClient(d)
+	if err != nil {
+		return smartResponse(err)
+	}
+
+	defer client.Disconnect()
+
+	err = client.DeleteInstanceDevice(instName, devName)
+	if err != nil {
+		return smartResponse(err)
+	}
+
+	return okResponse("", "raw")
 }
