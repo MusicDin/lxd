@@ -32,3 +32,14 @@ func (r *ProtocolDevLXD) GetInstanceDevice(instName string, deviceName string) (
 
 	return device, etag, nil
 }
+
+// CreateInstanceDevice attaches a new device to the instance.
+func (r *ProtocolDevLXD) CreateInstanceDevice(instName string, device map[string]string) error {
+	url := api.NewURL().Path("instances", instName, "devices").URL
+	_, _, err := r.query(http.MethodPost, url.String(), device, "")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
