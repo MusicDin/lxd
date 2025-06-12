@@ -60,6 +60,7 @@ var devLXDEndpoints = []devLXDAPIEndpoint{
 	devLXDImageExportEndpoint,
 	devLXDOperationsWaitEndpoint,
 	devLXDStoragePoolEndpoint,
+	devLXDStoragePoolsEndpoint,
 	devLXDUbuntuProEndpoint,
 	devLXDUbuntuProTokenEndpoint,
 }
