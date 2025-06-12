@@ -508,6 +508,7 @@ type DevLXDServer interface {
 
 	// DevLXD instance devices.
 	GetInstance(instName string) (inst *api.DevLXDInstance, etag string, err error)
+	UpdateInstance(instName string, inst api.DevLXDInstance, ETag string) error
 
 	// DevLXD storage pools.
 	GetStoragePools() (pools []api.DevLXDStoragePool, err error)
