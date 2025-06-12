@@ -43,3 +43,14 @@ func (r *ProtocolDevLXD) CreateInstanceDevice(instName string, device map[string
 
 	return nil
 }
+
+// DeleteInstanceDevice detaches a device from the instance.
+func (r *ProtocolDevLXD) DeleteInstanceDevice(instName string, deviceName string) error {
+	url := api.NewURL().Path("instances", instName, "devices", deviceName).URL
+	_, _, err := r.query(http.MethodDelete, url.String(), nil, "")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
