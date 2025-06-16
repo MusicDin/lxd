@@ -37,6 +37,21 @@ type DevLXDGet struct {
 	// What cluster member this instance is located on
 	// Example: lxd01
 	Location string `json:"location" yaml:"location"`
+
+	// List of supported storage drivers.
+	// Example: [{"name": "zfs", "remote": false}, {"name": "btrfs", "remote": true}]
+	SupportedStorageDrivers []DevLXDServerStorageDriverInfo `json:"supported_storage_drivers" yaml:"supported_storage_drivers"`
+}
+
+// DevLXDServerStorageDriverInfo represents the read-only info about a storage driver.
+type DevLXDServerStorageDriverInfo struct {
+	// Name of the driver.
+	// Example: zfs
+	Name string
+
+	// Whether the driver has remote volumes.
+	// Example: false
+	Remote bool
 }
 
 // DevLXDUbuntuProGuestTokenResponse contains the expected fields of proAPIGetGuestTokenV1 that must be passed back to
