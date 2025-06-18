@@ -224,3 +224,42 @@ func devLXDStoragePoolVolumeDeleteHandler(d *Daemon, r *http.Request) *devLXDRes
 
 	return okResponse("", "raw")
 }
+
+var devLXDStoragePoolVolumeSnapshotsEndpoint = devLXDAPIEndpoint{
+	Path: "storage-pools/{pool}/volumes/{type}/{volume}/snapshots",
+	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumeSnapshotsGetHandler},
+}
+
+func devLXDStoragePoolVolumeSnapshotsGetHandler(d *Daemon, r *http.Request) *devLXDResponse {
+	// Non-recursive requests are currently not supported.
+	if !util.IsRecursionRequest(r) {
+		return errorResponse(http.StatusNotImplemented, "Only recursive requests are currently supported")
+	}
+
+	poolName, err := url.PathUnescape(mux.Vars(r)["pool"])
+	if err != nil {
+		return errorResponse(http.StatusBadRequest, err.Error())
+	}
+
+	volType, err := url.PathUnescape(mux.Vars(r)["type"])
+	if err != nil {
+		return errorResponse(http.StatusBadRequest, err.Error())
+	}
+
+	volName, err := url.PathUnescape(mux.Vars(r)["volume"])
+	if err != nil {
+		return errorResponse(http.StatusBadRequest, err.Error())
+	}
+
+	client, err := getDevLXDVsockClient(d)
+	if err != nil {
+		return smartResponse(err)
+	}
+
+	snapshots, err := client.GetStoragePoolVolumeSnapshots(poolName, volType, volName)
+	if err != nil {
+		return smartResponse(err)
+	}
+
+	return okResponse(snapshots, "json")
+}
