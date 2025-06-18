@@ -502,6 +502,71 @@ func devLXDStoragePoolVolumeDeleteHandler(d *Daemon, r *http.Request) response.R
 	return response.DevLXDResponse(http.StatusOK, "", "raw")
 }
 
+var devLXDStoragePoolVolumeSnapshotsEndpoint = devLXDAPIEndpoint{
+	Path: "storage-pools/{poolName}/volumes/{type}/{volumeName}/snapshots",
+	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumeSnapshotsGetHandler},
+}
+
+func devLXDStoragePoolVolumeSnapshotsGetHandler(d *Daemon, r *http.Request) response.Response {
+	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	poolName := mux.Vars(r)["poolName"]
+	volName := mux.Vars(r)["volumeName"]
+	volType := mux.Vars(r)["type"]
+	projectName := inst.Project().Name
+
+	// Restrict access to custom volumes.
+	if volType != "custom" {
+		return response.DevLXDErrorResponse(api.NewStatusError(http.StatusBadRequest, "Only snapshots from custom storage volumes can be retrieved"))
+	}
+
+	// Non-recursive requests are currently not supported.
+	if !util.IsRecursionRequest(r) {
+		return response.DevLXDErrorResponse(api.NewStatusError(http.StatusNotImplemented, "Only recursive requests are currently supported"))
+	}
+
+	// Get storage volume snapshots.
+	url := api.NewURL().Path("1.0", "storage-pools", poolName, "volumes", volType, volName, "snapshots").WithQuery("project", projectName).WithQuery("recursion", "1")
+	target := r.URL.Query().Get("target")
+	if target != "" {
+		url = url.WithQuery("target", target)
+	}
+
+	req, err := NewRequestWithContext(r.Context(), http.MethodGet, url.String(), nil, "")
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	err = addStoragePoolVolumeDetailsToRequestContext(d.State(), req)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	var snapshots []api.StorageVolumeSnapshot
+
+	resp := storagePoolVolumeSnapshotsTypeGet(d, req)
+	etag, err := RenderToStruct(req, resp, &snapshots)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Map to devLXD response.
+	respSnapshots := make([]api.DevLXDStorageVolumeSnapshot, 0, len(snapshots))
+	for _, snap := range snapshots {
+		respSnapshots = append(respSnapshots, api.DevLXDStorageVolumeSnapshot{
+			Name:        snap.Name,
+			Description: snap.Description,
+			ContentType: snap.ContentType,
+			Config:      snap.Config,
+		})
+	}
+
+	return response.DevLXDResponseETag(http.StatusOK, respSnapshots, "json", etag)
+}
+
 // isDevLXDVolumeOwner checks whether the given storage volume is owned by the specified identity ID.
 // The volume is owned if it has a config key "volatile.devlxd.owner" set to the identity ID.
 func isDevLXDVolumeOwner(volConfig map[string]string, identityID string) bool {
