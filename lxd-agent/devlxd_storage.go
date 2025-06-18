@@ -302,3 +302,42 @@ func devLXDStoragePoolVolumeSnapshotsPostHandler(d *Daemon, r *http.Request) *de
 
 	return okResponse(op.Get(), "json")
 }
+
+var devLXDStoragePoolVolumeSnapshotEndpoint = devLXDAPIEndpoint{
+	Path: "storage-pools/{pool}/volumes/{type}/{volume}/snapshots/{snapshot}",
+	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumeSnapshotGetHandler},
+}
+
+func devLXDStoragePoolVolumeSnapshotGetHandler(d *Daemon, r *http.Request) *devLXDResponse {
+	poolName, err := url.PathUnescape(mux.Vars(r)["pool"])
+	if err != nil {
+		return errorResponse(http.StatusBadRequest, err.Error())
+	}
+
+	volType, err := url.PathUnescape(mux.Vars(r)["type"])
+	if err != nil {
+		return errorResponse(http.StatusBadRequest, err.Error())
+	}
+
+	volName, err := url.PathUnescape(mux.Vars(r)["volume"])
+	if err != nil {
+		return errorResponse(http.StatusBadRequest, err.Error())
+	}
+
+	snapshotName, err := url.PathUnescape(mux.Vars(r)["snapshot"])
+	if err != nil {
+		return errorResponse(http.StatusBadRequest, err.Error())
+	}
+
+	client, err := getDevLXDVsockClient(d)
+	if err != nil {
+		return smartResponse(err)
+	}
+
+	snapshot, etag, err := client.GetStoragePoolVolumeSnapshot(poolName, volType, volName, snapshotName)
+	if err != nil {
+		return smartResponse(err)
+	}
+
+	return okResponseETag(snapshot, "json", etag)
+}
