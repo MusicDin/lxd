@@ -519,6 +519,7 @@ type DevLXDServer interface {
 
 	// DevLXD storage volume snapshots.
 	GetStoragePoolVolumeSnapshots(poolName string, volType string, volName string) (snapshots []api.DevLXDStorageVolumeSnapshot, err error)
+	GetStoragePoolVolumeSnapshot(poolName string, volType string, volName string, snapshotName string) (snapshot *api.DevLXDStorageVolumeSnapshot, ETag string, err error)
 
 	// DevLXD Ubuntu Pro.
 	GetUbuntuPro() (*api.UbuntuProSettings, error)
