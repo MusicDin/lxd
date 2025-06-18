@@ -369,10 +369,10 @@ func devLXDStoragePoolVolumeSnapshotDeleteHandler(d *Daemon, r *http.Request) *d
 		return smartResponse(err)
 	}
 
-	err = client.DeleteStoragePoolVolumeSnapshot(poolName, volType, volName, snapshotName)
+	op, err := client.DeleteStoragePoolVolumeSnapshot(poolName, volType, volName, snapshotName)
 	if err != nil {
 		return smartResponse(err)
 	}
 
-	return okResponse("", "raw")
+	return okResponse(op.Get(), "json")
 }
