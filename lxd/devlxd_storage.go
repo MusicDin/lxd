@@ -629,6 +629,63 @@ func devLXDStoragePoolVolumeSnapshotsPostHandler(d *Daemon, r *http.Request) res
 	return response.DevLXDResponse(http.StatusOK, opResp, "json")
 }
 
+var devLXDStoragePoolVolumeSnapshotEndpoint = devLXDAPIEndpoint{
+	Path: "storage-pools/{poolName}/volumes/{type}/{volumeName}/snapshots/{snapshotName}",
+	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumeSnapshotGetHandler},
+}
+
+func devLXDStoragePoolVolumeSnapshotGetHandler(d *Daemon, r *http.Request) response.Response {
+	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	poolName := mux.Vars(r)["poolName"]
+	volName := mux.Vars(r)["volumeName"]
+	volType := mux.Vars(r)["type"]
+	snapName := mux.Vars(r)["snapshotName"]
+	projectName := inst.Project().Name
+
+	// Restrict access to custom volumes.
+	if volType != "custom" {
+		return response.DevLXDErrorResponse(api.NewStatusError(http.StatusBadRequest, "Only snapshot from custom storage volume can be retrieved"))
+	}
+
+	// Get storage volume snapshot.
+	url := api.NewURL().Path("1.0", "storage-pools", poolName, "volumes", volType, volName, "snapshots", snapName).WithQuery("project", projectName)
+	target := r.URL.Query().Get("target")
+	if target != "" {
+		url = url.WithQuery("target", target)
+	}
+
+	req, err := NewRequestWithContext(r.Context(), http.MethodGet, url.String(), nil, "")
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	err = addStoragePoolVolumeDetailsToRequestContext(d.State(), req)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	var snapshot api.StorageVolumeSnapshot
+
+	resp := storagePoolVolumeSnapshotTypeGet(d, req)
+	etag, err := RenderToStruct(req, resp, &snapshot)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Map to devLXD response.
+	respSnapshot := api.DevLXDStorageVolumeSnapshot{
+		Name:        snapshot.Name,
+		ContentType: snapshot.ContentType,
+		Config:      snapshot.Config,
+	}
+
+	return response.DevLXDResponseETag(http.StatusOK, respSnapshot, "json", etag)
+}
+
 // isDevLXDVolumeOwner checks whether the given storage volume is owned by the specified identity ID.
 // The volume is owned if it has a config key "volatile.devlxd.owner" set to the identity ID.
 func isDevLXDVolumeOwner(volConfig map[string]string, identityID string) bool {
