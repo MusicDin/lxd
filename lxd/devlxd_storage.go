@@ -505,6 +505,7 @@ func devLXDStoragePoolVolumeDeleteHandler(d *Daemon, r *http.Request) response.R
 var devLXDStoragePoolVolumeSnapshotsEndpoint = devLXDAPIEndpoint{
 	Path: "storage-pools/{poolName}/volumes/{type}/{volumeName}/snapshots",
 	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumeSnapshotsGetHandler},
+	Post: devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumeSnapshotsPostHandler},
 }
 
 func devLXDStoragePoolVolumeSnapshotsGetHandler(d *Daemon, r *http.Request) response.Response {
@@ -565,6 +566,67 @@ func devLXDStoragePoolVolumeSnapshotsGetHandler(d *Daemon, r *http.Request) resp
 	}
 
 	return response.DevLXDResponseETag(http.StatusOK, respSnapshots, "json", etag)
+}
+
+func devLXDStoragePoolVolumeSnapshotsPostHandler(d *Daemon, r *http.Request) response.Response {
+	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	poolName := mux.Vars(r)["poolName"]
+	volName := mux.Vars(r)["volumeName"]
+	volType := mux.Vars(r)["type"]
+	projectName := inst.Project().Name
+
+	// Restrict access to custom volumes.
+	if volType != "custom" {
+		return response.DevLXDErrorResponse(api.NewStatusError(http.StatusBadRequest, "Only snapshots for custom storage volumes can be created"))
+	}
+
+	// Decode the request body.
+	snap := api.DevLXDStorageVolumeSnapshotsPost{}
+	err = json.NewDecoder(r.Body).Decode(&snap)
+	if err != nil {
+		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusInternalServerError, "Failed decoding request body: %w", err))
+	}
+
+	reqBody := api.StorageVolumeSnapshotsPost{
+		Name:        snap.Name,
+		Description: snap.Description,
+	}
+
+	// Create storage volume snapshot.
+	url := api.NewURL().Path("1.0", "storage-pools", poolName, "volumes", volType, volName, "snapshots").WithQuery("project", projectName)
+	target := r.URL.Query().Get("target")
+	if target != "" {
+		url = url.WithQuery("target", target)
+	}
+
+	req, err := NewRequestWithContext(r.Context(), http.MethodPost, url.String(), reqBody, "")
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	err = addStoragePoolVolumeDetailsToRequestContext(d.State(), req)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	resp := storagePoolVolumeSnapshotsTypePost(d, req)
+	op, err := RenderToOperation(req, resp)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	opResp := api.DevLXDOperation{
+		ID:         op.ID,
+		Status:     op.Status,
+		StatusCode: op.StatusCode,
+		Err:        op.Err,
+	}
+
+	return response.DevLXDResponse(http.StatusOK, opResp, "json")
 }
 
 // isDevLXDVolumeOwner checks whether the given storage volume is owned by the specified identity ID.
