@@ -2,18 +2,23 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"github.com/gorilla/mux"
 
+	"github.com/canonical/lxd/lxd/device/filters"
+	"github.com/canonical/lxd/lxd/instance"
 	"github.com/canonical/lxd/lxd/response"
+	"github.com/canonical/lxd/lxd/util"
 	"github.com/canonical/lxd/shared/api"
 )
 
+type deviceAccessCheckFunc func(device map[string]string) bool
+
 var devLXDInstanceEndpoint = devLXDAPIEndpoint{
-	Path: "instances/{name}",
-	Get:  devLXDAPIEndpointAction{Handler: devLXDInstanceGetHandler},
+	Path:  "instances/{name}",
+	Get:   devLXDAPIEndpointAction{Handler: devLXDInstanceGetHandler},
+	Patch: devLXDAPIEndpointAction{Handler: devLXDInstancePatchHandler},
 }
 
 func devLXDInstanceGetHandler(d *Daemon, r *http.Request) response.Response {
@@ -26,83 +31,8 @@ func devLXDInstanceGetHandler(d *Daemon, r *http.Request) response.Response {
 	projectName := inst.Project().Name
 	targetInstName := mux.Vars(r)["name"]
 
-	// Fetch instance.
-	targetInst := api.Instance{}
-
-	url := api.NewURL().Path("1.0", "instances", targetInstName).WithQuery("recursion", "1").WithQuery("project", projectName).URL
-	req, err := NewRequestWithContext(r.Context(), http.MethodGet, url.String(), nil, "")
-	if err != nil {
-		return response.DevLXDErrorResponse(err)
-	}
-
-	resp := instanceGet(d, req)
-	etag, err := RenderToStruct(req, resp, &targetInst)
-	if err != nil {
-		return response.DevLXDErrorResponse(err)
-	}
-
-	// Map to devLXD type.
-	respInst := api.DevLXDInstance{
-		Name:    targetInst.Name,
-		Devices: targetInst.ExpandedDevices,
-	}
-
-	return response.DevLXDResponseETag(http.StatusOK, respInst, "json", etag)
-}
-
-func devLXDInstanceDevicesPostHandler(d *Daemon, r *http.Request) response.Response {
-	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
-	if err != nil {
-		return response.DevLXDErrorResponse(err)
-	}
-
-	// Allow access only to the project where current instance is running.
-	projectName := inst.Project().Name
-	targetInstName := mux.Vars(r)["name"]
-
-	var device map[string]string
-
-	err = json.NewDecoder(r.Body).Decode(&device)
-	if err != nil {
-		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusInternalServerError, "Failed to parse request: %w", err))
-	}
-
-	var volName string
-	var poolName string
-	var mountPath string
-
-	for k, v := range device {
-		switch k {
-		case "source":
-			volName = v
-		case "pool":
-			poolName = v
-		case "path":
-			mountPath = v
-		case "type":
-			// Ensure the device type is provided.
-			if v == "" {
-				return response.DevLXDErrorResponse(api.NewStatusError(http.StatusBadRequest, "Device type is required"))
-			}
-
-			// Currently we allow attaching only disk devices.
-			if v != "disk" {
-				return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusBadRequest, "Invalid device type %q", v))
-			}
-
-		default:
-			return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusBadRequest, "Invalid device property %q", k))
-		}
-	}
-
-	// Quick check.
-	if poolName == "" {
-		return response.DevLXDErrorResponse(api.NewStatusError(http.StatusBadRequest, "Pool name is required"))
-	}
-
-	if volName == "" {
-		return response.DevLXDErrorResponse(api.NewStatusError(http.StatusBadRequest, "Volume name is required"))
-	}
+	// TODO: Get actual service account ID.
+	serviceAccountID := "not-set"
 
 	// Fetch instance.
 	targetInst := api.Instance{}
@@ -119,30 +49,99 @@ func devLXDInstanceDevicesPostHandler(d *Daemon, r *http.Request) response.Respo
 		return response.DevLXDErrorResponse(err)
 	}
 
-	// Check if the device already exists.
-	_, ok := targetInst.ExpandedDevices[volName]
-	if ok {
-		return response.DevLXDErrorResponse(api.NewStatusError(http.StatusConflict, fmt.Sprintf("Device %q already exists", volName)))
+	// Filter accessible devices.
+	deviceAccessChecker := newDeviceAccessCheckFunc(inst)
+	devices, _ := getAccessibleDevices(targetInst, serviceAccountID, deviceAccessChecker)
+
+	// Map to devLXD type.
+	respInst := api.DevLXDInstance{
+		Name:    targetInst.Name,
+		Devices: devices,
 	}
 
-	// Ensure devices map is initialized.
-	if targetInst.Devices == nil {
-		targetInst.Devices = make(map[string]map[string]string)
+	// Use custom etag for devLXD instances.
+	//
+	// It is important that we track "owned" devices, not all devices.
+	// If the devLXD access changes, the LXD instance ETag remains the
+	// same, but from the perspective of devLXD the instance might have
+	// changed (list of accessible devices is different).
+	etag, err := util.EtagHash(respInst)
+	if err != nil {
+		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusInternalServerError, "Failed to generate ETag: %w", err))
 	}
 
-	targetInst.Devices[volName] = map[string]string{
-		"type":   "disk",
-		"pool":   poolName,
-		"source": volName,
-		"path":   mountPath,
+	return response.DevLXDResponseETag(http.StatusOK, respInst, "json", etag)
+}
+
+func devLXDInstancePatchHandler(d *Daemon, r *http.Request) response.Response {
+	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
 	}
 
-	// Update instance with the new device.
-	reqBody := api.InstancePut{
-		Devices: targetInst.Devices,
+	// Allow access only to the project where current instance is running.
+	projectName := inst.Project().Name
+	targetInstName := mux.Vars(r)["name"]
+
+	// TODO: Get actual service account ID.
+	serviceAccountID := "not-set"
+
+	var reqInst api.DevLXDInstance
+
+	err = json.NewDecoder(r.Body).Decode(&reqInst)
+	if err != nil {
+		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusInternalServerError, "Failed to parse request: %w", err))
 	}
 
-	etag := r.Header.Get("If-Match")
+	// Fetch instance.
+	targetInst := api.Instance{}
+
+	url := api.NewURL().Path("1.0", "instances", targetInstName).WithQuery("recursion", "1").WithQuery("project", projectName).URL
+	req, err := NewRequestWithContext(r.Context(), http.MethodGet, url.String(), nil, "")
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	resp := instanceGet(d, req)
+	etag, err := RenderToStruct(req, resp, &targetInst)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Check ETag.
+	//
+	// ETag returned to the client is the devLXD instance ETag, not the ETag returned by LXD.
+	// Using this ETag, we detect that the instance the accessible instance devices has not changed
+	// since the last request, and we can proceed with the update.
+	//
+	// The LXD instance ETag received from the "instanceGet" is later used in "instancePatch" to
+	// ensure nothing has changed between those two requests.
+	deviceAccessChecker := newDeviceAccessCheckFunc(inst)
+	devices, _ := getAccessibleDevices(targetInst, serviceAccountID, deviceAccessChecker)
+	devLXDInst := api.DevLXDInstance{
+		Name:    targetInst.Name,
+		Devices: devices,
+	}
+
+	devLXDETag, err := util.EtagHash(devLXDInst)
+	if err != nil {
+		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusInternalServerError, "Failed to generate ETag: %w", err))
+	}
+
+	reqETag := r.Header.Get("If-Match")
+	if reqETag != devLXDETag {
+		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusPreconditionFailed, "ETag mismatch: %q != %q", reqETag, devLXDETag))
+	}
+
+	// Merge new devices with existing ones.
+	deviceChecker := newDeviceAccessCheckFunc(inst)
+	err = updateInstanceDevices(&targetInst, reqInst, serviceAccountID, deviceChecker)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Update instance.
+	reqBody := targetInst.Writable()
 
 	url = api.NewURL().Path("1.0", "instances", targetInstName).WithQuery("project", projectName).URL
 	req, err = NewRequestWithContext(r.Context(), http.MethodPatch, url.String(), reqBody, etag)
@@ -159,100 +158,105 @@ func devLXDInstanceDevicesPostHandler(d *Daemon, r *http.Request) response.Respo
 	return response.DevLXDResponse(http.StatusOK, "", "raw")
 }
 
-var devLXDInstanceDeviceEndpoint = devLXDAPIEndpoint{
-	Path:   "instances/{name}/devices/{deviceName}",
-	Get:    devLXDAPIEndpointAction{Handler: devLXDInstanceDeviceGetHandler},
-	Delete: devLXDAPIEndpointAction{Handler: devLXDInstanceDeviceDeleteHandler},
+// updateInstanceDevices updates an existing instance (api.Instance) with devices from the
+// request instance (api.DevLXDInstance), and adjusts the device ownership configuration
+// accordingly.
+//
+// Device actions are determined as follows:
+// - Add:
+//   - Condition: New device that devLXD can manage and is not present in the existing devices.
+//   - Action:    Adds new device to the instance and set its owner in the instance config.
+//
+// - Update:
+//   - Condition: Existing device that devLXD can manage and is present in the new devices.
+//   - Action:    Updates existing device in the instance.
+//
+// - Remove:
+//   - Condition: Existing device that devLXD can manage and is not present in the new devices.
+//   - Action:    Removes existing device from the instance and removes its owner from the instance config.
+func updateInstanceDevices(inst *api.Instance, req api.DevLXDInstance, serviceAccountID string, isDeviceAccessible deviceAccessCheckFunc) error {
+	newDevices := make(map[string]map[string]string)
+
+	// Pass local devices, as non-local devices cannot be owned.
+	accessibleDevices, otherDevices := getAccessibleDevices(*inst, serviceAccountID, isDeviceAccessible)
+
+	// Merge new devices into existing ones.
+	for name, device := range req.Devices {
+		// Make sure device is not nil.
+		if device == nil {
+			return api.StatusErrorf(http.StatusBadRequest, "Device %q cannot be nil", name)
+		}
+
+		// Ensure devLXD has sufficient permissions to manage the device.
+		if isDeviceAccessible != nil && !isDeviceAccessible(device) {
+			return api.StatusErrorf(http.StatusForbidden, "Not authorized to manage device %q", name)
+		}
+
+		// Ensure unaccessible device cannot be modified.
+		_, exists := inst.ExpandedDevices[name]
+		_, canAccess := accessibleDevices[name]
+		if exists && !canAccess {
+			return api.StatusErrorf(http.StatusForbidden, "Not authorized to manage device %q", name)
+		}
+
+		// Either new device is added or an existing one updated.
+		// At this point we know that the ownership is correct (there is
+		// no existing unowned device), so we can safely set the device owner
+		// in instance configuration.
+		inst.Config["volatile."+name+".devlxd.owner"] = serviceAccountID
+		newDevices[name] = device
+	}
+
+	// Find removed devices, and remove their owner configuration keys.
+	for name := range accessibleDevices {
+		_, exists := req.Devices[name]
+		if !exists {
+			// Device is removed, so remove the owner config key.
+			delete(inst.Config, "volatile."+name+".devlxd.owner")
+		}
+	}
+
+	// Add non-owned existing devices to the existing list of devices.
+	for name, device := range otherDevices {
+		newDevices[name] = device
+	}
+
+	inst.Devices = newDevices
+	return nil
 }
 
-func devLXDInstanceDeviceGetHandler(d *Daemon, r *http.Request) response.Response {
-	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
-	if err != nil {
-		return response.DevLXDErrorResponse(err)
+// getAccessibleDevices extracts accessible instance devices. Two maps are returned,
+// one containg accessible devices, and the other containing the remaining devices.
+//
+// Device is accessible if:
+// - Device owner matches the service account ID.
+// - Device type matches the allowed device types.
+//
+// Additionall restrictions::
+// - Disk device is accessible only if it is a custom volume disk device.
+func getAccessibleDevices(inst api.Instance, serviceAccountID string, isDeviceAccessible deviceAccessCheckFunc) (accessibleDevices map[string]map[string]string, otherDevices map[string]map[string]string) {
+	accessibleDevices = make(map[string]map[string]string)
+	otherDevices = make(map[string]map[string]string)
+
+	for name, device := range inst.Devices {
+		// TODO: Add ownership check!
+		// inst.LocalConfig()["volatile."+name+".devlxd.owner"] == serviceAccountID
+		if isDeviceAccessible != nil && isDeviceAccessible(device) {
+			accessibleDevices[name] = device
+		} else {
+			otherDevices[name] = device
+		}
 	}
 
-	// It is not allowed to anything outside the project where the current instance is running.
-	projectName := inst.Project().Name
-
-	targetInstName := mux.Vars(r)["name"]
-	devName := mux.Vars(r)["deviceName"]
-
-	// Fetch instance.
-	targetInst := api.Instance{}
-
-	url := api.NewURL().Path("1.0", "instances", targetInstName).WithQuery("recursion", "1").WithQuery("project", projectName).URL
-	req, err := NewRequestWithContext(r.Context(), http.MethodGet, url.String(), nil, "")
-	if err != nil {
-		return response.DevLXDErrorResponse(err)
-	}
-
-	resp := instanceGet(d, req)
-	etag, err := RenderToStruct(req, resp, &targetInst)
-	if err != nil {
-		return response.DevLXDErrorResponse(err)
-	}
-
-	dev, ok := targetInst.ExpandedDevices[devName]
-	if !ok {
-		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusNotFound, "Device %q not found", devName))
-	}
-
-	return response.DevLXDResponseETag(http.StatusOK, dev, "json", etag)
+	return accessibleDevices, otherDevices
 }
 
-func devLXDInstanceDeviceDeleteHandler(d *Daemon, r *http.Request) response.Response {
-	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
-	if err != nil {
-		return response.DevLXDErrorResponse(err)
+// newDeviceAccessCheckFunc returns a device validator function that checks if the given
+// device is accessible by the devLXD.
+func newDeviceAccessCheckFunc(inst instance.Instance) deviceAccessCheckFunc {
+	diskDeviceAllowed := hasSecurityFlags(inst, devLXDSecurityMgmtVolumesKey)
+
+	return func(device map[string]string) bool {
+		return filters.IsCustomVolumeDisk(device) && diskDeviceAllowed
 	}
-
-	projectName := inst.Project().Name
-	targetInstName := mux.Vars(r)["name"]
-	devName := mux.Vars(r)["deviceName"]
-
-	// Fetch instance.
-	targetInst := api.Instance{}
-
-	url := api.NewURL().Path("1.0", "instances", targetInstName).WithQuery("recursion", "1").WithQuery("project", projectName).URL
-	req, err := NewRequestWithContext(r.Context(), http.MethodGet, url.String(), nil, "")
-	if err != nil {
-		return response.DevLXDErrorResponse(err)
-	}
-
-	resp := instanceGet(d, req)
-	_, err = RenderToStruct(req, resp, &targetInst)
-	if err != nil {
-		return response.DevLXDErrorResponse(err)
-	}
-
-	// Search only local devices.
-	dev, ok := targetInst.Devices[devName]
-	if !ok {
-		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusNotFound, "Device %q not found", devName))
-	}
-
-	if dev["type"] != "disk" || dev["path"] == "/" {
-		// DevLXD is not authorized to detach non-disk device or root disk device.
-		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusForbidden, "Not authorized to detach device %q", devName))
-	}
-
-	// Detach device.
-	delete(targetInst.Devices, devName)
-	reqBody := targetInst.Writable()
-
-	etag := r.Header.Get("If-Match")
-
-	url = api.NewURL().Path("1.0", "instances", targetInstName).WithQuery("project", projectName).URL
-	req, err = NewRequestWithContext(r.Context(), http.MethodDelete, url.String(), reqBody, etag)
-	if err != nil {
-		return response.DevLXDErrorResponse(err)
-	}
-
-	resp = instancePut(d, req)
-	err = Render(req, resp)
-	if err != nil {
-		return response.DevLXDErrorResponse(err)
-	}
-
-	return response.DevLXDResponse(http.StatusOK, "", "raw")
 }
