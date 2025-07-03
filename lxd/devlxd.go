@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"net/http"
 	"net/url"
 	"os"
@@ -84,7 +85,6 @@ var apiDevLXD = []devLXDAPIEndpoint{
 	devLXDEventsEndpoint,
 	devLXDDevicesEndpoint,
 	devLXDInstanceEndpoint,
-	devLXDInstanceDeviceEndpoint,
 	devLXDStoragePoolEndpoint,
 	devLXDStoragePoolsEndpoint,
 	devLXDStoragePoolVolumeTypeEndpoint,
@@ -554,23 +554,32 @@ func registerDevLXDEndpoint(d *Daemon, apiRouter *mux.Router, apiVersion string,
 	}
 }
 
-// getInstanceFromContextAndCheckSecurityFlags checks if the instance has the provided devLXD security features enabled.
+// getInstanceFromContextAndCheckSecurityFlags retrieves the instance from the provided request
+// context and verifies that the instance has the provided devLXD security features enabled.
 func getInstanceFromContextAndCheckSecurityFlags(ctx context.Context, keys ...DevLXDSecurityKey) (instance.Instance, error) {
 	inst, err := request.GetContextValue[instance.Instance](ctx, request.CtxDevLXDInstance)
 	if err != nil {
 		return nil, err
 	}
 
-	config := inst.ExpandedConfig()
+	if !hasSecurityFlags(inst, keys...) {
+		return nil, api.StatusErrorf(http.StatusForbidden, "not authorized")
+	}
+
+	return inst, nil
+}
+
+// hasSecurityFlags checks whether the instance has the provided devLXD security features enabled.
+func hasSecurityFlags(inst instance.Instance, keys ...DevLXDSecurityKey) bool {
 	for _, key := range keys {
-		value := config[string(key)]
+		value := inst.ExpandedConfig()[string(key)]
 
 		// The devLXD is enabled by default, therefore we only prevent access if the feature
 		// is explicitly disabled (set to "false"). All other features must be explicitly enabled.
 		if shared.IsFalse(value) || (value == "" && key != devLXDSecurityKey) {
-			return nil, api.StatusErrorf(http.StatusForbidden, "not authorized")
+			return false
 		}
 	}
 
-	return inst, nil
+	return true
 }
