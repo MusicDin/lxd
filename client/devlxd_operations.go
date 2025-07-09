@@ -13,8 +13,6 @@ import (
 	"github.com/canonical/lxd/shared/api"
 )
 
-var _ Operation = &devLXDOperation{}
-
 // The Operation type represents an ongoing LXD operation (asynchronous processing).
 type devLXDOperation struct {
 	api.DevLXDOperation
