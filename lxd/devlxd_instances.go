@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"maps"
 	"net/http"
 
@@ -16,8 +17,9 @@ import (
 type devLXDDeviceAccessValidator func(device map[string]string) bool
 
 var devLXDInstanceEndpoint = devLXDAPIEndpoint{
-	Path: "instances/{name}",
-	Get:  devLXDAPIEndpointAction{Handler: devLXDInstanceGetHandler},
+	Path:  "instances/{name}",
+	Get:   devLXDAPIEndpointAction{Handler: devLXDInstanceGetHandler},
+	Patch: devLXDAPIEndpointAction{Handler: devLXDInstancePatchHandler},
 }
 
 func devLXDInstanceGetHandler(d *Daemon, r *http.Request) response.Response {
@@ -77,6 +79,76 @@ func devLXDInstanceGetHandler(d *Daemon, r *http.Request) response.Response {
 	}
 
 	return response.DevLXDResponseETag(http.StatusOK, respInst, "json", etag)
+}
+
+func devLXDInstancePatchHandler(d *Daemon, r *http.Request) response.Response {
+	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Allow access only to the project where current instance is running.
+	projectName := inst.Project().Name
+	targetInstName := mux.Vars(r)["name"]
+
+	// TODO: Get actual service account ID.
+	serviceAccountID := ""
+
+	var reqInst api.DevLXDInstance
+
+	err = json.NewDecoder(r.Body).Decode(&reqInst)
+	if err != nil {
+		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusInternalServerError, "Failed to parse request: %w", err))
+	}
+
+	// Fetch instance.
+	targetInst := api.Instance{}
+
+	url := api.NewURL().Path("1.0", "instances", targetInstName).WithQuery("recursion", "1").WithQuery("project", projectName).URL
+	req, err := NewRequestWithContext(r.Context(), http.MethodGet, url.String(), nil, "")
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	resp := instanceGet(d, req)
+	etag, err := RenderToStruct(req, resp, &targetInst)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Use etag from the request, if provided. Otherwise, use the etag
+	// returned when fetching the existing instance.
+	reqETag := r.Header.Get("If-Match")
+	if reqETag != "" {
+		etag = reqETag
+	}
+
+	// Merge new devices with existing ones.
+	deviceChecker := newDevLXDDeviceAccessValidator(inst)
+	err = patchInstanceDevices(&targetInst, reqInst, serviceAccountID, deviceChecker)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Update instance.
+	reqBody := api.InstancePut{
+		Config:  targetInst.Config,  // Update device ownership.
+		Devices: targetInst.Devices, // Update devices.
+	}
+
+	url = api.NewURL().Path("1.0", "instances", targetInstName).WithQuery("project", projectName).URL
+	req, err = NewRequestWithContext(r.Context(), http.MethodPatch, url.String(), reqBody, etag)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	resp = instancePatch(d, req)
+	err = Render(req, resp)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	return response.DevLXDResponse(http.StatusOK, "", "raw")
 }
 
 // patchInstanceDevices updates an existing instance (api.Instance) with devices from the
