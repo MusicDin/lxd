@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"maps"
 	"net/http"
 
@@ -18,6 +19,7 @@ type devLXDDeviceAccessValidator func(device map[string]string) bool
 var devLXDInstanceEndpoint = devLXDAPIEndpoint{
 	Path: "instances/{name}",
 	Get:  devLXDAPIEndpointAction{Handler: devLXDInstanceGetHandler},
+	Put:  devLXDAPIEndpointAction{Handler: devLXDInstancePutHandler},
 }
 
 func devLXDInstanceGetHandler(d *Daemon, r *http.Request) response.Response {
@@ -70,6 +72,102 @@ func devLXDInstanceGetHandler(d *Daemon, r *http.Request) response.Response {
 	}
 
 	return response.DevLXDResponseETag(http.StatusOK, respInst, "json", etag)
+}
+
+func devLXDInstancePutHandler(d *Daemon, r *http.Request) response.Response {
+	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Allow access only to the project where current instance is running.
+	projectName := inst.Project().Name
+	targetInstName := mux.Vars(r)["name"]
+
+	// TODO: Get actual service account ID.
+	serviceAccountID := ""
+
+	var reqInst api.DevLXDInstance
+
+	err = json.NewDecoder(r.Body).Decode(&reqInst)
+	if err != nil {
+		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusInternalServerError, "Failed to parse request: %w", err))
+	}
+
+	// Fetch instance.
+	targetInst := api.Instance{}
+
+	url := api.NewURL().Path("1.0", "instances", targetInstName).WithQuery("recursion", "1").WithQuery("project", projectName).URL
+	req, err := NewRequestWithContext(r.Context(), http.MethodGet, url.String(), nil, "")
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	resp := instanceGet(d, req)
+	etag, err := RenderToStruct(req, resp, &targetInst)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Check ETag.
+	//
+	// ETag returned to the client is the devLXD instance ETag, not the ETag returned by LXD.
+	// Using this ETag, we detect that the instance the accessible instance devices has not changed
+	// since the last request, and we can proceed with the update.
+	//
+	// The LXD instance ETag received from the "instanceGet" is later used in "instancePatch" to
+	// ensure nothing has changed between those two requests.
+	reqETag := r.Header.Get("If-Match")
+	if reqETag != "" {
+		// Calculate devLXD instance ETag.
+		deviceAccessChecker := newDevLXDDeviceAccessValidator(inst)
+		devices, _ := getAccessibleDevices(targetInst, serviceAccountID, deviceAccessChecker)
+
+		devLXDInst := api.DevLXDInstance{
+			Name:    targetInst.Name,
+			Devices: devices,
+		}
+
+		devLXDETag, err := util.EtagHash(devLXDInst)
+		if err != nil {
+			return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusInternalServerError, "Failed to generate ETag: %w", err))
+		}
+
+		if reqETag != devLXDETag {
+			return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusPreconditionFailed, "ETag mismatch: %q != %q", reqETag, devLXDETag))
+		}
+	}
+
+	// Merge new devices with existing ones.
+	deviceChecker := newDevLXDDeviceAccessValidator(inst)
+	err = updateInstanceDevices(&targetInst, reqInst, serviceAccountID, deviceChecker)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Update instance.
+	reqBody := targetInst.Writable()
+
+	url = api.NewURL().Path("1.0", "instances", targetInstName).WithQuery("project", projectName).URL
+	req, err = NewRequestWithContext(r.Context(), http.MethodPut, url.String(), reqBody, etag)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	resp = instancePut(d, req)
+	op, err := RenderToOperation(req, resp)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	opResp := api.DevLXDOperation{
+		ID:         op.ID,
+		Status:     op.Status,
+		StatusCode: op.StatusCode,
+		Err:        op.Err,
+	}
+
+	return response.DevLXDResponse(http.StatusOK, opResp, "json")
 }
 
 // updateInstanceDevices updates an existing instance (api.Instance) with devices from the
