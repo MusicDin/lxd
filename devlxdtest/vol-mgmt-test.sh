@@ -72,7 +72,7 @@ for instType in container vm; do
     ! lxc exec "${inst}" -- curl -f -s --unix-socket /dev/lxd/sock -X GET lxd/1.0/storage-pools?recursion=1 || false
 
     # Enable volume management.
-    lxc config set "${inst}" security.devlxd.volume_management=true
+    lxc config set "${inst}" security.devlxd.management.volumes=true
 
     # > Storage pools.
 
@@ -139,7 +139,7 @@ for instType in container vm; do
         -d '{"config": {"size": "20MiB"}, "description": "Updated volume"}'
     lxc exec "${inst}" -- curl -s --unix-socket /dev/lxd/sock -X GET lxd/1.0/storage-pools/${pool}/volumes/custom/vol-01 | jq | tee >(jq -e '.config.size == "20MiB" and .description == "Updated volume"')
 
-    # Patch storage volume
+    # Update storage volume
     lxc exec "${inst}" -- curl --unix-socket /dev/lxd/sock \
         -X PUT lxd/1.0/storage-pools/${pool}/volumes/custom/vol-01 \
         -H "Content-Type: application/json" \
@@ -154,24 +154,37 @@ for instType in container vm; do
         -d '{"description": "This must fail"}' || false
 
     # List devices.
-    lxc exec "${inst}" -- curl -f -s --unix-socket /dev/lxd/sock -X GET lxd/1.0/instances/${inst}/devices
+    lxc exec "${inst}" -- curl -f -s --unix-socket /dev/lxd/sock -X GET lxd/1.0/instances/${inst}
 
     # Attach new device.
     attachReq=$(cat <<EOF
 {
-    "type": "disk",
-    "pool": "${pool}",
-    "source": "vol-01",
-    "path": "/mnt/vol-01"
+    "devices": {
+        "vol-01": {
+            "type": "disk",
+            "pool": "${pool}",
+            "source": "vol-01",
+            "path": "/mnt/vol-01"
+        }
+    }
 }
 EOF
 )
 
-    lxc exec "${inst}" -- curl -f -s --unix-socket /dev/lxd/sock -X POST lxd/1.0/instances/${inst}/devices -H "Content-Type: application/json" -d "${attachReq}"
-    lxc exec "${inst}" -- curl -f -s --unix-socket /dev/lxd/sock -X GET lxd/1.0/instances/${inst}/devices | jq -e -r '."vol-01".source == "vol-01"'
-    lxc exec "${inst}" -- curl -f -s --unix-socket /dev/lxd/sock -X GET lxd/1.0/instances/${inst}/devices/vol-01 | jq -e -r '.source == "vol-01"'
-    lxc exec "${inst}" -- curl -f -s --unix-socket /dev/lxd/sock -X DELETE lxd/1.0/instances/${inst}/devices/vol-01
-    ! lxc exec "${inst}" -- curl -f -s --unix-socket /dev/lxd/sock -X GET lxd/1.0/instances/${inst}/devices/vol-01 || false
+    lxc exec "${inst}" -- curl -f -s --unix-socket /dev/lxd/sock -X PUT lxd/1.0/instances/${inst} -H "Content-Type: application/json" -d "${attachReq}"
+    lxc exec "${inst}" -- curl -f -s --unix-socket /dev/lxd/sock -X GET lxd/1.0/instances/${inst} | jq -e -r '.devices."vol-01".source == "vol-01"'
+    lxc exec "${inst}" -- curl -f -s --unix-socket /dev/lxd/sock -X GET lxd/1.0/instances/${inst}| jq -e -r '.devices."vol-01".source == "vol-01"'
+
+    # Detach new device.
+    detachReq=$(cat <<EOF
+{
+    "devices": {}
+}
+EOF
+)
+
+    lxc exec "${inst}" -- curl -f -s --unix-socket /dev/lxd/sock -X PUT lxd/1.0/instances/${inst} -H "Content-Type: application/json" -d "${detachReq}"
+    lxc exec "${inst}" -- curl -f -s --unix-socket /dev/lxd/sock -X GET lxd/1.0/instances/${inst} | jq '.devices' | jq 'length == 0'
 
     # Delete storage volumes.
     ! lxc exec "${inst}" -- curl -f -s --unix-socket /dev/lxd/sock -X DELETE lxd/1.0/storage-pools/${pool}/volumes/custom/non-existing-volume || false
