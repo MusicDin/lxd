@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/canonical/lxd/client"
@@ -62,7 +63,12 @@ func (r *devLXDResponse) Render(w http.ResponseWriter, req *http.Request) (err e
 
 	// Remove quotes from ETag if present, as it may be already quoted if received
 	// from the LXD server.
-	if r.etag != "" {
+	//
+	// Only check for the presence of the quotes. If quotes are misplaced, the ETag
+	// is not valid, and strconv.Unquote will fail as expected. Checking for quotes
+	// presence is neccessary, as Unqote will also fail if string is not empty and
+	// is not quoted.
+	if strings.Contains(r.etag, `"`) || strings.Contains(r.etag, `'`) {
 		etag, err = strconv.Unquote(r.etag)
 		if err != nil {
 			return fmt.Errorf("Failed to unquote ETag %q: %w", r.etag, err)
