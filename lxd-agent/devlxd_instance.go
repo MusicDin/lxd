@@ -5,17 +5,18 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/canonical/lxd/shared/api"
 	"github.com/gorilla/mux"
 )
 
-var devLXDInstanceDevicesEndpoint = devLXDAPIEndpoint{
-	Path: "instances/{instanceName}/devices",
-	Get:  devLXDAPIEndpointAction{Handler: devLXDInstanceDevicesGetHandler},
-	Post: devLXDAPIEndpointAction{Handler: devLXDInstanceDevicesPostHandler},
+var devLXDInstanceEndpoint = devLXDAPIEndpoint{
+	Path: "instances/{name}",
+	Get:  devLXDAPIEndpointAction{Handler: devLXDInstanceGetHandler},
+	Put:  devLXDAPIEndpointAction{Handler: devLXDInstancePutHandler},
 }
 
-func devLXDInstanceDevicesGetHandler(d *Daemon, r *http.Request) *devLXDResponse {
-	instName, err := url.PathUnescape(mux.Vars(r)["instanceName"])
+func devLXDInstanceGetHandler(d *Daemon, r *http.Request) *devLXDResponse {
+	instName, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
 		return errorResponse(http.StatusBadRequest, err.Error())
 	}
@@ -27,22 +28,22 @@ func devLXDInstanceDevicesGetHandler(d *Daemon, r *http.Request) *devLXDResponse
 
 	defer client.Disconnect()
 
-	devices, err := client.GetInstanceDevices(instName)
+	inst, etag, err := client.GetInstance(instName)
 	if err != nil {
 		return smartResponse(err)
 	}
 
-	return okResponse(devices, "json")
+	return okResponseETag(inst, "json", etag)
 }
 
-func devLXDInstanceDevicesPostHandler(d *Daemon, r *http.Request) *devLXDResponse {
-	instName, err := url.PathUnescape(mux.Vars(r)["instanceName"])
+func devLXDInstancePutHandler(d *Daemon, r *http.Request) *devLXDResponse {
+	instName, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
 		return errorResponse(http.StatusBadRequest, err.Error())
 	}
 
-	var device map[string]string
-	err = json.NewDecoder(r.Body).Decode(&device)
+	var inst api.DevLXDInstance
+	err = json.NewDecoder(r.Body).Decode(&inst)
 	if err != nil {
 		return smartResponse(err)
 	}
@@ -54,65 +55,7 @@ func devLXDInstanceDevicesPostHandler(d *Daemon, r *http.Request) *devLXDRespons
 
 	defer client.Disconnect()
 
-	err = client.CreateInstanceDevice(instName, device)
-	if err != nil {
-		return smartResponse(err)
-	}
-
-	return okResponse("", "raw")
-}
-
-var devLXDInstanceDeviceEndpoint = devLXDAPIEndpoint{
-	Path:   "instances/{instanceName}/devices/{devName}",
-	Get:    devLXDAPIEndpointAction{Handler: devLXDInstanceDeviceGetHandler},
-	Delete: devLXDAPIEndpointAction{Handler: devLXDInstanceDeviceDeleteHandler},
-}
-
-func devLXDInstanceDeviceGetHandler(d *Daemon, r *http.Request) *devLXDResponse {
-	instName, err := url.PathUnescape(mux.Vars(r)["instanceName"])
-	if err != nil {
-		return errorResponse(http.StatusBadRequest, err.Error())
-	}
-
-	devName, err := url.PathUnescape(mux.Vars(r)["devName"])
-	if err != nil {
-		return errorResponse(http.StatusBadRequest, err.Error())
-	}
-
-	client, err := getDevLXDVsockClient(d)
-	if err != nil {
-		return smartResponse(err)
-	}
-
-	defer client.Disconnect()
-
-	device, etag, err := client.GetInstanceDevice(instName, devName)
-	if err != nil {
-		return smartResponse(err)
-	}
-
-	return okResponseETag(device, "json", etag)
-}
-
-func devLXDInstanceDeviceDeleteHandler(d *Daemon, r *http.Request) *devLXDResponse {
-	instName, err := url.PathUnescape(mux.Vars(r)["instanceName"])
-	if err != nil {
-		return errorResponse(http.StatusBadRequest, err.Error())
-	}
-
-	devName, err := url.PathUnescape(mux.Vars(r)["devName"])
-	if err != nil {
-		return errorResponse(http.StatusBadRequest, err.Error())
-	}
-
-	client, err := getDevLXDVsockClient(d)
-	if err != nil {
-		return smartResponse(err)
-	}
-
-	defer client.Disconnect()
-
-	err = client.DeleteInstanceDevice(instName, devName)
+	err = client.UpdateInstance(instName, inst)
 	if err != nil {
 		return smartResponse(err)
 	}

@@ -6,6 +6,28 @@ import (
 	"github.com/canonical/lxd/shared/api"
 )
 
+func (r *ProtocolDevLXD) GetInstance(instName string) (instance *api.DevLXDInstance, etag string, err error) {
+	var inst api.DevLXDInstance
+
+	url := api.NewURL().Path("instances", instName)
+	etag, err = r.queryStruct(http.MethodGet, url.String(), nil, "", &inst)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return &inst, etag, nil
+}
+
+func (r *ProtocolDevLXD) UpdateInstance(instName string, inst api.DevLXDInstance) error {
+	url := api.NewURL().Path("instances", instName)
+	_, _, err := r.query(http.MethodPut, url.String(), inst, "")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // GetInstanceDevices retrieves a map of instance devices.
 func (r *ProtocolDevLXD) GetInstanceDevices(instName string) (devices map[string]map[string]string, err error) {
 	devices = make(map[string]map[string]string)

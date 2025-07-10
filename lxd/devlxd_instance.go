@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 
 	"github.com/gorilla/mux"
@@ -16,9 +17,9 @@ import (
 type deviceAccessCheckFunc func(device map[string]string) bool
 
 var devLXDInstanceEndpoint = devLXDAPIEndpoint{
-	Path:  "instances/{name}",
-	Get:   devLXDAPIEndpointAction{Handler: devLXDInstanceGetHandler},
-	Patch: devLXDAPIEndpointAction{Handler: devLXDInstancePatchHandler},
+	Path: "instances/{name}",
+	Get:  devLXDAPIEndpointAction{Handler: devLXDInstanceGetHandler},
+	Put:  devLXDAPIEndpointAction{Handler: devLXDInstancePutHandler},
 }
 
 func devLXDInstanceGetHandler(d *Daemon, r *http.Request) response.Response {
@@ -32,7 +33,7 @@ func devLXDInstanceGetHandler(d *Daemon, r *http.Request) response.Response {
 	targetInstName := mux.Vars(r)["name"]
 
 	// TODO: Get actual service account ID.
-	serviceAccountID := "not-set"
+	serviceAccountID := ""
 
 	// Fetch instance.
 	targetInst := api.Instance{}
@@ -73,7 +74,7 @@ func devLXDInstanceGetHandler(d *Daemon, r *http.Request) response.Response {
 	return response.DevLXDResponseETag(http.StatusOK, respInst, "json", etag)
 }
 
-func devLXDInstancePatchHandler(d *Daemon, r *http.Request) response.Response {
+func devLXDInstancePutHandler(d *Daemon, r *http.Request) response.Response {
 	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
 	if err != nil {
 		return response.DevLXDErrorResponse(err)
@@ -84,7 +85,7 @@ func devLXDInstancePatchHandler(d *Daemon, r *http.Request) response.Response {
 	targetInstName := mux.Vars(r)["name"]
 
 	// TODO: Get actual service account ID.
-	serviceAccountID := "not-set"
+	serviceAccountID := ""
 
 	var reqInst api.DevLXDInstance
 
@@ -116,21 +117,25 @@ func devLXDInstancePatchHandler(d *Daemon, r *http.Request) response.Response {
 	//
 	// The LXD instance ETag received from the "instanceGet" is later used in "instancePatch" to
 	// ensure nothing has changed between those two requests.
-	deviceAccessChecker := newDeviceAccessCheckFunc(inst)
-	devices, _ := getAccessibleDevices(targetInst, serviceAccountID, deviceAccessChecker)
-	devLXDInst := api.DevLXDInstance{
-		Name:    targetInst.Name,
-		Devices: devices,
-	}
-
-	devLXDETag, err := util.EtagHash(devLXDInst)
-	if err != nil {
-		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusInternalServerError, "Failed to generate ETag: %w", err))
-	}
-
 	reqETag := r.Header.Get("If-Match")
-	if reqETag != devLXDETag {
-		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusPreconditionFailed, "ETag mismatch: %q != %q", reqETag, devLXDETag))
+	if reqETag != "" {
+		// Calculate devLXD instance ETag.
+		deviceAccessChecker := newDeviceAccessCheckFunc(inst)
+		devices, _ := getAccessibleDevices(targetInst, serviceAccountID, deviceAccessChecker)
+
+		devLXDInst := api.DevLXDInstance{
+			Name:    targetInst.Name,
+			Devices: devices,
+		}
+
+		devLXDETag, err := util.EtagHash(devLXDInst)
+		if err != nil {
+			return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusInternalServerError, "Failed to generate ETag: %w", err))
+		}
+
+		if reqETag != devLXDETag {
+			return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusPreconditionFailed, "ETag mismatch: %q != %q", reqETag, devLXDETag))
+		}
 	}
 
 	// Merge new devices with existing ones.
@@ -144,12 +149,12 @@ func devLXDInstancePatchHandler(d *Daemon, r *http.Request) response.Response {
 	reqBody := targetInst.Writable()
 
 	url = api.NewURL().Path("1.0", "instances", targetInstName).WithQuery("project", projectName).URL
-	req, err = NewRequestWithContext(r.Context(), http.MethodPatch, url.String(), reqBody, etag)
+	req, err = NewRequestWithContext(r.Context(), http.MethodPut, url.String(), reqBody, etag)
 	if err != nil {
 		return response.DevLXDErrorResponse(err)
 	}
 
-	resp = instancePatch(d, req)
+	resp = instancePut(d, req)
 	err = Render(req, resp)
 	if err != nil {
 		return response.DevLXDErrorResponse(err)
@@ -203,8 +208,8 @@ func updateInstanceDevices(inst *api.Instance, req api.DevLXDInstance, serviceAc
 		// At this point we know that the ownership is correct (there is
 		// no existing unowned device), so we can safely set the device owner
 		// in instance configuration.
-		inst.Config["volatile."+name+".devlxd.owner"] = serviceAccountID
 		newDevices[name] = device
+		// inst.Config["volatile."+name+".devlxd.owner"] = serviceAccountID # TODO: Uncomment once available.
 	}
 
 	// Find removed devices, and remove their owner configuration keys.
@@ -217,9 +222,7 @@ func updateInstanceDevices(inst *api.Instance, req api.DevLXDInstance, serviceAc
 	}
 
 	// Add non-owned existing devices to the existing list of devices.
-	for name, device := range otherDevices {
-		newDevices[name] = device
-	}
+	maps.Copy(newDevices, otherDevices)
 
 	inst.Devices = newDevices
 	return nil
@@ -239,9 +242,7 @@ func getAccessibleDevices(inst api.Instance, serviceAccountID string, isDeviceAc
 	otherDevices = make(map[string]map[string]string)
 
 	for name, device := range inst.Devices {
-		// TODO: Add ownership check!
-		// inst.LocalConfig()["volatile."+name+".devlxd.owner"] == serviceAccountID
-		if isDeviceAccessible != nil && isDeviceAccessible(device) {
+		if isDeviceAccessible != nil && isDeviceAccessible(device) && inst.Config["volatile."+name+".devlxd.owner"] == serviceAccountID {
 			accessibleDevices[name] = device
 		} else {
 			otherDevices[name] = device
