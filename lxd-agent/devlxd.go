@@ -60,13 +60,8 @@ var devLXDEndpoints = []devLXDAPIEndpoint{
 	devLXDImageExportEndpoint,
 	devLXDInstanceEndpoint,
 	devLXDStoragePoolEndpoint,
-<<<<<<< HEAD
 	devLXDStoragePoolVolumeTypeEndpoint,
 	devLXDStoragePoolVolumesEndpoint,
-=======
-	devLXDStoragePoolsEndpoint,
-	devLXDStoragePoolVolumeTypeEndpoint,
->>>>>>> b589880691 (lxd-agent/devlxd: Get storage pool volume endpoint)
 	devLXDStoragePoolVolumesTypeEndpoint,
 	devLXDUbuntuProEndpoint,
 	devLXDUbuntuProTokenEndpoint,
