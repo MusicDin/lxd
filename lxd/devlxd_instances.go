@@ -4,12 +4,80 @@ import (
 	"maps"
 	"net/http"
 
+	"github.com/gorilla/mux"
+
 	"github.com/canonical/lxd/lxd/device/filters"
 	"github.com/canonical/lxd/lxd/instance"
+	"github.com/canonical/lxd/lxd/response"
+	"github.com/canonical/lxd/lxd/util"
 	"github.com/canonical/lxd/shared/api"
 )
 
 type devLXDDeviceAccessValidator func(device map[string]string) bool
+
+var devLXDInstanceEndpoint = devLXDAPIEndpoint{
+	Path: "instances/{name}",
+	Get:  devLXDAPIEndpointAction{Handler: devLXDInstanceGetHandler},
+}
+
+func devLXDInstanceGetHandler(d *Daemon, r *http.Request) response.Response {
+	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Allow access only to the projectName where current instance is running.
+	projectName := inst.Project().Name
+	targetInstName := mux.Vars(r)["name"]
+
+	// TODO: Get actual service account ID.
+	serviceAccountID := ""
+
+	// Fetch instance.
+	targetInst := api.Instance{}
+
+	url := api.NewURL().Path("1.0", "instances", targetInstName).WithQuery("recursion", "1").WithQuery("project", projectName).URL
+	req, err := NewRequestWithContext(r.Context(), http.MethodGet, url.String(), nil, "")
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	resp := instanceGet(d, req)
+	_, err = RenderToStruct(req, resp, &targetInst)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Get owned devices.
+	ownedDevices, _ := getOwnedDevices(targetInst, serviceAccountID)
+
+	// Filter devices that are not accessible to devLXD.
+	deviceAccessChecker := newDevLXDDeviceAccessValidator(inst)
+	for name, device := range ownedDevices {
+		if !deviceAccessChecker(device) {
+			delete(ownedDevices, name)
+		}
+	}
+
+	// Map to devLXD type.
+	respInst := api.DevLXDInstance{
+		Name:    targetInst.Name,
+		Devices: ownedDevices,
+	}
+
+	// Use custom etag for devLXD instances.
+	//
+	// It is important that we track "owned" devices, not all devices.
+	// If the devLXD access changes, the LXD instance ETag remains the
+	// same, but from the perspective of devLXD the instance might have
+	// changed (list of accessible devices is different).
+	etag, err := util.EtagHash(respInst)
+	if err != nil {
+		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusInternalServerError, "Failed to generate ETag: %w", err))
+	}
+
+	return response.DevLXDResponseETag(http.StatusOK, respInst, "json", etag)
+}
 
 // patchInstanceDevices updates an existing instance (api.Instance) with devices from the
 // request instance (api.DevLXDInstance), and adjusts the device ownership configuration
