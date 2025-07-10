@@ -5,15 +5,22 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/canonical/lxd/shared/api"
 	"github.com/gorilla/mux"
 
 	"github.com/canonical/lxd/shared/api"
 )
 
 var devLXDInstanceEndpoint = devLXDAPIEndpoint{
+<<<<<<< HEAD
 	Path:  "instances/{name}",
 	Get:   devLXDAPIEndpointAction{Handler: devLXDInstanceGetHandler},
 	Patch: devLXDAPIEndpointAction{Handler: devLXDInstancePatchHandler},
+=======
+	Path: "instances/{name}",
+	Get:  devLXDAPIEndpointAction{Handler: devLXDInstanceGetHandler},
+	Put:  devLXDAPIEndpointAction{Handler: devLXDInstancePutHandler},
+>>>>>>> c1141e2b13 (lxd-agent/devlxd: Update instance endpoint)
 }
 
 func devLXDInstanceGetHandler(d *Daemon, r *http.Request) *devLXDResponse {
