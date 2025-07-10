@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"maps"
 	"net/http"
 
@@ -18,8 +19,9 @@ import (
 type devLXDDeviceAccessValidator func(device map[string]string) bool
 
 var devLXDInstanceEndpoint = devLXDAPIEndpoint{
-	Path: "instances/{name}",
-	Get:  devLXDAPIEndpointAction{Handler: devLXDInstanceGetHandler, AccessHandler: allowDevLXDPermission(entity.TypeInstance, auth.EntitlementCanView, "name")},
+	Path:  "instances/{name}",
+	Get:   devLXDAPIEndpointAction{Handler: devLXDInstanceGetHandler, AccessHandler: allowDevLXDPermission(entity.TypeInstance, auth.EntitlementCanView, "name")},
+	Patch: devLXDAPIEndpointAction{Handler: devLXDInstancePatchHandler, AccessHandler: allowDevLXDPermission(entity.TypeInstance, auth.EntitlementCanEdit, "name")},
 }
 
 func devLXDInstanceGetHandler(d *Daemon, r *http.Request) response.Response {
@@ -80,6 +82,86 @@ func devLXDInstanceGetHandler(d *Daemon, r *http.Request) response.Response {
 	return response.DevLXDResponseETag(http.StatusOK, respInst, "json", etag)
 }
 
+func devLXDInstancePatchHandler(d *Daemon, r *http.Request) response.Response {
+	inst, err := getInstanceFromContextAndCheckSecurityFlags(r.Context(), devLXDSecurityKey, devLXDSecurityMgmtVolumesKey)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Allow access only to the project where current instance is running.
+	projectName := inst.Project().Name
+	targetInstName := mux.Vars(r)["name"]
+
+	// Get identity ID from the request context.
+	requestor, err := request.GetRequestor(r.Context())
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	identity := requestor.CallerIdentity()
+	if identity == nil {
+		return response.DevLXDErrorResponse(api.NewStatusError(http.StatusForbidden, "Request context identity is missing"))
+	}
+
+	identityID := requestor.CallerIdentity().Identifier
+
+	var reqInst api.DevLXDInstance
+
+	err = json.NewDecoder(r.Body).Decode(&reqInst)
+	if err != nil {
+		return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusInternalServerError, "Failed to parse request: %w", err))
+	}
+
+	// Fetch instance.
+	targetInst := api.Instance{}
+
+	url := api.NewURL().Path("1.0", "instances", targetInstName).Project(projectName).WithQuery("recursion", "1").URL
+	req, err := NewRequestWithContext(r.Context(), http.MethodGet, url.String(), nil, "")
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	resp := instanceGet(d, req)
+	etag, err := RenderToStruct(req, resp, &targetInst)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Use etag from the request, if provided. Otherwise, use the etag
+	// returned when fetching the existing instance.
+	reqETag := r.Header.Get("If-Match")
+	if reqETag != "" {
+		etag = reqETag
+	}
+
+	// Merge new devices with existing ones.
+	deviceChecker := newDevLXDDeviceAccessValidator(inst)
+	err = patchInstanceDevices(&targetInst, reqInst, identityID, deviceChecker)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	// Update instance.
+	reqBody := api.InstancePut{
+		Config:  targetInst.Config,  // Update device ownership.
+		Devices: targetInst.Devices, // Update devices.
+	}
+
+	url = api.NewURL().Path("1.0", "instances", targetInstName).Project(projectName).URL
+	req, err = NewRequestWithContext(r.Context(), http.MethodPatch, url.String(), reqBody, etag)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	resp = instancePatch(d, req)
+	err = Render(req, resp)
+	if err != nil {
+		return response.DevLXDErrorResponse(err)
+	}
+
+	return response.DevLXDResponse(http.StatusOK, "", "raw")
+}
+
 // patchInstanceDevices updates an existing instance (api.Instance) with devices from the
 // request instance (api.DevLXDInstance), and adjusts the device ownership configuration
 // accordingly.
@@ -104,7 +186,7 @@ func patchInstanceDevices(inst *api.Instance, req api.DevLXDInstance, identityID
 
 	// Merge new devices into existing ones.
 	for name, device := range req.Devices {
-		_, isOwned := ownedDevices[name]
+		ownedDev, isOwned := ownedDevices[name]
 
 		if device == nil {
 			// Device is being removed. Check if the device is owned.
@@ -116,7 +198,7 @@ func patchInstanceDevices(inst *api.Instance, req api.DevLXDInstance, identityID
 
 			// Ensure devLXD has sufficient permissions to manage the device.
 			// Pass old device to the validator, as new device is nil.
-			if isDeviceAccessible != nil && !isDeviceAccessible(device) {
+			if isDeviceAccessible != nil && !isDeviceAccessible(ownedDev) {
 				return api.StatusErrorf(http.StatusForbidden, "Not authorized to delete device %q", name)
 			}
 
