@@ -458,6 +458,7 @@ if [ "${1:-"all"}" != "cluster" ]; then
     run_test test_container_devices_gpu "container devices - gpu"
     run_test test_container_devices_unix "container devices - unix"
     run_test test_container_devices_tpm "container devices - tpm"
+    run_test test_container_file_push "container file push using LXD client"
     run_test test_container_move "container server-side move"
     run_test test_container_syscall_interception "container syscall interception"
     run_test test_security "security features"
