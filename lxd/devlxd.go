@@ -556,6 +556,26 @@ func registerDevLXDEndpoint(d *Daemon, apiRouter *mux.Router, apiVersion string,
 				return response.DevLXDErrorResponse(api.NewGenericStatusError(http.StatusNotImplemented))
 			}
 
+			// All API endpoint acctions should either have an
+			// access handler or allow untrusted requests.
+			if action.AccessHandler == nil && !action.AllowUntrusted {
+				return response.DevLXDErrorResponse(api.StatusErrorf(http.StatusInternalServerError, "Access handler not defined for %s %s", r.Method, r.URL.RequestURI()))
+			}
+
+			// If the request is not trusted, only call the handler
+			// if the action allows it.
+			if !requestor.Trusted && !action.AllowUntrusted {
+				return response.DevLXDErrorResponse(api.NewStatusError(http.StatusForbidden, "You must be authenticated"))
+			}
+
+			// Call the access handler if there is one.
+			if action.AccessHandler != nil {
+				resp := action.AccessHandler(d, r)
+				if resp != response.EmptySyncResponse {
+					return resp
+				}
+			}
+
 			return f(d, r, action.Handler)
 		}
 
