@@ -85,7 +85,10 @@ func getDevLXDVsockClient(d *Daemon, r *http.Request) (lxd.DevLXDServer, error) 
 		return nil, err
 	}
 
-	args := &lxd.ConnectionArgs{}
+	args := &lxd.ConnectionArgs{
+		SkipGetServer: true,
+	}
+
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if ok {
 		args.BearerToken = token
