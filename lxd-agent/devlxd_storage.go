@@ -14,6 +14,25 @@ var devLXDStoragePoolEndpoint = devLXDAPIEndpoint{
 	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolGetHandler},
 }
 
+var devLXDStoragePoolVolumesEndpoint = devLXDAPIEndpoint{
+	Path: "storage-pools/{pool}/volumes",
+	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumesGetHandler},
+	Post: devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumesPostHandler},
+}
+
+var devLXDStoragePoolVolumesTypeEndpoint = devLXDAPIEndpoint{
+	Path: "storage-pools/{pool}/volumes/{type}",
+	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumesGetHandler},
+	Post: devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumesPostHandler},
+}
+
+var devLXDStoragePoolVolumeTypeEndpoint = devLXDAPIEndpoint{
+	Path:   "storage-pools/{pool}/volumes/{type}/{volume}",
+	Get:    devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumeGetHandler},
+	Patch:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumePatchHandler},
+	Delete: devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumeDeleteHandler},
+}
+
 func devLXDStoragePoolGetHandler(d *Daemon, r *http.Request) *devLXDResponse {
 	poolName, err := url.PathUnescape(r.PathValue("pool"))
 	if err != nil {
@@ -33,18 +52,6 @@ func devLXDStoragePoolGetHandler(d *Daemon, r *http.Request) *devLXDResponse {
 	}
 
 	return okResponseETag(pool, "json", etag)
-}
-
-var devLXDStoragePoolVolumesEndpoint = devLXDAPIEndpoint{
-	Path: "storage-pools/{pool}/volumes",
-	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumesGetHandler},
-	Post: devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumesPostHandler},
-}
-
-var devLXDStoragePoolVolumesTypeEndpoint = devLXDAPIEndpoint{
-	Path: "storage-pools/{pool}/volumes/{type}",
-	Get:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumesGetHandler},
-	Post: devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumesPostHandler},
 }
 
 func devLXDStoragePoolVolumesGetHandler(d *Daemon, r *http.Request) *devLXDResponse {
@@ -104,13 +111,6 @@ func devLXDStoragePoolVolumesPostHandler(d *Daemon, r *http.Request) *devLXDResp
 	}
 
 	return okResponse("", "raw")
-}
-
-var devLXDStoragePoolVolumeTypeEndpoint = devLXDAPIEndpoint{
-	Path:   "storage-pools/{pool}/volumes/{type}/{volume}",
-	Get:    devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumeGetHandler},
-	Patch:  devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumePatchHandler},
-	Delete: devLXDAPIEndpointAction{Handler: devLXDStoragePoolVolumeDeleteHandler},
 }
 
 func devLXDStoragePoolVolumeGetHandler(d *Daemon, r *http.Request) *devLXDResponse {
