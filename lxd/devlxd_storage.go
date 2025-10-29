@@ -310,13 +310,14 @@ func devLXDStoragePoolVolumeGetHandler(d *Daemon, r *http.Request) response.Resp
 	}
 
 	projectName := inst.Project().Name
+	target := r.URL.Query().Get("target")
 
 	poolName, volType, volName, err := extractVolumeParams(r)
 	if err != nil {
 		return response.DevLXDErrorResponse(err)
 	}
 
-	vol, etag, err := devLXDStoragePoolVolumeGet(r.Context(), d, r.URL.Query().Get("target"), projectName, poolName, volName, volType)
+	vol, etag, err := devLXDStoragePoolVolumeGet(r.Context(), d, target, projectName, poolName, volName, volType)
 	if err != nil {
 		return response.DevLXDErrorResponse(err)
 	}
@@ -341,7 +342,7 @@ func devLXDStoragePoolVolumePutHandler(d *Daemon, r *http.Request) response.Resp
 	}
 
 	// Retrieve the volume first to ensure the caller owns it.
-	_, _, err = devLXDStoragePoolVolumeGet(r.Context(), d, target, inst.Project().Name, poolName, volName, volType)
+	_, _, err = devLXDStoragePoolVolumeGet(r.Context(), d, target, projectName, poolName, volName, volType)
 	if err != nil {
 		return response.DevLXDErrorResponse(err)
 	}
@@ -422,7 +423,7 @@ func devLXDStoragePoolVolumeDeleteHandler(d *Daemon, r *http.Request) response.R
 	}
 
 	// Retrieve the volume first to ensure the caller owns it.
-	_, _, err = devLXDStoragePoolVolumeGet(r.Context(), d, target, inst.Project().Name, poolName, volName, volType)
+	_, _, err = devLXDStoragePoolVolumeGet(r.Context(), d, target, projectName, poolName, volName, volType)
 	if err != nil {
 		return response.DevLXDErrorResponse(err)
 	}
