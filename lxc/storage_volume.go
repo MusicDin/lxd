@@ -23,6 +23,7 @@ import (
 	cli "github.com/canonical/lxd/shared/cmd"
 	"github.com/canonical/lxd/shared/i18n"
 	"github.com/canonical/lxd/shared/ioprogress"
+	"github.com/canonical/lxd/shared/logger"
 	"github.com/canonical/lxd/shared/termios"
 	"github.com/canonical/lxd/shared/units"
 )
@@ -593,6 +594,14 @@ func (c *cmdStorageVolumeCopy) run(cmd *cobra.Command, args []string) error {
 		if srcIsSnapshot {
 			_, err = srcServer.DeleteStoragePoolVolumeSnapshot(srcVolPool, srcVol.Type, srcVolParentName, srcVolSnapName)
 		} else {
+
+			srcVol, _, volErr := srcServer.GetStoragePoolVolume(srcVolPool, srcVol.Type, srcVolName)
+			if volErr != nil {
+				logger.Error("Failed getting source volume (before delete)", logger.Ctx{"err": volErr})
+			} else {
+				logger.Warn("Source volume (before delete)", logger.Ctx{"volume": srcVol})
+			}
+
 			var op lxd.Operation
 			op, err = srcServer.DeleteStoragePoolVolume(srcVolPool, srcVol.Type, srcVolName)
 			if err != nil {
@@ -600,8 +609,21 @@ func (c *cmdStorageVolumeCopy) run(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("Failed deleting source (before op): %w", err)
 			}
 
+			logger.Warn("Operation (before wait)", logger.Ctx{"op": op.Get()})
+
 			err = op.Wait()
 			if err != nil {
+				srcVol, _, volErr := srcServer.GetStoragePoolVolume(srcVolPool, srcVol.Type, srcVolName)
+				if volErr != nil {
+					logger.Error("Failed getting source volume (after delete)", logger.Ctx{"err": volErr})
+				} else {
+					logger.Warn("Source volume (after delete)", logger.Ctx{"volume": srcVol})
+				}
+
+				logger.Warn("Operation (after wait)", logger.Ctx{"op": op.Get()})
+				_ = op.Refresh()
+				logger.Warn("Operation (after wait and refresh)", logger.Ctx{"op": op.Get()})
+
 				progress.Done("")
 				return fmt.Errorf("Failed deleting source (after op): %w", err)
 			}
