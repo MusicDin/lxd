@@ -595,8 +595,15 @@ func (c *cmdStorageVolumeCopy) run(cmd *cobra.Command, args []string) error {
 		} else {
 			var op lxd.Operation
 			op, err = srcServer.DeleteStoragePoolVolume(srcVolPool, srcVol.Type, srcVolName)
-			if err == nil {
-				err = op.Wait()
+			if err != nil {
+				progress.Done("")
+				return fmt.Errorf("Failed deleting source (before op): %w", err)
+			}
+
+			err = op.Wait()
+			if err != nil {
+				progress.Done("")
+				return fmt.Errorf("Failed deleting source (after op): %w", err)
 			}
 		}
 
