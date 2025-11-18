@@ -63,8 +63,127 @@ defaults:
     shell: bash
 
 jobs:
+  code-tests:
+    env:
+      CGO_CFLAGS: "-I/home/runner/go/bin/dqlite/include/ -I/home/runner/go/bin/liblxc/include/"
+      CGO_LDFLAGS: "-L/home/runner/go/bin/dqlite/libs/"
+      LD_LIBRARY_PATH: "/home/runner/go/bin/dqlite/libs/"
+      LD_RUN_PATH: "/home/runner/go/bin/dqlite/libs/"
+      CGO_LDFLAGS_ALLOW: "(-Wl,-wrap,pthread_create)|(-Wl,-z,now)"
+    name: Code
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          # A non-shallow clone is needed for the Differential ShellCheck
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Install Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        if: github.event_name != 'pull_request'
+        with:
+          cache: 'pip' # caching pip dependencies
+          cache-dependency-path: |
+            doc/.sphinx/build_requirements.py
+            doc/.sphinx/requirements.txt
+            doc/custom_conf.py
+          python-version: '3.x'  # satisfied by any 3.x version already installed
+
+      - name: Install build dependencies
+        uses: ./.github/actions/install-lxd-builddeps
+
+      - name: Download go dependencies
+        run: |
+          set -eux
+          sudo chmod o+w {go.mod,go.sum}
+          go mod download
+
+          # Check compatibility with min Go version
+          make check-gomin
+
+      - name: Make GOCOVERDIR
+        run: |
+          set -eux
+          mkdir -p coverage
+          cd coverage
+          echo "GOCOVERDIR=$(pwd)" >> "${GITHUB_ENV}"
+        if: env.GOCOVERAGE == 'true'
+
+      - name: Make LXD tarball and unpack it
+        env:
+          CUSTOM_VERSION: "test"
+        run: |
+          set -eux
+          make dist
+          tar -xzf lxd-test.tar.gz -C /home/runner/work/lxd/
+          rm lxd-test.tar.gz
+
+      # In code-tests, this action warms the cache for the system-tests job
+      - name: Build or restore dqlite/liblxc dependencies
+        uses: ./.github/actions/cache-dqlite-liblxc
+
+      - name: Update env variables for deps
+        run: |
+          set -eux
+          LIBLXC_ARCH_LIBS="$(readlink -e /home/runner/go/bin/liblxc/libs/*-linux-gnu)"
+
+          echo "CGO_LDFLAGS=${CGO_LDFLAGS} -L${LIBLXC_ARCH_LIBS}"       >> "${GITHUB_ENV}"
+          echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:${LIBLXC_ARCH_LIBS}" >> "${GITHUB_ENV}"
+          echo "LD_RUN_PATH=${LD_RUN_PATH}:${LIBLXC_ARCH_LIBS}"         >> "${GITHUB_ENV}"
+          echo "PKG_CONFIG_PATH=${LIBLXC_ARCH_LIBS}/pkgconfig"          >> "${GITHUB_ENV}"
+
+      - name: Build binaries
+        run: |
+          set -eux
+
+          # Build from unpacked dist tarball.
+          cd /home/runner/work/lxd/lxd-test
+          make
+
+      - name: Prime cache with external test images
+        uses: ./.github/actions/download-images
+        with:
+          prime-cache-only: true
+          image-cache-dir: ${{ env.IMAGE_CACHE_DIR }}
+
+      - name: Prime cache with snap dependencies
+        uses: ./.github/actions/download-snaps
+        with:
+          prime-cache-only: true
+          snap-cache-dir: ${{ env.SNAP_CACHE_DIR }}
+
+      - name: Prime cache with minio/mc
+        uses: ./.github/actions/download-minio
+        with:
+          prime-cache-only: true
+
+      - name: Prime cache with virtiofsd
+        uses: ./.github/actions/download-virtiofsd
+        with:
+          prime-cache-only: true
+
+      - name: Upload system test dependencies
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: system-test-deps
+          path: |
+            /home/runner/go/bin/lxc*
+            /home/runner/go/bin/lxd*
+            /home/runner/go/bin/devlxd-client
+            /home/runner/go/bin/fuidshift
+            /home/runner/go/bin/mini-oidc
+            /home/runner/go/bin/sysinfo
+          retention-days: 1
+
   snap-tests:
-    if: github.event_name != 'schedule'
+    needs: code-tests
     env:
       BRANCH_NAME: ${{ github.ref_name }}
       SNAP_RISK: ${{ inputs.snap-risk || 'edge' }}
