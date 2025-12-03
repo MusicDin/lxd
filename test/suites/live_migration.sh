@@ -65,7 +65,7 @@ test_live_migration_cluster() {
     --config limits.memory=1GiB \
     --config migration.stateful=true \
     --config security.devlxd=false \
-    --config size.state=1GiB \
+    --device root,size.state=1GiB \
     --target node1 \
     --storage "${rootPool}"
 
