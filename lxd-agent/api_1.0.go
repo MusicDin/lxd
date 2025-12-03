@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/mdlayher/vsock"
 
@@ -122,8 +123,19 @@ func api10Put(d *Daemon, r *http.Request) response.Response {
 	// succeeds and the "security.devlxd" flag is set to true.
 	// Therefore, we ignore forbidden error here, as it is still sufficient to
 	// confirm the DevLXD is actually accessible.
-	_, _, err = server.GetServer()
-	if err != nil && !api.StatusErrorCheck(err, http.StatusForbidden) {
+	success := false
+	for range 10 {
+		_, _, err = server.GetServer()
+		if err != nil && !api.StatusErrorCheck(err, http.StatusForbidden) {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		success = true
+		break
+	}
+
+	if !success {
 		return response.SmartError(fmt.Errorf("Failed to verify connection to LXD server: %w", err))
 	}
 
