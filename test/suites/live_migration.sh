@@ -45,13 +45,13 @@ test_live_migration_cluster() {
 
   # Storage pool created when spawning LXD cluster is "data".
   poolName="data"
-  rootPool="sys"
+  # rootPool="sys"
 
   ensure_import_ubuntu_vm_image
 
-  lxc storage create "${rootPool}" dir --target node1
-  lxc storage create "${rootPool}" dir --target node2
-  lxc storage create "${rootPool}" dir
+  # lxc storage create "${rootPool}" dir --target node1
+  # lxc storage create "${rootPool}" dir --target node2
+  # lxc storage create "${rootPool}" dir
 
   if [ "${poolDriver}" != "dir" ]; then
     oldVolumeSize=$(lxc storage get "${poolName}" volume.size)
@@ -66,8 +66,8 @@ test_live_migration_cluster() {
     --config migration.stateful=true \
     --config security.devlxd=false \
     --device root,size.state=1GiB \
-    --target node1 \
-    --storage "${rootPool}"
+    --target node1
+    # --storage "${rootPool}"
 
   # Attach the block volume to the VM.
   if [ "${poolDriver}" = "dir" ]; then
@@ -101,7 +101,7 @@ test_live_migration_cluster() {
   # Cleanup
   lxc delete --force vm
   lxc storage volume delete "${poolName}" vmdata
-  lxc storage delete "${rootPool}"
+  # lxc storage delete "${rootPool}"
 
   if [ "${oldVolumeSize:-}" != "" ]; then
     lxc storage set "${poolName}" volume.size="${oldVolumeSize}"
