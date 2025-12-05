@@ -49,9 +49,9 @@ test_live_migration_cluster() {
 
   ensure_import_ubuntu_vm_image
 
-  # lxc storage create "${rootPool}" dir --target node1
-  # lxc storage create "${rootPool}" dir --target node2
-  # lxc storage create "${rootPool}" dir
+  lxc storage create "${rootPool}" dir --target node1
+  lxc storage create "${rootPool}" dir --target node2
+  lxc storage create "${rootPool}" dir
 
   if [ "${poolDriver}" != "dir" ]; then
     oldVolumeSize=$(lxc storage get "${poolName}" volume.size)
