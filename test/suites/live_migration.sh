@@ -62,12 +62,12 @@ test_live_migration_cluster() {
   lxc init ubuntu-vm vm \
     --vm \
     --config limits.cpu=2 \
-    --config limits.memory=1GiB \
+    --config limits.memory=768MiB \
     --config migration.stateful=true \
+    --device root,size.state=1GiB \
     --config security.devlxd=false \
+    --storage "${rootPool}" \
     --target node1
-    # --device root,size.state=1GiB \
-    # --storage "${rootPool}"
 
   # Attach the block volume to the VM.
   if [ "${poolDriver}" = "dir" ]; then
