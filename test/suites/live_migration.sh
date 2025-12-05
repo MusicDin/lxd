@@ -45,7 +45,7 @@ test_live_migration_cluster() {
 
   # Storage pool created when spawning LXD cluster is "data".
   poolName="data"
-  # rootPool="sys"
+  rootPool="sys"
 
   ensure_import_ubuntu_vm_image
 
@@ -101,7 +101,7 @@ test_live_migration_cluster() {
   # Cleanup
   lxc delete --force vm
   # lxc storage volume delete "${poolName}" vmdata
-  # lxc storage delete "${rootPool}"
+  lxc storage delete "${rootPool}"
 
   if [ "${oldVolumeSize:-}" != "" ]; then
     lxc storage set "${poolName}" volume.size="${oldVolumeSize}"
