@@ -11,10 +11,10 @@ test_live_migration_cluster() {
   # since we need to have the same storage driver on all nodes.
   # Use the driver from the profile that is chosen for the standalone pool.
   poolDriver=$(lxc storage show "$(lxc profile device get default root pool)" | awk '/^driver:/ {print $2}')
-  if [ "${poolDriver:-}" != "ceph" ]; then
-    echo "==> SKIP: test_live_migration_cluster currently only supports 'ceph', not ${poolDriver}"
-    return
-  fi
+  # if [ "${poolDriver:-}" != "ceph" ]; then
+  #   echo "==> SKIP: test_live_migration_cluster currently only supports 'ceph', not ${poolDriver}"
+  #   return
+  # fi
 
   setup_clustering_bridge
   prefix="lxd$$"
@@ -64,7 +64,7 @@ test_live_migration_cluster() {
     --config limits.cpu=2 \
     --config limits.memory=768MiB \
     --config migration.stateful=true \
-    --device root,size.state=1GiB \
+    --device root,size.state=1GiB,size=${SMALLEST_VM_ROOT_DISK} \
     --config security.devlxd=false \
     --storage "${rootPool}" \
     --target node1
