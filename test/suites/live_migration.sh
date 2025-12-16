@@ -90,8 +90,8 @@ test_live_migration_cluster() {
 
   # Perform live migration of the VM from node1 to node2.
   echo "Live migrating instance 'vm' ..."
-  lxc move vm vm2 --target node2
-  waitInstanceReady vm2
+  lxc move vm --target node2
+  waitInstanceReady vm
 
   # After live migration, the volume should be functional and mounted.
   # Check that the file we created is still there with the same contents.
@@ -99,7 +99,7 @@ test_live_migration_cluster() {
   # [ "$(lxc exec vm -- cat /mnt/vol1/bar)" = "vm" ]
 
   # Cleanup
-  lxc delete --force vm2
+  lxc delete --force vm
   lxc storage volume delete "${poolName}" vmdata
   # lxc storage delete "${rootPool}"
 
