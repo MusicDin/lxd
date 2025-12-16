@@ -76,17 +76,17 @@ test_live_migration_cluster() {
     lxc storage volume create "${poolName}" vmdata --type=block size="64MiB"
   fi
 
-  # lxc config device add vm vmdata disk pool="${poolName}" source=vmdata
+  lxc config device add vm vmdata disk pool="${poolName}" source=vmdata
 
   # Start the VM.
   lxc start vm
   waitInstanceReady vm
 
   # Inside the VM, format and mount the volume, then write some data to it.
-  # lxc exec vm -- mkfs -t ext4 /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_lxd_vmdata
-  # lxc exec vm -- mkdir /mnt/vol1
-  # lxc exec vm -- mount -t ext4 /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_lxd_vmdata /mnt/vol1
-  # lxc exec vm -- cp /etc/hostname /mnt/vol1/bar
+  lxc exec vm -- mkfs -t ext4 /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_lxd_vmdata
+  lxc exec vm -- mkdir /mnt/vol1
+  lxc exec vm -- mount -t ext4 /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_lxd_vmdata /mnt/vol1
+  lxc exec vm -- cp /etc/hostname /mnt/vol1/bar
 
   # Perform live migration of the VM from node1 to node2.
   echo "Live migrating instance 'vm' ..."
@@ -96,12 +96,12 @@ test_live_migration_cluster() {
   # After live migration, the volume should be functional and mounted.
   # Check that the file we created is still there with the same contents.
   echo "Verifying data integrity after live migration"
-  # [ "$(lxc exec vm -- cat /mnt/vol1/bar)" = "vm" ]
+  [ "$(lxc exec vm -- cat /mnt/vol1/bar)" = "vm" ]
 
   # Cleanup
   lxc delete --force vm
   lxc storage volume delete "${poolName}" vmdata
-  # lxc storage delete "${rootPool}"
+  lxc storage delete "${rootPool}"
 
   if [ "${oldVolumeSize:-}" != "" ]; then
     lxc storage set "${poolName}" volume.size="${oldVolumeSize}"
