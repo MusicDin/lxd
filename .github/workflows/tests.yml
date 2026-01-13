@@ -327,7 +327,7 @@ jobs:
           export PATH="/home/runner/go/bin:$PATH:/snap/microovn/current/commands"
 
           # Run the tests for the selected backend
-          sudo --preserve-env="${SUDO_PRESERVE_ENV}" ./main.sh "group:${GROUP}"
+          sudo --preserve-env="${SUDO_PRESERVE_ENV}" ./main.sh clustering_live_migration
 
       - name: "Run system tests (${{ matrix.group }}, dir)"
         if: matrix.backends == 'all' || matrix.backends == 'dir'

@@ -79,6 +79,12 @@ test_clustering_live_migration() {
   printf 'config: {}\ndevices: {}' | LXD_DIR="${LXD_ONE_DIR}" lxc profile edit default
   LXD_DIR="${LXD_ONE_DIR}" lxc storage delete "${poolName}"
 
+  # DEBUG: Show storage pool info
+  echo ">>> DEBUG AFTER CLEANUP <<<"
+  LXD_DIR="${LXD_ONE_DIR}" lxc storage ls || true
+  LXD_DIR="${LXD_ONE_DIR}" lxc image ls || true
+  # DEBUG: END
+
   lxc remote remove cls
 
   LXD_DIR="${LXD_ONE_DIR}" lxd shutdown
