@@ -211,7 +211,7 @@ jobs:
       fail-fast: false
       matrix:
         group: ["cluster"]
-        backends: ["ceph"]
+        backends: ["ceph", "btrfs", "dir", "lvm", "zfs"]
 
     steps:
       - name: Checkout
@@ -313,7 +313,7 @@ jobs:
           export PATH="/home/runner/go/bin:$PATH:/snap/microovn/current/commands"
 
           # Run the tests for the selected backend
-          sudo --preserve-env="${SUDO_PRESERVE_ENV}" ./main.sh "group:${GROUP}"
+          sudo --preserve-env="${SUDO_PRESERVE_ENV}" ./main.sh clustering_live_migration
 
       - name: "Run system tests (${{ matrix.group }}, ceph)"
         if: matrix.backends == 'all' || matrix.backends == 'ceph'
@@ -341,7 +341,7 @@ jobs:
           export PATH="/home/runner/go/bin:$PATH:/snap/microovn/current/commands"
 
           # Run the tests for the selected backend
-          sudo --preserve-env="${SUDO_PRESERVE_ENV}" ./main.sh "group:${GROUP}"
+          sudo --preserve-env="${SUDO_PRESERVE_ENV}" ./main.sh clustering_live_migration
 
       - name: "Run system tests (${{ matrix.group }}, lvm)"
         if: matrix.backends == 'all' || matrix.backends == 'lvm'
@@ -355,7 +355,7 @@ jobs:
           export PATH="/home/runner/go/bin:$PATH:/snap/microovn/current/commands"
 
           # Run the tests for the selected backend
-          sudo --preserve-env="${SUDO_PRESERVE_ENV}" ./main.sh "group:${GROUP}"
+          sudo --preserve-env="${SUDO_PRESERVE_ENV}" ./main.sh clustering_live_migration
 
       - name: "Run system tests (${{ matrix.group }}, zfs)"
         if: matrix.backends == 'all' || matrix.backends == 'zfs'
@@ -369,7 +369,7 @@ jobs:
           export PATH="/home/runner/go/bin:$PATH:/snap/microovn/current/commands"
 
           # Run the tests for the selected backend
-          sudo --preserve-env="${SUDO_PRESERVE_ENV}" ./main.sh "group:${GROUP}"
+          sudo --preserve-env="${SUDO_PRESERVE_ENV}" ./main.sh clustering_live_migration
 
       - name: "Run system tests (${{ matrix.group }}, random)"
         if: matrix.backends == 'all' || matrix.backends == 'random'
