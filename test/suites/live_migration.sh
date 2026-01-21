@@ -154,17 +154,26 @@ test_clustering_live_migration() {
   fi
 
   # Set up a TLS identity with admin permissions.
-  LXD_DIR="${LXD_ONE_DIR}" lxc auth group create live-migration
-  LXD_DIR="${LXD_ONE_DIR}" lxc auth group permission add live-migration server admin
+  LXD_DIR="${LXD_TWO_DIR}" lxc auth group create live-migration
+  LXD_DIR="${LXD_TWO_DIR}" lxc auth group permission add live-migration server admin
 
-  token="$(LXD_DIR="${LXD_ONE_DIR}" lxc auth identity create tls/live-migration --group=live-migration --quiet)"
-  LXD_DIR="${LXD_ONE_DIR}" lxc remote add dst 100.64.1.101:8443 --token="${token}"
+  # Add second LXD as remote to the first LXD.
+  token="$(LXD_DIR="${LXD_TWO_DIR}" lxc auth identity create tls/live-migration --group=live-migration --quiet)"
+  address="$(LXD_DIR="${LXD_TWO_DIR}" lxc config get core.https_address)"
+  LXD_DIR="${LXD_TWO_DIR}" lxc remote add dst "${address}" --token="${token}"
 
   LXD_DIR="${LXD_ONE_DIR}" ensure_import_ubuntu_vm_image
 
   # Storage pool created when spawning LXD cluster is "data".
   poolName="data"
-  LXD_DIR="${LXD_ONE_DIR}" lxc storage set "${poolName}" volume.size="${SMALLEST_VM_ROOT_DISK}"
+
+  poolOpts=()
+  if [ "${poolDriver}" != "dir" ]; then
+    poolOpts+=(size=4GiB)
+  fi
+
+  LXD_DIR="${LXD_ONE_DIR}" lxc storage create "${poolName}" "${poolDriver}" volume.size="${SMALLEST_VM_ROOT_DISK}" "${poolOpts[@]}"
+  LXD_DIR="${LXD_TWO_DIR}" lxc storage create "${poolName}" "${poolDriver}" volume.size="${SMALLEST_VM_ROOT_DISK}" "${poolOpts[@]}"
 
   # Initialize the VM.
   LXD_DIR="${LXD_ONE_DIR}" lxc init ubuntu-vm vm \
@@ -172,8 +181,7 @@ test_clustering_live_migration() {
     --config limits.cpu=2 \
     --config limits.memory=768MiB \
     --config migration.stateful=true \
-    --device root,size="${SMALLEST_VM_ROOT_DISK}" \
-    --target node1
+    --device root,size="${SMALLEST_VM_ROOT_DISK}"
 
   # For remote storage drivers, test live migration with custom volume as well.
   if [ "${isRemoteDriver}" = true ]; then
@@ -208,7 +216,7 @@ test_clustering_live_migration() {
 
   # Cleanup
   echo "Cleaning up ..."
-  LXD_DIR="${LXD_ONE_DIR}" lxc image delete "$(LXD_DIR="${LXD_ONE_DIR}" lxc config get vm volatile.base_image)"
+  LXD_DIR="${LXD_ONE_DIR}" lxc image delete "$(LXD_DIR="${LXD_TWO_DIR}" lxc config get vm volatile.base_image)"
   LXD_DIR="${LXD_TWO_DIR}" lxc delete --force vm
 
   if [ "${isRemoteDriver}" = true ]; then
