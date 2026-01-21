@@ -134,24 +134,19 @@ test_clustering_live_migration() {
   isRemoteDriver=false
   if [ "${poolDriver}" == "ceph" ]; then
     isRemoteDriver=true
+
+    # Set test live migration env var to prevent LXD erroring out during unmount of the
+    # source instance volume during live migration on the same host. During unmount the
+    # volume is already mounted to the destination instance and will error with "device
+    # or resource busy" error.
+    export LXD_TEST_LIVE_MIGRATION_ON_THE_SAME_HOST=true
   fi
 
+  # Spawn a two LXD servers.
   LXD_ONE_DIR="$(mktemp -d -p "${TEST_DIR}" XXX)"
   LXD_TWO_DIR="$(mktemp -d -p "${TEST_DIR}" XXX)"
-
-    # Spawn a second LXD.
-  if [ "${poolDriver}" == "ceph" ]; then
-    LXD_TEST_LIVE_MIGRATION_ON_THE_SAME_HOST=true spawn_lxd "${LXD_ONE_DIR}" true
-  else
-    spawn_lxd "${LXD_ONE_DIR}" true
-  fi
-
-  # Spawn a second LXD.
-  if [ "${poolDriver}" == "ceph" ]; then
-    LXD_TEST_LIVE_MIGRATION_ON_THE_SAME_HOST=true spawn_lxd "${LXD_TWO_DIR}" true
-  else
-    spawn_lxd "${LXD_TWO_DIR}" true
-  fi
+  spawn_lxd "${LXD_ONE_DIR}" true
+  spawn_lxd "${LXD_TWO_DIR}" true
 
   # Set up a TLS identity with admin permissions.
   LXD_DIR="${LXD_TWO_DIR}" lxc auth group create live-migration
@@ -165,15 +160,18 @@ test_clustering_live_migration() {
   LXD_DIR="${LXD_ONE_DIR}" ensure_import_ubuntu_vm_image
 
   # Storage pool created when spawning LXD cluster is "data".
-  poolName="data"
+  srcPoolName="$(LXD_DIR="${LXD_ONE_DIR}" lxc profile device get default root pool)"
+  dstPoolName="$(LXD_DIR="${LXD_TWO_DIR}" lxc profile device get default root pool)"
 
   poolOpts=()
-  if [ "${poolDriver}" != "dir" ]; then
+  if [ "${poolDriver}" = "ceph" ]; then
+    poolOpts+=(size=4GiB)
+  elif [ "${poolDriver}" != "dir" ]; then
     poolOpts+=(size=4GiB)
   fi
 
-  LXD_DIR="${LXD_ONE_DIR}" lxc storage create "${poolName}" "${poolDriver}" volume.size="${SMALLEST_VM_ROOT_DISK}" "${poolOpts[@]}"
-  LXD_DIR="${LXD_TWO_DIR}" lxc storage create "${poolName}" "${poolDriver}" volume.size="${SMALLEST_VM_ROOT_DISK}" "${poolOpts[@]}"
+  LXD_DIR="${LXD_ONE_DIR}" lxc storage set "${srcPoolName}" volume.size="${SMALLEST_VM_ROOT_DISK}" "${poolOpts[@]}"
+  LXD_DIR="${LXD_TWO_DIR}" lxc storage set "${dstPoolName}" volume.size="${SMALLEST_VM_ROOT_DISK}" "${poolOpts[@]}"
 
   # Initialize the VM.
   LXD_DIR="${LXD_ONE_DIR}" lxc init ubuntu-vm vm \
@@ -186,8 +184,8 @@ test_clustering_live_migration() {
   # For remote storage drivers, test live migration with custom volume as well.
   if [ "${isRemoteDriver}" = true ]; then
     # Attach the block volume to the VM.
-    LXD_DIR="${LXD_ONE_DIR}" lxc storage volume create "${poolName}" vmdata --type=block size=1MiB
-    LXD_DIR="${LXD_ONE_DIR}" lxc config device add vm vmdata disk pool="${poolName}" source=vmdata
+    LXD_DIR="${LXD_ONE_DIR}" lxc storage volume create "${srcPoolName}" vmdata --type=block size=1MiB
+    LXD_DIR="${LXD_ONE_DIR}" lxc config device add vm vmdata disk pool="${srcPoolName}" source=vmdata
   fi
 
   # Start the VM.
@@ -220,13 +218,15 @@ test_clustering_live_migration() {
   LXD_DIR="${LXD_TWO_DIR}" lxc delete --force vm
 
   if [ "${isRemoteDriver}" = true ]; then
-    LXD_DIR="${LXD_TWO_DIR}" lxc storage volume delete "${poolName}" vmdata
+    LXD_DIR="${LXD_TWO_DIR}" lxc storage volume delete "${dstPoolName}" vmdata
   fi
 
   # Ensure cleanup of the cluster's data pool to not leave any traces behind when we are using a different driver besides dir.
+  unset LXD_TEST_LIVE_MIGRATION_ON_THE_SAME_HOST
   printf 'config: {}\ndevices: {}' | LXD_DIR="${LXD_ONE_DIR}" lxc profile edit default
-  LXD_DIR="${LXD_ONE_DIR}" lxc storage delete "${poolName}"
-  LXD_DIR="${LXD_TWO_DIR}" lxc storage delete "${poolName}"
+  printf 'config: {}\ndevices: {}' | LXD_DIR="${LXD_TWO_DIR}" lxc profile edit default
+  LXD_DIR="${LXD_ONE_DIR}" lxc storage delete "${srcPoolName}"
+  LXD_DIR="${LXD_TWO_DIR}" lxc storage delete "${dstPoolName}"
 
   # DEBUG: Show storage pool info
   echo ">>> DEBUG AFTER CLEANUP <<<"
