@@ -5,6 +5,10 @@
 # and runs live migration. Success is determined by the data being intact after live migration.
 test_clustering_live_migration() {
   poolDriver="$(storage_backend "${LXD_INITIAL_DIR}")"
+  if [ "${poolDriver}" = "lvm" ]; then
+    export TEST_UNMET_REQUIREMENT="Storage driver ${poolDriver} is currently unsupported"
+    return 0
+  fi
 
   # For remote storage drivers, we perform the live migration with custom storage pool attached as well.
   isRemoteDriver=false
