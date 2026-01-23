@@ -124,10 +124,10 @@ test_clustering_live_migration_intra_cluster() {
   kill_lxd "${LXD_TWO_DIR}"
 }
 
-# test_clustering_live_migration spawns a 2-node LXD cluster, creates a virtual machine on top of it,
-# creates and attaches a block volume to the virtual machine, writes some arbitrary data to the volume,
-# and runs live migration. Success is determined by the data being intact after live migration.
-test_clustering_live_migration() {
+# test_clustering_live_migration_diff_servers spawns 2 LXD servers, creates a virtual machine on the first one,
+# and live migrates it to the second one. For remote storage drivers, an additional custom volume is attached
+# to the virtual machine.
+test_clustering_live_migration_diff_servers() {
   poolDriver="$(storage_backend "${LXD_INITIAL_DIR}")"
 
   # For remote storage drivers, we perform the live migration with custom storage pool attached as well.
@@ -159,19 +159,12 @@ test_clustering_live_migration() {
 
   LXD_DIR="${LXD_ONE_DIR}" ensure_import_ubuntu_vm_image
 
-  # Storage pool created when spawning LXD cluster is "data".
+  # Get names of the created storage pools on both LXD servers.
   srcPoolName="$(LXD_DIR="${LXD_ONE_DIR}" lxc profile device get default root pool)"
   dstPoolName="$(LXD_DIR="${LXD_TWO_DIR}" lxc profile device get default root pool)"
 
-  poolOpts=()
-  if [ "${poolDriver}" = "ceph" ]; then
-    poolOpts+=(size=4GiB)
-  elif [ "${poolDriver}" != "dir" ]; then
-    poolOpts+=(size=4GiB)
-  fi
-
-  LXD_DIR="${LXD_ONE_DIR}" lxc storage set "${srcPoolName}" volume.size="${SMALLEST_VM_ROOT_DISK}" "${poolOpts[@]}"
-  LXD_DIR="${LXD_TWO_DIR}" lxc storage set "${dstPoolName}" volume.size="${SMALLEST_VM_ROOT_DISK}" "${poolOpts[@]}"
+  LXD_DIR="${LXD_ONE_DIR}" lxc storage set "${srcPoolName}" volume.size="${SMALLEST_VM_ROOT_DISK}"
+  LXD_DIR="${LXD_TWO_DIR}" lxc storage set "${dstPoolName}" volume.size="${SMALLEST_VM_ROOT_DISK}"
 
   # Initialize the VM.
   LXD_DIR="${LXD_ONE_DIR}" lxc init ubuntu-vm vm \
@@ -200,7 +193,14 @@ test_clustering_live_migration() {
     LXD_DIR="${LXD_ONE_DIR}" lxc exec vm -- cp /etc/hostname /mnt/vol1/bar
   fi
 
-  # Perform live migration of the VM from node1 to node2.
+  echo ">>> DEBUG BEFORE MOVE <<<"
+  echo "LXD ONE STORAGE POOL: ${srcPoolName}"
+  echo "LXD TWO STORAGE POOL: ${dstPoolName}"
+  LXD_DIR="${LXD_ONE_DIR}" lxc storage ls || true
+  LXD_DIR="${LXD_TWO_DIR}" lxc storage ls || true
+  echo ">>> DEBUG: END <<<"
+
+  # Perform live migration of the VM from one server to another.
   echo "Live migrating instance 'vm' ..."
   LXD_DIR="${LXD_ONE_DIR}" lxc move vm dst:vm
   LXD_DIR="${LXD_TWO_DIR}" waitInstanceReady vm
@@ -221,7 +221,7 @@ test_clustering_live_migration() {
     LXD_DIR="${LXD_TWO_DIR}" lxc storage volume delete "${dstPoolName}" vmdata
   fi
 
-  # Ensure cleanup of the cluster's data pool to not leave any traces behind when we are using a different driver besides dir.
+  # Ensure cleanup of the storage pools to not leave any traces behind.
   unset LXD_TEST_LIVE_MIGRATION_ON_THE_SAME_HOST
   printf 'config: {}\ndevices: {}' | LXD_DIR="${LXD_ONE_DIR}" lxc profile edit default
   printf 'config: {}\ndevices: {}' | LXD_DIR="${LXD_TWO_DIR}" lxc profile edit default
@@ -234,7 +234,7 @@ test_clustering_live_migration() {
   LXD_DIR="${LXD_TWO_DIR}" lxc storage ls || true
   LXD_DIR="${LXD_ONE_DIR}" lxc image ls || true
   LXD_DIR="${LXD_TWO_DIR}" lxc image ls || true
-  # DEBUG: END
+  echo ">>> DEBUG: END <<<"
 
   lxc remote remove dst
 
