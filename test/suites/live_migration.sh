@@ -133,7 +133,7 @@ test_clustering_live_migration() {
   # For remote storage drivers, we perform the live migration with custom storage pool attached as well.
   isRemoteDriver=false
   if [ "${poolDriver}" == "ceph" ]; then
-    isRemoteDriver=true
+    # isRemoteDriver=true
 
     # Set test live migration env var to prevent LXD erroring out during unmount of the
     # source instance volume during live migration on the same host. During unmount the
