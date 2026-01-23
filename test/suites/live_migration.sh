@@ -172,6 +172,7 @@ test_clustering_live_migration() {
     --config limits.cpu=2 \
     --config limits.memory=768MiB \
     --config migration.stateful=true \
+    --storage "${srcPoolName}" \
     --device root,size="${SMALLEST_VM_ROOT_DISK}"
 
   # For remote storage drivers, test live migration with custom volume as well.
@@ -196,13 +197,15 @@ test_clustering_live_migration() {
   echo ">>> DEBUG BEFORE MOVE <<<"
   echo "LXD ONE STORAGE POOL: ${srcPoolName}"
   echo "LXD TWO STORAGE POOL: ${dstPoolName}"
+
+  LXD_DIR="${LXD_ONE_DIR}" lxc config show vm || true
   LXD_DIR="${LXD_ONE_DIR}" lxc storage ls || true
   LXD_DIR="${LXD_TWO_DIR}" lxc storage ls || true
   echo ">>> DEBUG: END <<<"
 
   # Perform live migration of the VM from one server to another.
   echo "Live migrating instance 'vm' ..."
-  LXD_DIR="${LXD_ONE_DIR}" lxc move vm dst:vm
+  LXD_DIR="${LXD_ONE_DIR}" lxc move vm dst:vm --storage "${dstPoolName}"
   LXD_DIR="${LXD_TWO_DIR}" waitInstanceReady vm
 
   # After live migration, the volume should be functional and mounted.
