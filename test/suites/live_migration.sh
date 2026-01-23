@@ -3,12 +3,12 @@
 # test_clustering_live_migration spawns a 2-node LXD cluster, creates a virtual machine on top of it,
 # creates and attaches a block volume to the virtual machine, writes some arbitrary data to the volume,
 # and runs live migration. Success is determined by the data being intact after live migration.
-test_clustering_live_migration_intra_cluster() {
+test_clustering_live_migration() {
   poolDriver="$(storage_backend "${LXD_INITIAL_DIR}")"
-  if [ "${poolDriver}" = "lvm" ]; then
-    export TEST_UNMET_REQUIREMENT="Storage driver ${poolDriver} is currently unsupported"
-    return 0
-  fi
+  # if [ "${poolDriver}" = "lvm" ]; then
+  #   export TEST_UNMET_REQUIREMENT="Storage driver ${poolDriver} is currently unsupported"
+  #   return 0
+  # fi
 
   # For remote storage drivers, we perform the live migration with custom storage pool attached as well.
   isRemoteDriver=false
@@ -127,7 +127,7 @@ test_clustering_live_migration_intra_cluster() {
 # test_clustering_live_migration_diff_servers spawns 2 LXD servers, creates a virtual machine on the first one,
 # and live migrates it to the second one. For remote storage drivers, an additional custom volume is attached
 # to the virtual machine.
-test_clustering_live_migration() {
+test_clustering_live_migration_cross_server() {
   poolDriver="$(storage_backend "${LXD_INITIAL_DIR}")"
 
   # For remote storage drivers, we perform the live migration with custom storage pool attached as well.
