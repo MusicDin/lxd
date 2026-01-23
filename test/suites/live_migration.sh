@@ -133,7 +133,7 @@ test_clustering_live_migration() {
   # For remote storage drivers, we perform the live migration with custom storage pool attached as well.
   isRemoteDriver=false
   if [ "${poolDriver}" == "ceph" ]; then
-    # isRemoteDriver=true
+    isRemoteDriver=true
 
     # Set test live migration env var to prevent LXD erroring out during unmount of the
     # source instance volume during live migration on the same host. During unmount the
@@ -175,11 +175,14 @@ test_clustering_live_migration() {
     --storage "${srcPoolName}" \
     --device root,size="${SMALLEST_VM_ROOT_DISK}"
 
+  liveMigrationOpts=()
+
   # For remote storage drivers, test live migration with custom volume as well.
   if [ "${isRemoteDriver}" = true ]; then
     # Attach the block volume to the VM.
     LXD_DIR="${LXD_ONE_DIR}" lxc storage volume create "${srcPoolName}" vmdata --type=block size=1MiB
     LXD_DIR="${LXD_ONE_DIR}" lxc config device add vm vmdata disk pool="${srcPoolName}" source=vmdata
+    liveMigrationOpts+=(--device "vmdata,pool=${dstPoolName}")
   fi
 
   # Start the VM.
@@ -210,8 +213,8 @@ test_clustering_live_migration() {
 
   # After live migration, the volume should be functional and mounted.
   # Check that the file we created is still there with the same contents.
-  echo "Verifying data integrity after live migration"
   if [ "${isRemoteDriver}" = true ]; then
+    echo "Verifying data integrity after live migration"
     [ "$(LXD_DIR="${LXD_TWO_DIR}" lxc exec vm -- cat /mnt/vol1/bar)" = "vm" ]
   fi
 
@@ -221,7 +224,7 @@ test_clustering_live_migration() {
   LXD_DIR="${LXD_TWO_DIR}" lxc delete --force vm
 
   if [ "${isRemoteDriver}" = true ]; then
-    LXD_DIR="${LXD_TWO_DIR}" lxc storage volume delete "${dstPoolName}" vmdata
+    LXD_DIR="${LXD_TWO_DIR}" lxc storage volume delete "${dstPoolName}" vmdata "${liveMigrationOpts[@]}"
   fi
 
   # Ensure cleanup of the storage pools to not leave any traces behind.
