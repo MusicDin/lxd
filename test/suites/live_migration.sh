@@ -182,6 +182,8 @@ test_clustering_live_migration() {
     # Attach the block volume to the VM.
     LXD_DIR="${LXD_ONE_DIR}" lxc storage volume create "${srcPoolName}" vmdata --type=block size=1MiB
     LXD_DIR="${LXD_ONE_DIR}" lxc config device add vm vmdata disk pool="${srcPoolName}" source=vmdata
+
+    # Specify the destination pool for the custom volume.
     liveMigrationOpts+=(--device "vmdata,pool=${dstPoolName}")
   fi
 
@@ -208,7 +210,7 @@ test_clustering_live_migration() {
 
   # Perform live migration of the VM from one server to another.
   echo "Live migrating instance 'vm' ..."
-  LXD_DIR="${LXD_ONE_DIR}" lxc move vm dst:vm --storage "${dstPoolName}"
+  LXD_DIR="${LXD_ONE_DIR}" lxc move vm dst:vm --storage "${dstPoolName}" "${liveMigrationOpts[@]}"
   LXD_DIR="${LXD_TWO_DIR}" waitInstanceReady vm
 
   # After live migration, the volume should be functional and mounted.
@@ -224,7 +226,7 @@ test_clustering_live_migration() {
   LXD_DIR="${LXD_TWO_DIR}" lxc delete --force vm
 
   if [ "${isRemoteDriver}" = true ]; then
-    LXD_DIR="${LXD_TWO_DIR}" lxc storage volume delete "${dstPoolName}" vmdata "${liveMigrationOpts[@]}"
+    LXD_DIR="${LXD_TWO_DIR}" lxc storage volume delete "${dstPoolName}" vmdata
   fi
 
   # Ensure cleanup of the storage pools to not leave any traces behind.
