@@ -56,6 +56,7 @@ test_clustering_live_migration() {
     --config limits.cpu=2 \
     --config limits.memory=768MiB \
     --config migration.stateful=true \
+    --config size.state=768MiB \
     --device root,size="${SMALLEST_VM_ROOT_DISK}" \
     --target node1
 
