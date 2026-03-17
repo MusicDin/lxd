@@ -3018,3 +3018,10 @@ Adds a `recursion=2` mode to `GET /1.0/operations`, enabling retrieval of parent
 
 Starting with this extension, if the {config:option}`server-miscellaneous:network.ovn.northbound_connection` server configuration is not specified, LXD dynamically determines the OVN Northbound database connection string based on the environment.
 If the MicroOVN snap is used, LXD reads the configuration from the MicroOVN `ovn.env` file. Otherwise, it defaults to using the `unix:/var/run/ovn/ovnnb_db.sock` socket.
+
+(extension-storage-pool-and-network-operations)=
+## `storage_pool_and_network_operations`
+
+Storage pool and network endpoints that were previously synchronous now return background operations. This affects create, update, delete, and rename actions on storage pools, networks, network ACLs, network zones, network zone records, network forwards, network load balancers, network peers, and storage buckets (including bucket keys).
+
+Clients should check for this extension and handle the asynchronous response by waiting on the returned operation. Operation metadata may include additional data, such as storage bucket admin credentials on bucket creation.
