@@ -569,8 +569,8 @@ func networkForwardGet(d *Daemon, r *http.Request) response.Response {
 //	    schema:
 //	      $ref: "#/definitions/NetworkForwardPut"
 //	responses:
-//	  "200":
-//	    $ref: "#/responses/EmptySyncResponse"
+//	  "202":
+//	    $ref: "#/responses/Operation"
 //	  "400":
 //	    $ref: "#/responses/BadRequest"
 //	  "403":
@@ -657,17 +657,36 @@ func networkForwardPut(d *Daemon, r *http.Request) response.Response {
 
 	req.Normalise() // So we handle the request in normalised/canonical form.
 
-	requestor, err := request.GetRequestor(r.Context())
-	if err != nil {
-		return response.SmartError(err)
+	networkName := details.networkName
+
+	run := func(ctx context.Context, op *operations.Operation) error {
+		requestor, err := request.GetRequestor(ctx)
+		if err != nil {
+			return err
+		}
+
+		err = n.ForwardUpdate(listenAddress, req, requestor.ClientType())
+		if err != nil {
+			return fmt.Errorf("Failed updating forward: %w", err)
+		}
+
+		s.Events.SendLifecycle(effectiveProjectName, lifecycle.NetworkForwardUpdated.Event(n, listenAddress, request.CreateRequestor(ctx), nil))
+
+		return nil
 	}
 
-	err = n.ForwardUpdate(listenAddress, req, requestor.ClientType())
-	if err != nil {
-		return response.SmartError(fmt.Errorf("Failed updating forward: %w", err))
+	args := operations.OperationArgs{
+		ProjectName: details.requestProject.Name,
+		Type:        operationtype.NetworkForwardUpdate,
+		Class:       operations.OperationClassTask,
+		RunHook:     run,
+		EntityURL:   entity.NetworkURL(effectiveProjectName, networkName),
 	}
 
-	s.Events.SendLifecycle(effectiveProjectName, lifecycle.NetworkForwardUpdated.Event(n, listenAddress, request.CreateRequestor(r.Context()), nil))
+	op, err := operations.ScheduleUserOperationFromRequest(s, r, args)
+	if err != nil {
+		return response.InternalError(err)
+	}
 
-	return response.EmptySyncResponse
+	return operations.OperationResponse(op)
 }
