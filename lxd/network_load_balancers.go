@@ -576,8 +576,8 @@ func networkLoadBalancerGet(d *Daemon, r *http.Request) response.Response {
 //	    schema:
 //	      $ref: "#/definitions/NetworkLoadBalancerPut"
 //	responses:
-//	  "200":
-//	    $ref: "#/responses/EmptySyncResponse"
+//	  "202":
+//	    $ref: "#/responses/Operation"
 //	  "400":
 //	    $ref: "#/responses/BadRequest"
 //	  "403":
@@ -675,12 +675,34 @@ func networkLoadBalancerPut(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	err = n.LoadBalancerUpdate(listenAddress, req, requestor.ClientType())
-	if err != nil {
-		return response.SmartError(fmt.Errorf("Failed updating load balancer: %w", err))
+	clientType := requestor.ClientType()
+	projectName := details.requestProject.Name
+	entityURL := entity.NetworkURL(projectName, details.networkName)
+
+	run := func(ctx context.Context, op *operations.Operation) error {
+		err = n.LoadBalancerUpdate(listenAddress, req, clientType)
+		if err != nil {
+			return fmt.Errorf("Failed updating load balancer: %w", err)
+		}
+
+		requestor := request.CreateRequestor(ctx)
+		s.Events.SendLifecycle(projectName, lifecycle.NetworkLoadBalancerUpdated.Event(n, listenAddress, requestor, nil))
+
+		return nil
 	}
 
-	s.Events.SendLifecycle(effectiveProjectName, lifecycle.NetworkLoadBalancerUpdated.Event(n, listenAddress, request.CreateRequestor(r.Context()), nil))
+	args := operations.OperationArgs{
+		ProjectName: projectName,
+		Type:        operationtype.NetworkLoadBalancerUpdate,
+		Class:       operations.OperationClassTask,
+		RunHook:     run,
+		EntityURL:   entityURL,
+	}
 
-	return response.EmptySyncResponse
+	op, err := operations.ScheduleUserOperationFromRequest(s, r, args)
+	if err != nil {
+		return response.InternalError(err)
+	}
+
+	return operations.OperationResponse(op)
 }
