@@ -412,8 +412,8 @@ func networkZonesPost(d *Daemon, r *http.Request) response.Response {
 //	    type: string
 //	    example: default
 //	responses:
-//	  "200":
-//	    $ref: "#/responses/EmptySyncResponse"
+//	  "202":
+//	    $ref: "#/responses/Operation"
 //	  "400":
 //	    $ref: "#/responses/BadRequest"
 //	  "403":
@@ -433,12 +433,26 @@ func networkZoneDelete(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	err = doNetworkZoneDelete(r.Context(), s, details.zoneName, effectiveProjectName)
-	if err != nil {
-		return response.SmartError(err)
+	entityURL := entity.NetworkZoneURL(effectiveProjectName, details.zoneName)
+
+	run := func(ctx context.Context, op *operations.Operation) error {
+		return doNetworkZoneDelete(ctx, s, details.zoneName, effectiveProjectName)
 	}
 
-	return response.EmptySyncResponse
+	args := operations.OperationArgs{
+		ProjectName: details.requestProject.Name,
+		Type:        operationtype.NetworkZoneDelete,
+		Class:       operations.OperationClassTask,
+		RunHook:     run,
+		EntityURL:   entityURL,
+	}
+
+	op, err := operations.ScheduleUserOperationFromRequest(s, r, args)
+	if err != nil {
+		return response.InternalError(err)
+	}
+
+	return operations.OperationResponse(op)
 }
 
 // doNetworkZoneDelete deletes the named network zone in the given project.
