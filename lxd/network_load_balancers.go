@@ -11,8 +11,10 @@ import (
 
 	"github.com/canonical/lxd/lxd/auth"
 	"github.com/canonical/lxd/lxd/db"
+	"github.com/canonical/lxd/lxd/db/operationtype"
 	"github.com/canonical/lxd/lxd/lifecycle"
 	"github.com/canonical/lxd/lxd/network"
+	"github.com/canonical/lxd/lxd/operations"
 	"github.com/canonical/lxd/lxd/project"
 	"github.com/canonical/lxd/lxd/request"
 	"github.com/canonical/lxd/lxd/response"
@@ -228,8 +230,8 @@ func networkLoadBalancersGet(d *Daemon, r *http.Request) response.Response {
 //	    schema:
 //	      $ref: "#/definitions/NetworkLoadBalancersPost"
 //	responses:
-//	  "200":
-//	    $ref: "#/responses/EmptySyncResponse"
+//	  "202":
+//	    $ref: "#/responses/Operation"
 //	  "400":
 //	    $ref: "#/responses/BadRequest"
 //	  "403":
@@ -283,15 +285,42 @@ func networkLoadBalancersPost(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	listenAddress, err := n.LoadBalancerCreate(req, requestor.ClientType())
-	if err != nil {
-		return response.SmartError(fmt.Errorf("Failed creating load balancer: %w", err))
+	networkName := details.networkName
+	projectName := details.requestProject.Name
+	clientType := requestor.ClientType()
+	entityURL := entity.NetworkURL(projectName, networkName)
+
+	run := func(ctx context.Context, op *operations.Operation) error {
+		listenAddress, err := n.LoadBalancerCreate(req, clientType)
+		if err != nil {
+			return fmt.Errorf("Failed creating load balancer: %w", err)
+		}
+
+		err = op.UpdateMetadata(map[string]any{"listen_address": listenAddress.String()})
+		if err != nil {
+			return err
+		}
+
+		lc := lifecycle.NetworkLoadBalancerCreated.Event(n, listenAddress.String(), request.CreateRequestor(ctx), nil)
+		s.Events.SendLifecycle(projectName, lc)
+
+		return nil
 	}
 
-	lc := lifecycle.NetworkLoadBalancerCreated.Event(n, listenAddress.String(), request.CreateRequestor(r.Context()), nil)
-	s.Events.SendLifecycle(effectiveProjectName, lc)
+	args := operations.OperationArgs{
+		ProjectName: projectName,
+		Type:        operationtype.NetworkLoadBalancerCreate,
+		Class:       operations.OperationClassTask,
+		RunHook:     run,
+		EntityURL:   entityURL,
+	}
 
-	return response.SyncResponseLocation(true, nil, lc.Source)
+	op, err := operations.ScheduleUserOperationFromRequest(s, r, args)
+	if err != nil {
+		return response.InternalError(err)
+	}
+
+	return operations.OperationResponse(op)
 }
 
 // swagger:operation DELETE /1.0/networks/{networkName}/load-balancers/{listenAddress} network-load-balancers network_load_balancer_delete
