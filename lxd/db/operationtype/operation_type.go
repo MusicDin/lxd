@@ -117,6 +117,9 @@ const (
 	NetworkACLUpdate
 	NetworkACLDelete
 	NetworkACLRename
+	NetworkLoadBalancerCreate
+	NetworkLoadBalancerUpdate
+	NetworkLoadBalancerDelete
 
 	// upperBound is used only to enforce consistency in the package on init.
 	// Make sure it's always the last item in this list.
@@ -312,6 +315,12 @@ func (t Type) Description() string {
 		return "Deleting network ACL"
 	case NetworkACLRename:
 		return "Renaming network ACL"
+	case NetworkLoadBalancerCreate:
+		return "Creating network load balancer"
+	case NetworkLoadBalancerUpdate:
+		return "Updating network load balancer"
+	case NetworkLoadBalancerDelete:
+		return "Deleting network load balancer"
 
 	// It should never be possible to reach the default clause.
 	// See the init function.
@@ -384,6 +393,10 @@ func (t Type) EntityType() entity.Type {
 	// Network ACL operations.
 	case NetworkACLUpdate, NetworkACLDelete, NetworkACLRename:
 		return entity.TypeNetworkACL
+
+	// Network load balancer operations.
+	case NetworkLoadBalancerCreate, NetworkLoadBalancerUpdate, NetworkLoadBalancerDelete:
+		return entity.TypeNetwork
 
 	// It should never be possible to reach the default clause.
 	// See the init function.
