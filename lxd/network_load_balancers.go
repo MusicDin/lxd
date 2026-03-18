@@ -339,8 +339,8 @@ func networkLoadBalancersPost(d *Daemon, r *http.Request) response.Response {
 //	    type: string
 //	    example: default
 //	responses:
-//	  "200":
-//	    $ref: "#/responses/EmptySyncResponse"
+//	  "202":
+//	    $ref: "#/responses/Operation"
 //	  "400":
 //	    $ref: "#/responses/BadRequest"
 //	  "403":
@@ -390,14 +390,36 @@ func networkLoadBalancerDelete(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	err = n.LoadBalancerDelete(listenAddress, requestor.ClientType())
-	if err != nil {
-		return response.SmartError(fmt.Errorf("Failed deleting load balancer: %w", err))
+	networkName := details.networkName
+	projectName := details.requestProject.Name
+	clientType := requestor.ClientType()
+	entityURL := entity.NetworkURL(projectName, networkName)
+
+	run := func(ctx context.Context, op *operations.Operation) error {
+		err = n.LoadBalancerDelete(listenAddress, clientType)
+		if err != nil {
+			return fmt.Errorf("Failed deleting load balancer: %w", err)
+		}
+
+		s.Events.SendLifecycle(projectName, lifecycle.NetworkLoadBalancerDeleted.Event(n, listenAddress, request.CreateRequestor(ctx), nil))
+
+		return nil
 	}
 
-	s.Events.SendLifecycle(effectiveProjectName, lifecycle.NetworkLoadBalancerDeleted.Event(n, listenAddress, request.CreateRequestor(r.Context()), nil))
+	args := operations.OperationArgs{
+		ProjectName: projectName,
+		Type:        operationtype.NetworkLoadBalancerDelete,
+		Class:       operations.OperationClassTask,
+		RunHook:     run,
+		EntityURL:   entityURL,
+	}
 
-	return response.EmptySyncResponse
+	op, err := operations.ScheduleUserOperationFromRequest(s, r, args)
+	if err != nil {
+		return response.InternalError(err)
+	}
+
+	return operations.OperationResponse(op)
 }
 
 // swagger:operation GET /1.0/networks/{networkName}/load-balancers/{listenAddress} network-load-balancers network_load_balancer_get
