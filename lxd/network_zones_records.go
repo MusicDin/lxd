@@ -282,8 +282,8 @@ func networkZoneRecordsPost(d *Daemon, r *http.Request) response.Response {
 //	    type: string
 //	    example: default
 //	responses:
-//	  "200":
-//	    $ref: "#/responses/EmptySyncResponse"
+//	  "202":
+//	    $ref: "#/responses/Operation"
 //	  "400":
 //	    $ref: "#/responses/BadRequest"
 //	  "403":
@@ -314,15 +314,34 @@ func networkZoneRecordDelete(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	// Delete the record.
-	err = netzone.DeleteRecord(r.Context(), recordName)
-	if err != nil {
-		return response.SmartError(err)
+	entityURL := entity.NetworkZoneURL(effectiveProjectName, details.zoneName)
+
+	run := func(ctx context.Context, op *operations.Operation) error {
+		err = netzone.DeleteRecord(ctx, recordName)
+		if err != nil {
+			return err
+		}
+
+		requestor := request.CreateRequestor(ctx)
+		s.Events.SendLifecycle(effectiveProjectName, lifecycle.NetworkZoneRecordDeleted.Event(netzone, recordName, requestor, nil))
+
+		return nil
 	}
 
-	s.Events.SendLifecycle(effectiveProjectName, lifecycle.NetworkZoneRecordDeleted.Event(netzone, recordName, request.CreateRequestor(r.Context()), nil))
+	args := operations.OperationArgs{
+		ProjectName: details.requestProject.Name,
+		Type:        operationtype.NetworkZoneRecordDelete,
+		Class:       operations.OperationClassTask,
+		RunHook:     run,
+		EntityURL:   entityURL,
+	}
 
-	return response.EmptySyncResponse
+	op, err := operations.ScheduleUserOperationFromRequest(s, r, args)
+	if err != nil {
+		return response.InternalError(err)
+	}
+
+	return operations.OperationResponse(op)
 }
 
 // swagger:operation GET /1.0/network-zones/{zone}/records/{name} network-zones network_zone_record_get
