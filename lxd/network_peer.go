@@ -326,8 +326,8 @@ func networkPeersPost(d *Daemon, r *http.Request) response.Response {
 //	    type: string
 //	    example: default
 //	responses:
-//	  "200":
-//	    $ref: "#/responses/EmptySyncResponse"
+//	  "202":
+//	    $ref: "#/responses/Operation"
 //	  "400":
 //	    $ref: "#/responses/BadRequest"
 //	  "403":
@@ -372,14 +372,34 @@ func networkPeerDelete(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	err = n.PeerDelete(peerName)
-	if err != nil {
-		return response.SmartError(fmt.Errorf("Failed deleting peer: %w", err))
+	entityURL := entity.NetworkURL(effectiveProjectName, details.networkName)
+
+	run := func(ctx context.Context, op *operations.Operation) error {
+		err = n.PeerDelete(peerName)
+		if err != nil {
+			return fmt.Errorf("Failed deleting peer: %w", err)
+		}
+
+		requestor := request.CreateRequestor(ctx)
+		s.Events.SendLifecycle(effectiveProjectName, lifecycle.NetworkPeerDeleted.Event(n, peerName, requestor, nil))
+
+		return nil
 	}
 
-	s.Events.SendLifecycle(effectiveProjectName, lifecycle.NetworkPeerDeleted.Event(n, peerName, request.CreateRequestor(r.Context()), nil))
+	args := operations.OperationArgs{
+		ProjectName: details.requestProject.Name,
+		Type:        operationtype.NetworkPeerDelete,
+		Class:       operations.OperationClassTask,
+		RunHook:     run,
+		EntityURL:   entityURL,
+	}
 
-	return response.EmptySyncResponse
+	op, err := operations.ScheduleUserOperationFromRequest(s, r, args)
+	if err != nil {
+		return response.InternalError(err)
+	}
+
+	return operations.OperationResponse(op)
 }
 
 // swagger:operation GET /1.0/networks/{networkName}/peers/{peerName} network-peers network_peer_get
