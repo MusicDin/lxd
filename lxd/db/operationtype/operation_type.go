@@ -117,6 +117,21 @@ const (
 	NetworkACLUpdate
 	NetworkACLDelete
 	NetworkACLRename
+	NetworkForwardCreate
+	NetworkForwardUpdate
+	NetworkForwardDelete
+	NetworkLoadBalancerCreate
+	NetworkLoadBalancerUpdate
+	NetworkLoadBalancerDelete
+	NetworkPeerCreate
+	NetworkPeerUpdate
+	NetworkPeerDelete
+	NetworkZoneCreate
+	NetworkZoneUpdate
+	NetworkZoneDelete
+	NetworkZoneRecordCreate
+	NetworkZoneRecordUpdate
+	NetworkZoneRecordDelete
 
 	// upperBound is used only to enforce consistency in the package on init.
 	// Make sure it's always the last item in this list.
@@ -312,6 +327,36 @@ func (t Type) Description() string {
 		return "Deleting network ACL"
 	case NetworkACLRename:
 		return "Renaming network ACL"
+	case NetworkForwardCreate:
+		return "Creating network forward"
+	case NetworkForwardUpdate:
+		return "Updating network forward"
+	case NetworkForwardDelete:
+		return "Deleting network forward"
+	case NetworkLoadBalancerCreate:
+		return "Creating network load balancer"
+	case NetworkLoadBalancerUpdate:
+		return "Updating network load balancer"
+	case NetworkLoadBalancerDelete:
+		return "Deleting network load balancer"
+	case NetworkPeerCreate:
+		return "Creating network peer"
+	case NetworkPeerUpdate:
+		return "Updating network peer"
+	case NetworkPeerDelete:
+		return "Deleting network peer"
+	case NetworkZoneCreate:
+		return "Creating network zone"
+	case NetworkZoneUpdate:
+		return "Updating network zone"
+	case NetworkZoneDelete:
+		return "Deleting network zone"
+	case NetworkZoneRecordCreate:
+		return "Creating network zone record"
+	case NetworkZoneRecordUpdate:
+		return "Updating network zone record"
+	case NetworkZoneRecordDelete:
+		return "Deleting network zone record"
 
 	// It should never be possible to reach the default clause.
 	// See the init function.
@@ -328,14 +373,13 @@ func (t Type) EntityType() entity.Type {
 		ImagesSynchronize, RemoveExpiredOIDCSessions, RemoveExpiredTokens, RemoveOrphanedOperations,
 		WarningsPruneResolved, ClusterMemberEvacuate, ClusterMemberRestore, LogsExpire, InstanceTypesUpdate,
 		BackupsExpire, SnapshotsExpire, ClusterJoinToken, CertificateAddToken, RenewServerCertificate,
-		ClusterHeal, ImagesUpdate, VolumeSnapshotsCreateScheduled, SnapshotsCreateScheduled, PruneExpiredOperations:
+		ClusterHeal, ImagesUpdate, VolumeSnapshotsCreateScheduled, SnapshotsCreateScheduled, PruneExpiredOperations,
+		StoragePoolCreate:
 		return entity.TypeServer
 
 	// Project level operations.
-	// If creating a resource, then the parent project is the primary entity
-	// (the entity being created is not yet referenceable).
 	case VolumeCreate, ProjectRename, InstanceCreate, ImageDownload, ImageUploadToken, CustomVolumeBackupRestore,
-		InstanceStateUpdateBulk, BackupRestore, ProjectDelete, StoragePoolCreate, NetworkCreate, NetworkACLCreate:
+		InstanceStateUpdateBulk, BackupRestore, ProjectDelete, NetworkCreate, NetworkACLCreate:
 		return entity.TypeProject
 
 	// Volume operations.
@@ -384,6 +428,23 @@ func (t Type) EntityType() entity.Type {
 	// Network ACL operations.
 	case NetworkACLUpdate, NetworkACLDelete, NetworkACLRename:
 		return entity.TypeNetworkACL
+
+	// Network forward operations.
+	case NetworkForwardCreate, NetworkForwardUpdate, NetworkForwardDelete:
+		return entity.TypeNetwork
+
+	// Network load balancer operations.
+	case NetworkLoadBalancerCreate, NetworkLoadBalancerUpdate, NetworkLoadBalancerDelete:
+		return entity.TypeNetwork
+
+	// Network peer operations.
+	case NetworkPeerCreate, NetworkPeerUpdate, NetworkPeerDelete:
+		return entity.TypeNetwork
+
+	// Network zone operations.
+	case NetworkZoneUpdate, NetworkZoneDelete,
+		NetworkZoneRecordCreate, NetworkZoneRecordUpdate, NetworkZoneRecordDelete:
+		return entity.TypeNetworkZone
 
 	// It should never be possible to reach the default clause.
 	// See the init function.
