@@ -117,6 +117,9 @@ const (
 	NetworkACLUpdate
 	NetworkACLDelete
 	NetworkACLRename
+	NetworkForwardCreate
+	NetworkForwardUpdate
+	NetworkForwardDelete
 
 	// upperBound is used only to enforce consistency in the package on init.
 	// Make sure it's always the last item in this list.
@@ -312,6 +315,12 @@ func (t Type) Description() string {
 		return "Deleting network ACL"
 	case NetworkACLRename:
 		return "Renaming network ACL"
+	case NetworkForwardCreate:
+		return "Creating network forward"
+	case NetworkForwardUpdate:
+		return "Updating network forward"
+	case NetworkForwardDelete:
+		return "Deleting network forward"
 
 	// It should never be possible to reach the default clause.
 	// See the init function.
@@ -328,14 +337,15 @@ func (t Type) EntityType() entity.Type {
 		ImagesSynchronize, RemoveExpiredOIDCSessions, RemoveExpiredTokens, RemoveOrphanedOperations,
 		WarningsPruneResolved, ClusterMemberEvacuate, ClusterMemberRestore, LogsExpire, InstanceTypesUpdate,
 		BackupsExpire, SnapshotsExpire, ClusterJoinToken, CertificateAddToken, RenewServerCertificate,
-		ClusterHeal, ImagesUpdate, VolumeSnapshotsCreateScheduled, SnapshotsCreateScheduled, PruneExpiredOperations:
+		ClusterHeal, ImagesUpdate, VolumeSnapshotsCreateScheduled, SnapshotsCreateScheduled, PruneExpiredOperations,
+		StoragePoolCreate:
 		return entity.TypeServer
 
 	// Project level operations.
 	// If creating a resource, then the parent project is the primary entity
 	// (the entity being created is not yet referenceable).
 	case VolumeCreate, ProjectRename, InstanceCreate, ImageDownload, ImageUploadToken, CustomVolumeBackupRestore,
-		InstanceStateUpdateBulk, BackupRestore, ProjectDelete, StoragePoolCreate, NetworkCreate, NetworkACLCreate:
+		InstanceStateUpdateBulk, BackupRestore, ProjectDelete, NetworkCreate, NetworkACLCreate:
 		return entity.TypeProject
 
 	// Volume operations.
@@ -384,6 +394,10 @@ func (t Type) EntityType() entity.Type {
 	// Network ACL operations.
 	case NetworkACLUpdate, NetworkACLDelete, NetworkACLRename:
 		return entity.TypeNetworkACL
+
+	// Network forward operations.
+	case NetworkForwardCreate, NetworkForwardUpdate, NetworkForwardDelete:
+		return entity.TypeNetwork
 
 	// It should never be possible to reach the default clause.
 	// See the init function.
