@@ -3,6 +3,7 @@ package drivers
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/canonical/lxd/lxd/operations"
+	"github.com/canonical/lxd/lxd/storage/block"
 	"github.com/canonical/lxd/lxd/storage/filesystem"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/logger"
@@ -285,7 +287,122 @@ func (d *powerstore) GetVolumeUsage(vol Volume) (int64, error) {
 
 // SetVolumeQuota applies a size limit on volume.
 func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, op *operations.Operation) error {
-	return nil // TODO
+	// Convert to bytes.
+	sizeBytes, err := units.ParseByteSizeString(size)
+	if err != nil {
+		return err
+	}
+
+	// Do nothing if size isn't specified.
+	if sizeBytes <= 0 {
+		return nil
+	}
+
+	volResource, err := d.getExistingVolumeResourceByVolume(vol)
+	if err != nil {
+		return err
+	}
+
+	// Do nothing if volume is already specified size (+/- 512 bytes).
+	if volResource.Size+512 > sizeBytes && volResource.Size-512 < sizeBytes {
+		return nil
+	}
+
+	// PowerStore supports increasing of size only.
+	if sizeBytes < volResource.Size {
+		return errors.New("Volume capacity can only be increased")
+	}
+
+	// Validate the minimum size.
+	err = validate.IsNoLessThanUnit(powerStoreMinVolumeSizeUnit)(size)
+	if err != nil {
+		return err
+	}
+
+	// Validate the maximum size.
+	err = validate.IsNoGreaterThanUnit(powerStoreMaxVolumeSizeUnit)(size)
+	if err != nil {
+		return err
+	}
+
+	// Validate the alignment.
+	err = validate.IsMultipleOfUnit(powerStoreMinVolumeSizeAlignmentUnit)(size)
+	if err != nil {
+		return err
+	}
+
+	// Resize filesystem if needed.
+	if vol.contentType == ContentTypeFS {
+		fsType := vol.ConfigBlockFilesystem()
+		devPath, cleanup, err := d.getMappedDevicePath(vol, true)
+		if err != nil {
+			return err
+		}
+
+		// Resize block device.
+		err = d.client().ResizeVolumeByID(d.state.ShutdownCtx, volResource.ID, sizeBytes)
+		if err != nil {
+			return err
+		}
+
+		defer cleanup()
+
+		// Always wait for the disk to reflect the new size. In case SetVolumeQuota
+		// is called on an already mapped volume, it might take some time until
+		// the actual size of the device is reflected on the host. This is for
+		// example the case when creating a volume and the filler performs a resize
+		// in case the image exceeds the volume's size.
+		err = block.WaitDiskDeviceResize(d.state.ShutdownCtx, devPath, sizeBytes)
+		if err != nil {
+			return fmt.Errorf("Failed waiting for volume %q to change its size: %w", vol.name, err)
+		}
+
+		// Grow the filesystem to fill block device.
+		err = growFileSystem(fsType, devPath, vol)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	// Only perform pre-resize checks if we are not in "unsafe" mode. In unsafe
+	// mode we expect the caller to know what they are doing and understand
+	// the risks.
+	if !allowUnsafeResize && vol.MountInUse() {
+		// We don't allow online resizing of block volumes.
+		return ErrInUse
+	}
+
+	// Resize block device.
+	err = d.client().ResizeVolumeByID(d.state.ShutdownCtx, volResource.ID, sizeBytes)
+	if err != nil {
+		return err
+	}
+
+	devPath, cleanup, err := d.getMappedDevicePath(vol, true)
+	if err != nil {
+		return err
+	}
+
+	defer cleanup()
+
+	err = block.WaitDiskDeviceResize(d.state.ShutdownCtx, devPath, sizeBytes)
+	if err != nil {
+		return fmt.Errorf("Failed waiting for volume %q to change its size: %w", vol.name, err)
+	}
+
+	// Move the VM GPT alt header to end of disk if needed (not needed in unsafe
+	// resize mode as it is expected the caller will do all necessary post resize
+	// actions themselves).
+	if vol.IsVMBlock() && !allowUnsafeResize {
+		err = d.moveGPTAltHeader(devPath)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // GetVolumeDiskPath returns the location of a root disk block device.

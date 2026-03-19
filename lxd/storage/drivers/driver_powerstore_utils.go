@@ -930,6 +930,21 @@ func (c *powerStoreClient) DeleteVolumeByID(ctx context.Context, id string) erro
 	return nil
 }
 
+type powerStoreVolumeModifyResource struct {
+	Size int64 `json:"size,omitempty"`
+}
+
+// ResizeVolumeByID creates a new volume.
+func (c *powerStoreClient) ResizeVolumeByID(ctx context.Context, id string, newSize int64) error {
+	reqBody := &powerStoreVolumeModifyResource{Size: newSize}
+	_, err := c.doHTTPRequestWithLoginSession(ctx, http.MethodPatch, "/api/rest/volume/"+id, reqBody, nil)
+	if err != nil {
+		return fmt.Errorf("Resizing PowerStore volume: %w", err)
+	}
+
+	return nil
+}
+
 type powerStoreVolumeGroupRemoveMembersResource struct {
 	VolumeIDs []string `json:"volume_ids,omitempty"`
 }
