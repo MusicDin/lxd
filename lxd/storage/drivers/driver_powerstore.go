@@ -1,10 +1,8 @@
 package drivers
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/canonical/lxd/lxd/operations"
@@ -17,45 +15,48 @@ import (
 // powerStoreDefaultUser represents the default PowerStore user name.
 const powerStoreDefaultUser = "admin"
 
-// powerStoreMinVolumeSizeBytes represents the minimal PowerStore volume size in bytes.
+// powerStoreMinVolumeSizeBytes represents the minimal PowerStore volume size
+// in bytes.
 const powerStoreMinVolumeSizeBytes = 1 * 1024 * 1024 // 1MiB
 
-// powerStoreMinVolumeSizeUnit represents the minimal PowerStore volume size expressed as unit string.
+// powerStoreMinVolumeSizeUnit represents the minimal PowerStore volume size
+// expressed as unit string.
 const powerStoreMinVolumeSizeUnit = "1MiB"
 
-// powerStoreMaxVolumeSizeBytes represents the maximum PowerStore volume size in bytes.
+// powerStoreMaxVolumeSizeBytes represents the maximum PowerStore volume size
+// in bytes.
 const powerStoreMaxVolumeSizeBytes = 256 * 1024 * 1024 * 1024 * 1024 // 256TiB
 
-// powerStoreMaxVolumeSizeUnit represents the maximum PowerStore volume size expressed as unit string.
+// powerStoreMaxVolumeSizeUnit represents the maximum PowerStore volume size
+// expressed as unit string.
 const powerStoreMaxVolumeSizeUnit = "256TiB"
 
-// powerStoreMinVolumeSizeAlignmentUnit represents the alignment unit for the PowerStore volume size (each volume size needs to be multiplicate of this value).
+// powerStoreMinVolumeSizeAlignmentUnit represents the alignment unit for
+// the PowerStore volume size (each volume size needs to be multiplicate of
+// this value).
 const powerStoreMinVolumeSizeAlignmentUnit = "1MiB"
 
-// powerStoreSupportedConnectors list all connectors supported by the PowerStore driver.
-var powerStoreSupportedConnectors = []string{
-	connectors.TypeNVME,
-	connectors.TypeISCSI,
-}
+const (
+	powerStoreModeNVME  string = "nvme"
+	powerStoreModeISCSI string = "iscsi"
+)
 
-// powerStoreSupportedModes list all mods supported by the PowerStore driver.
-var powerStoreSupportedModes = []string{
-	connectors.TypeNVME,
-	connectors.TypeISCSI,
-}
+const (
+	powerStoreTransportTCP string = "tcp"
+)
 
-// powerStoreSupportedTransports list all transports supported by the PowerStore driver.
-var powerStoreSupportedTransports = []string{
-	"tcp",
-}
-
-// powerStoreModeAndTransportToConnectorType maps mode and transport of the PowerStore driver to matching connector type.
-var powerStoreModeAndTransportToConnectorType = map[string]map[string]string{
-	connectors.TypeNVME: {
-		"tcp": connectors.TypeNVME,
+// powerStoreSupportedConnectorTypes list all connector types supported by
+// the PowerStore driver.
+var powerStoreSupportedModesAndTransports = driverModesAndTransports{
+	{
+		Mode:          powerStoreModeNVME,
+		Transport:     powerStoreTransportTCP,
+		ConnectorType: connectors.TypeNVME,
 	},
-	connectors.TypeISCSI: {
-		"tcp": connectors.TypeISCSI,
+	{
+		Mode:          powerStoreModeISCSI,
+		Transport:     powerStoreTransportTCP,
+		ConnectorType: connectors.TypeISCSI,
 	},
 }
 
@@ -77,9 +78,31 @@ type powerstore struct {
 	// Use powerstore.initiator() to retrieve the initialized initiator resource.
 	initiatorResource *powerStoreHostInitiatorResource
 
-	// Discovered target QN (qualified name)
-	// Use powerstore.target() to retrieve the discovered PowerStore target and associated addresses.
-	targetQualifiedName string
+	// List of discovered targets ant theirs QNs (qualified names)
+	// Use powerstore.targets() to retrieve the discovered PowerStore targets.
+	discoveredTargets []powerStoreTarget
+}
+
+// powerStoreTarget represent a PowerStore connection target.
+type powerStoreTarget struct {
+	Address       string
+	QualifiedName string
+}
+
+// powerStoreGroupTargetsAddressesByQualifiedName combines target addresses
+// from targets with the same qualified names together into a single map key.
+func powerStoreGroupTargetsAddressesByQualifiedName(targets ...powerStoreTarget) map[string][]string {
+	grouped := map[string][]string{}
+	// Attempt to preserve order while grouping.
+	for _, target := range targets {
+		grouped[target.QualifiedName] = append(grouped[target.QualifiedName], target.Address)
+	}
+
+	for qn, addresses := range grouped {
+		grouped[qn] = shared.Unique(addresses)
+	}
+
+	return grouped
 }
 
 // client returns the PowerStore API client.
@@ -88,6 +111,7 @@ func (d *powerstore) client() *powerStoreClient {
 	if d.httpClient == nil {
 		d.httpClient = newPowerStoreClient(d)
 	}
+
 	return d.httpClient
 }
 
@@ -98,7 +122,7 @@ func (d *powerstore) load() error {
 		return nil
 	}
 
-	versions := connectors.GetSupportedVersions(powerStoreSupportedConnectors)
+	versions := connectors.GetSupportedVersions(powerStoreSupportedModesAndTransports.ConnectorTypes())
 	powerStoreVersion = strings.Join(versions, " / ")
 	powerStoreLoaded = true
 
@@ -111,62 +135,6 @@ func (d *powerstore) load() error {
 	}
 
 	return nil
-}
-
-// connector retrieves an initialized storage connector based on the configured
-// PowerStore mode. The connector is cached in the driver struct.
-func (d *powerstore) connector() (connectors.Connector, error) {
-	if d.storageConnector == nil {
-		connector, err := connectors.NewConnector(d.config["powerstore.mode"], d.state.OS.ServerUUID)
-		if err != nil {
-			return nil, err
-		}
-		d.storageConnector = connector
-	}
-	return d.storageConnector, nil
-}
-
-// target return qualified name of a discovered PowerStore target and associated addresses.
-func (d *powerstore) target() (string, []string, error) {
-	targetAddress := shared.SplitNTrimSpace(d.config["powerstore.target"], ",", -1, true)
-	if d.targetQualifiedName == "" {
-		discovered, err := d.discoverTargetQualifiedName(targetAddress)
-		if err != nil {
-			return "", nil, err
-		}
-		d.targetQualifiedName = discovered
-	}
-	return d.targetQualifiedName, targetAddress, nil
-}
-
-// discoverTargetQualifiedName discovers target QN (qualified name).
-func (d *powerstore) discoverTargetQualifiedName(targetAddress []string) (string, error) {
-	connector, err := d.connector()
-	if err != nil {
-		return "", err
-	}
-
-	discoveryLogRecords, err := connector.Discover(d.state.ShutdownCtx, targetAddress...)
-	if err != nil {
-		return "", fmt.Errorf("discovering targets: %w", err)
-	}
-
-	for _, discoveryLogRecord := range discoveryLogRecords {
-		switch record := discoveryLogRecord.(type) {
-		case connectors.ISCSIDiscoveryLogRecord:
-			return record.IQN, nil
-
-		case connectors.NVMeDiscoveryLogRecord:
-			if record.SubType != connectors.SubtypeNVMESubsys {
-				continue
-			}
-			return record.SubNQN, nil
-
-		default:
-			return "", fmt.Errorf("unsupported discovery log record entry type %T", discoveryLogRecord)
-		}
-	}
-	return "", fmt.Errorf("no discovery log record entries available for target addresses %q", targetAddress)
 }
 
 // isRemote returns true indicating this driver uses remote storage.
@@ -202,28 +170,14 @@ func (d *powerstore) FillConfig() error {
 	}
 
 	// Try to discover the PowerStore operation mode and transport.
-	switch {
-	case d.config["powerstore.mode"] == "" || d.config["powerstore.transport"] == "":
-		mode, transport, err := d.discoverModeAndTransport()
+	if d.config["powerstore.mode"] == "" || d.config["powerstore.transport"] == "" {
+		discovered, err := discoverModeAndTransport(powerStoreSupportedModesAndTransports, d.config["powerstore.mode"], d.config["powerstore.transport"])
 		if err != nil {
 			return err
 		}
-		d.config["powerstore.mode"] = mode
-		d.config["powerstore.transport"] = transport
 
-	case d.config["powerstore.mode"] == "":
-		mode, err := d.discoverMode(d.config["powerstore.transport"])
-		if err != nil {
-			return err
-		}
-		d.config["powerstore.mode"] = mode
-
-	case d.config["powerstore.transport"] == "":
-		transport, err := d.discoverTransport(d.config["powerstore.mode"])
-		if err != nil {
-			return err
-		}
-		d.config["powerstore.transport"] = transport
+		d.config["powerstore.mode"] = discovered.Mode
+		d.config["powerstore.transport"] = discovered.Transport
 	}
 
 	// Set default volume size if not provided.
@@ -234,64 +188,11 @@ func (d *powerstore) FillConfig() error {
 	return nil
 }
 
-// discoverModeAndTransport attempts to discover operation mode and transport without using the storage pool's configuration.
-func (d *powerstore) discoverModeAndTransport() (mode string, transport string, err error) {
-	for _, transport = range powerStoreSupportedTransports {
-		for _, mode = range powerStoreSupportedModes {
-			connectorType := powerStoreModeAndTransportToConnectorType[mode][transport]
-			connector, err := connectors.NewConnector(connectorType, "")
-			if err != nil {
-				return "", "", err
-			}
-			if connector.LoadModules() == nil {
-				return mode, transport, nil
-			}
-		}
-	}
-	return "", "", errors.New("failed to discover PowerStore mode and transport")
-}
-
-// discoverMode attempts to discover operation mode for the provided transport without using the storage pool's configuration.
-func (d *powerstore) discoverMode(transport string) (mode string, err error) {
-	if !slices.Contains(powerStoreSupportedTransports, transport) {
-		return "", fmt.Errorf("unsupported PowerStore transport %q", transport)
-	}
-	for _, mode := range powerStoreSupportedModes {
-		connectorType := powerStoreModeAndTransportToConnectorType[mode][transport]
-		connector, err := connectors.NewConnector(connectorType, "")
-		if err != nil {
-			return "", err
-		}
-		if connector.LoadModules() == nil {
-			return mode, nil
-		}
-	}
-	return "", errors.New("failed to discover PowerStore mode")
-}
-
-// discoverTransport attempts to discover operation transport for the provided mode without using the storage pool's configuration.
-func (d *powerstore) discoverTransport(mode string) (transport string, err error) {
-	if !slices.Contains(powerStoreSupportedModes, mode) {
-		return "", fmt.Errorf("unsupported PowerStore mode %q", mode)
-	}
-	for _, transport := range powerStoreSupportedTransports {
-		connectorType := powerStoreModeAndTransportToConnectorType[mode][transport]
-		connector, err := connectors.NewConnector(connectorType, "")
-		if err != nil {
-			return "", err
-		}
-		if connector.LoadModules() == nil {
-			return transport, nil
-		}
-	}
-	return "", errors.New("failed to discover PowerStore transport")
-}
-
 // Validate checks that all provided keys are supported and that no conflicting or missing configuration is present.
 func (d *powerstore) Validate(config map[string]string) error {
 	rules := map[string]func(value string) error{
 		// lxdmeta:generate(entities=storage-powerstore; group=pool-conf; key=powerstore.user.name)
-		// Must have at least SystemAdmin role to give LXD full control over managed storage pools.
+		//
 		// ---
 		//  type: string
 		//  defaultdesc: `admin`
@@ -320,6 +221,20 @@ func (d *powerstore) Validate(config map[string]string) error {
 		//  shortdesc: Whether to verify the PowerStore Gateway's certificate
 		//  scope: global
 		"powerstore.gateway.verify": validate.Optional(validate.IsBool),
+		// lxdmeta:generate(entities=storage-powerstore; group=pool-conf; key=powerstore.discovery)
+		// A comma-separated list of NVMe or iSCSI discovery addresses.
+		// ---
+		//  type: string
+		//  defaultdesc: the list of discovery addresses
+		//  shortdesc: List of discovery addresses.
+		"powerstore.discovery": validate.Optional(validate.IsListOf(validate.IsNetworkAddressWithOptionalPort)),
+		// lxdmeta:generate(entities=storage-powerstore; group=pool-conf; key=powerstore.target)
+		// A comma-separated list of NVMe or iSCSI target addresses. When empty targets are discovered via discovery endpoints.
+		// ---
+		//  type: string
+		//  defaultdesc: the list of target addresses
+		//  shortdesc: List of target addresses.
+		"powerstore.target": validate.Optional(validate.IsListOf(validate.IsNetworkAddressWithOptionalPort)),
 		// lxdmeta:generate(entities=storage-powerstore; group=pool-conf; key=powerstore.mode)
 		// The mode gets discovered automatically if the system provides the necessary kernel modules.
 		// Supported values are `iscsi` and `nvme`.
@@ -328,7 +243,7 @@ func (d *powerstore) Validate(config map[string]string) error {
 		//  defaultdesc: the discovered mode
 		//  shortdesc: How volumes are mapped to the local server
 		//  scope: global
-		"powerstore.mode": validate.Optional(validate.IsOneOf(powerStoreSupportedConnectors...)),
+		"powerstore.mode": validate.Optional(validate.IsOneOf(powerStoreSupportedModesAndTransports.Modes()...)),
 		// lxdmeta:generate(entities=storage-powerstore; group=pool-conf; key=powerstore.transport)
 		// The transport gets discovered automatically if the system provides the necessary kernel modules.
 		// Supported values are `tcp`.
@@ -337,7 +252,7 @@ func (d *powerstore) Validate(config map[string]string) error {
 		//  defaultdesc: the discovered transport
 		//  shortdesc: Transport layer used when transferring volumes data to the local server.
 		//  scope: global
-		"powerstore.transport": validate.Optional(validate.IsOneOf(powerStoreSupportedTransports...)),
+		"powerstore.transport": validate.Optional(validate.IsOneOf(powerStoreSupportedModesAndTransports.Transports()...)),
 		// lxdmeta:generate(entities=storage-powerstore; group=pool-conf; key=volume.size)
 		// The size must be in multiples of 1 MiB. The minimum size is 1 MiB and maximum is 256 TiB.
 		// ---
@@ -357,14 +272,16 @@ func (d *powerstore) Validate(config map[string]string) error {
 		return err
 	}
 
+	// Ensure powerstore.mode cannot be changed to avoid leaving volume mappings
+	// and to prevent disturbing running instances.
 	newMode, oldMode := config["powerstore.mode"], d.config["powerstore.mode"]
-	newTransport, oldTransport := config["powerstore.transport"], d.config["powerstore.transport"]
-
-	// Ensure powerstore.mode and powerstore.transport cannot be changed to avoid
-	// leaving volume mappings and to prevent disturbing running instances.
 	if oldMode != "" && oldMode != newMode {
 		return errors.New("PowerStore mode cannot be changed")
 	}
+
+	// Ensure powerstore.transport cannot be changed to avoid leaving volume
+	// mappings and to prevent disturbing running instances.
+	newTransport, oldTransport := config["powerstore.transport"], d.config["powerstore.transport"]
 	if oldTransport != "" && oldTransport != newTransport {
 		return errors.New("PowerStore transport cannot be changed")
 	}
@@ -376,11 +293,16 @@ func (d *powerstore) Validate(config map[string]string) error {
 	// gets executed on every cluster member when receiving the cluster
 	// notification to finally create the pool.
 	if newMode != "" && newTransport != "" {
-		connectorType := powerStoreModeAndTransportToConnectorType[newMode][newTransport]
-		connector, err := connectors.NewConnector(connectorType, "")
+		mt, err := powerStoreSupportedModesAndTransports.Find(newMode, newTransport)
+		if err != nil {
+			return err
+		}
+
+		connector, err := connectors.NewConnector(mt.ConnectorType, "")
 		if err != nil {
 			return fmt.Errorf("PowerStore mode %q with transport %q is not supported: %w", newMode, newTransport, err)
 		}
+
 		err = connector.LoadModules()
 		if err != nil {
 			return fmt.Errorf("PowerStore mode %q with transport %q is not supported due to missing kernel modules: %w", newMode, newTransport, err)
@@ -395,6 +317,7 @@ func (d *powerstore) ValidateSource() error {
 	if d.config["powerstore.gateway"] == "" {
 		return errors.New("The powerstore.gateway cannot be empty")
 	}
+
 	return nil
 }
 
@@ -442,14 +365,17 @@ func (d *powerstore) Unmount() (bool, error) {
 
 // GetResources returns the pool resource usage information.
 func (d *powerstore) GetResources() (*api.ResourcesStoragePool, error) {
-	metrics, err := d.client().GetApplianceMetrics(context.Background())
+	metrics, err := d.client().GetApplianceMetrics(d.state.ShutdownCtx)
 	if err != nil {
 		return nil, err
 	}
+
 	res := &api.ResourcesStoragePool{}
+
 	for _, m := range metrics {
 		res.Space.Total += uint64(m.LastPhysicalTotalSpace)
 		res.Space.Used += uint64(m.LastPhysicalUsedSpace)
 	}
+
 	return res, nil
 }

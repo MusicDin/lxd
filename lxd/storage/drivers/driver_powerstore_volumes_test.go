@@ -14,93 +14,93 @@ func TestPowerStoreVolumeResourceName(t *testing.T) {
 	}{
 		{
 			name: "container-volume",
-			given: NewVolume(
-				nil,
-				"pool-name",
-				VolumeTypeContainer,
-				"",
-				"vol-name",
-				map[string]string{"volatile.uuid": "3a628d33-a689-462b-b23e-9a10e423b02e"},
-				map[string]string{},
-			),
+			given: Volume{
+				driver:      nil,
+				pool:        "pool-name",
+				volType:     VolumeTypeContainer,
+				contentType: "",
+				name:        "vol-name",
+				config:      map[string]string{"volatile.uuid": "3a628d33-a689-462b-b23e-9a10e423b02e"},
+				poolConfig:  map[string]string{},
+			},
 			want: "lxd:2qwxIqsfgiGetqVdSVHgyhn3Kvtz65HGHeOkgAshhG8=-c_OmKNM6aJRiuyPpoQ5COwLg==",
 		},
 		{
 			name: "vm-volume-iso",
-			given: NewVolume(
-				nil,
-				"pool-name",
-				VolumeTypeVM,
-				ContentTypeISO,
-				"vol-name",
-				map[string]string{"volatile.uuid": "3a628d33-a689-462b-b23e-9a10e423b02e"},
-				map[string]string{},
-			),
+			given: Volume{
+				driver:      nil,
+				pool:        "pool-name",
+				volType:     VolumeTypeVM,
+				contentType: ContentTypeISO,
+				name:        "vol-name",
+				config:      map[string]string{"volatile.uuid": "3a628d33-a689-462b-b23e-9a10e423b02e"},
+				poolConfig:  map[string]string{},
+			},
 			want: "lxd:2qwxIqsfgiGetqVdSVHgyhn3Kvtz65HGHeOkgAshhG8=-v_OmKNM6aJRiuyPpoQ5COwLg==.i",
 		},
 		{
 			name: "vm-volume-block",
-			given: NewVolume(
-				nil,
-				"pool-name",
-				VolumeTypeVM,
-				ContentTypeBlock,
-				"vol-name",
-				map[string]string{"volatile.uuid": "3a628d33-a689-462b-b23e-9a10e423b02e"},
-				map[string]string{},
-			),
+			given: Volume{
+				driver:      nil,
+				pool:        "pool-name",
+				volType:     VolumeTypeVM,
+				contentType: ContentTypeBlock,
+				name:        "vol-name",
+				config:      map[string]string{"volatile.uuid": "3a628d33-a689-462b-b23e-9a10e423b02e"},
+				poolConfig:  map[string]string{},
+			},
 			want: "lxd:2qwxIqsfgiGetqVdSVHgyhn3Kvtz65HGHeOkgAshhG8=-v_OmKNM6aJRiuyPpoQ5COwLg==.b",
 		},
 		{
 			name: "image-volume",
-			given: NewVolume(
-				nil,
-				"pool-name",
-				VolumeTypeImage,
-				"",
-				"vol-name",
-				map[string]string{"volatile.uuid": "3a628d33-a689-462b-b23e-9a10e423b02e"},
-				map[string]string{},
-			),
+			given: Volume{
+				driver:      nil,
+				pool:        "pool-name",
+				volType:     VolumeTypeImage,
+				contentType: "",
+				name:        "vol-name",
+				config:      map[string]string{"volatile.uuid": "3a628d33-a689-462b-b23e-9a10e423b02e"},
+				poolConfig:  map[string]string{},
+			},
 			want: "lxd:2qwxIqsfgiGetqVdSVHgyhn3Kvtz65HGHeOkgAshhG8=-i_OmKNM6aJRiuyPpoQ5COwLg==",
 		},
 		{
 			name: "custom-volume",
-			given: NewVolume(
-				nil,
-				"pool-name",
-				VolumeTypeCustom,
-				"",
-				"vol-name",
-				map[string]string{"volatile.uuid": "3a628d33-a689-462b-b23e-9a10e423b02e"},
-				map[string]string{},
-			),
+			given: Volume{
+				driver:      nil,
+				pool:        "pool-name",
+				volType:     VolumeTypeCustom,
+				contentType: "",
+				name:        "vol-name",
+				config:      map[string]string{"volatile.uuid": "3a628d33-a689-462b-b23e-9a10e423b02e"},
+				poolConfig:  map[string]string{},
+			},
 			want: "lxd:2qwxIqsfgiGetqVdSVHgyhn3Kvtz65HGHeOkgAshhG8=-u_OmKNM6aJRiuyPpoQ5COwLg==",
 		},
 		{
 			name: "other-name-and-uuid",
-			given: NewVolume(
-				nil,
-				"other-pool-name",
-				"unknown-vol-type",
-				"unknown-vol-content-type",
-				"other-vol-name",
-				map[string]string{"volatile.uuid": "2731b28f-464b-4eac-b0cd-ec03d9effbf0"},
-				map[string]string{},
-			),
+			given: Volume{
+				driver:      nil,
+				pool:        "other-pool-name",
+				volType:     "unknown-vol-type",
+				contentType: "unknown-vol-content-type",
+				name:        "other-vol-name",
+				config:      map[string]string{"volatile.uuid": "2731b28f-464b-4eac-b0cd-ec03d9effbf0"},
+				poolConfig:  map[string]string{},
+			},
 			want: "lxd:omYUlOQRvuW2uffxWqsCQCue5SfEs4+khWLni1wNmC4=-JzGyj0ZLTqywzewD2e/78A==",
 		},
 		{
 			name: "invalid-volume-volatile-uuid",
-			given: NewVolume(
-				nil,
-				"pool-name",
-				VolumeTypeCustom,
-				"",
-				"vol-name",
-				map[string]string{"volatile.uuid": "invalid-value"},
-				map[string]string{},
-			),
+			given: Volume{
+				driver:      nil,
+				pool:        "pool-name",
+				volType:     VolumeTypeCustom,
+				contentType: "",
+				name:        "vol-name",
+				config:      map[string]string{"volatile.uuid": "invalid-value"},
+				poolConfig:  map[string]string{},
+			},
 			wantErr: true,
 		},
 	}
@@ -108,13 +108,15 @@ func TestPowerStoreVolumeResourceName(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := (&powerstore{}).volumeResourceName(test.given)
+			got, err := (&powerstore{common: common{name: test.given.pool}}).volumeResourceName(test.given)
 			if err != nil && !test.wantErr {
 				t.Fatalf("unexpected error while getting PowerStore volume name: %v", err)
 			}
+
 			if err == nil && test.wantErr {
 				t.Fatalf("expected error while getting PowerStore volume name, got nil")
 			}
+
 			if test.want != got {
 				t.Errorf("unexpected result of getting PowerStore volume name (want: %q, got %q)", test.want, got)
 			}
@@ -235,18 +237,23 @@ func TestPowerStoreExtractDataFromVolumeResourceName(t *testing.T) {
 			if err != nil && !test.wantErr {
 				t.Fatalf("unexpected error while retrieving data from PowerStore volume name: %v", err)
 			}
+
 			if err == nil && test.wantErr {
 				t.Fatalf("expected error while retrieving data from PowerStore volume name, got nil")
 			}
+
 			if test.wantPoolHash != gotPoolHash {
 				t.Errorf("wrong pool hash retrieved from PowerStore volume name (want: %q, got %q)", test.wantPoolHash, gotPoolHash)
 			}
+
 			if test.wantVolumeType != gotVolumeType {
 				t.Errorf("wrong volume type retrieved from PowerStore volume name (want: %q, got %q)", test.wantVolumeType, gotVolumeType)
 			}
+
 			if test.wantVolumeUUID != gotVolumeUUID.String() {
 				t.Errorf("wrong volume UUID retrieved from PowerStore volume name (want: %q, got %q)", test.wantVolumeUUID, gotVolumeUUID)
 			}
+
 			if test.wantVolumeContentType != gotVolumeContentType {
 				t.Errorf("wrong volume content type retrieved from PowerStore volume name (want: %q, got %q)", test.wantVolumeContentType, gotVolumeContentType)
 			}
