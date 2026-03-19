@@ -516,6 +516,30 @@ func TestResolveSnapPath(t *testing.T) {
 	}
 }
 
+func TestUnique(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		given []string
+		want  []string
+	}{
+		{name: "nil-slice", given: nil, want: nil},
+		{name: "empty-slice", given: []string{}, want: []string{}},
+		{name: "single-item", given: []string{"aaa"}, want: []string{"aaa"}},
+		{name: "multiple-items-no-duplicates", given: []string{"aaa", "bbb", "ccc"}, want: []string{"aaa", "bbb", "ccc"}},
+		{name: "multiple-items-consecutive-duplicates", given: []string{"aaa", "aaa", "bbb", "bbb", "ccc", "ccc"}, want: []string{"aaa", "bbb", "ccc"}},
+		{name: "multiple-items-random-duplicates", given: []string{"aaa", "bbb", "ccc", "bbb", "ccc", "aaa", "ccc"}, want: []string{"aaa", "bbb", "ccc"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := Unique(test.given)
+			require.Equal(t, test.want, got, "unexpected Unique function result")
+		})
+	}
+}
+
 func TestEnsurePort(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
