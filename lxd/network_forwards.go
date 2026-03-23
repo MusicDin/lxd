@@ -381,15 +381,16 @@ func networkForwardDelete(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
+	requestor, err := request.GetRequestor(r.Context())
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	clientType := requestor.ClientType()
 	networkName := details.networkName
 
 	run := func(ctx context.Context, op *operations.Operation) error {
-		requestor, err := request.GetRequestor(ctx)
-		if err != nil {
-			return err
-		}
-
-		err = n.ForwardDelete(listenAddress, requestor.ClientType())
+		err = n.ForwardDelete(listenAddress, clientType)
 		if err != nil {
 			return fmt.Errorf("Failed deleting forward: %w", err)
 		}
