@@ -284,8 +284,8 @@ func networkForwardsPost(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	networkName := details.networkName
 	clientType := requestor.ClientType()
+	networkName := details.networkName
 
 	run := func(ctx context.Context, op *operations.Operation) error {
 		listenAddress, err := n.ForwardCreate(req, clientType)
