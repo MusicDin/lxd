@@ -728,7 +728,11 @@ func (c *cmdNetworkZoneDelete) run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Delete the network zone.
-	err = resource.server.DeleteNetworkZone(resource.name)
+	op, err := resource.server.DeleteNetworkZone(resource.name)
+	if err == nil {
+		err = op.Wait()
+	}
+
 	if err != nil {
 		return err
 	}
@@ -1439,7 +1443,11 @@ func (c *cmdNetworkZoneRecordDelete) run(cmd *cobra.Command, args []string) erro
 	}
 
 	// Delete the network zone.
-	err = resource.server.DeleteNetworkZoneRecord(resource.name, args[1])
+	op, err := resource.server.DeleteNetworkZoneRecord(resource.name, args[1])
+	if err == nil {
+		err = op.Wait()
+	}
+
 	if err != nil {
 		return err
 	}
@@ -1597,5 +1605,10 @@ func (c *cmdNetworkZoneRecordEntry) runRemove(cmd *cobra.Command, args []string)
 		return errors.New("Could not find a matching entry")
 	}
 
-	return resource.server.UpdateNetworkZoneRecord(resource.name, args[1], netRecord.Writable(), etag)
+	op, err := resource.server.UpdateNetworkZoneRecord(resource.name, args[1], netRecord.Writable(), etag)
+	if err == nil {
+		err = op.Wait()
+	}
+
+	return err
 }
