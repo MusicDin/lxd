@@ -5169,7 +5169,12 @@ func (n *ovn) ForwardUpdate(listenAddress string, req api.NetworkForwardPut, cli
 		}
 
 		err = notifier(func(member db.NodeInfo, client lxd.InstanceServer) error {
-			return client.UseProject(n.project).UpdateNetworkForward(n.name, curForward.ListenAddress, req, "")
+			op, err := client.UseProject(n.project).UpdateNetworkForward(n.name, curForward.ListenAddress, req, "")
+			if err == nil {
+				err = op.Wait()
+			}
+
+			return err
 		})
 		if err != nil {
 			return err
