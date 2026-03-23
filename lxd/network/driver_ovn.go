@@ -5059,7 +5059,12 @@ func (n *ovn) ForwardCreate(forward api.NetworkForwardsPost, clientType request.
 		}
 
 		err = notifier(func(member db.NodeInfo, client lxd.InstanceServer) error {
-			return client.UseProject(n.project).CreateNetworkForward(n.name, forward)
+			op, err := client.UseProject(n.project).CreateNetworkForward(n.name, forward)
+			if err == nil {
+				err = op.Wait()
+			}
+
+			return err
 		})
 		if err != nil {
 			return nil, err
