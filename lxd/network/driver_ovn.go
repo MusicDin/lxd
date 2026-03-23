@@ -5547,7 +5547,12 @@ func (n *ovn) LoadBalancerDelete(listenAddress string, clientType request.Client
 		}
 
 		err = notifier(func(member db.NodeInfo, client lxd.InstanceServer) error {
-			return client.UseProject(n.project).DeleteNetworkLoadBalancer(n.name, forward.ListenAddress)
+			op, err := client.UseProject(n.project).DeleteNetworkLoadBalancer(n.name, forward.ListenAddress)
+			if err == nil {
+				err = op.Wait()
+			}
+
+			return err
 		})
 		if err != nil {
 			return err
