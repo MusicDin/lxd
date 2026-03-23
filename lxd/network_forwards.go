@@ -658,15 +658,16 @@ func networkForwardPut(d *Daemon, r *http.Request) response.Response {
 
 	req.Normalise() // So we handle the request in normalised/canonical form.
 
+	requestor, err := request.GetRequestor(r.Context())
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	clientType := requestor.ClientType()
 	networkName := details.networkName
 
 	run := func(ctx context.Context, op *operations.Operation) error {
-		requestor, err := request.GetRequestor(ctx)
-		if err != nil {
-			return err
-		}
-
-		err = n.ForwardUpdate(listenAddress, req, requestor.ClientType())
+		err = n.ForwardUpdate(listenAddress, req, clientType)
 		if err != nil {
 			return fmt.Errorf("Failed updating forward: %w", err)
 		}
