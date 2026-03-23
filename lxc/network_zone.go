@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.yaml.in/yaml/v2"
 
+	"github.com/canonical/lxd/client"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
 	cli "github.com/canonical/lxd/shared/cmd"
@@ -411,7 +412,11 @@ func (c *cmdNetworkZoneCreate) run(cmd *cobra.Command, args []string) error {
 		zone.Config[entry[0]] = entry[1]
 	}
 
-	err = resource.server.CreateNetworkZone(zone)
+	op, err := resource.server.CreateNetworkZone(zone)
+	if err == nil {
+		err = op.Wait()
+	}
+
 	if err != nil {
 		return err
 	}
@@ -1107,7 +1112,11 @@ func (c *cmdNetworkZoneRecordCreate) run(cmd *cobra.Command, args []string) erro
 		record.Config[entry[0]] = entry[1]
 	}
 
-	err = resource.server.CreateNetworkZoneRecord(resource.name, record)
+	op, err := resource.server.CreateNetworkZoneRecord(resource.name, record)
+	if err == nil {
+		err = op.Wait()
+	}
+
 	if err != nil {
 		return err
 	}
@@ -1520,7 +1529,12 @@ func (c *cmdNetworkZoneRecordEntry) runAdd(cmd *cobra.Command, args []string) er
 	}
 
 	netRecord.Entries = append(netRecord.Entries, entry)
-	return resource.server.UpdateNetworkZoneRecord(resource.name, args[1], netRecord.Writable(), etag)
+	op, err := resource.server.UpdateNetworkZoneRecord(resource.name, args[1], netRecord.Writable(), etag)
+	if err == nil {
+		err = op.Wait()
+	}
+
+	return err
 }
 
 func (c *cmdNetworkZoneRecordEntry) commandRemove() *cobra.Command {
