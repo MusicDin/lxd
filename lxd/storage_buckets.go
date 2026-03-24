@@ -13,7 +13,9 @@ import (
 
 	"github.com/canonical/lxd/lxd/auth"
 	"github.com/canonical/lxd/lxd/db"
+	"github.com/canonical/lxd/lxd/db/operationtype"
 	"github.com/canonical/lxd/lxd/lifecycle"
+	"github.com/canonical/lxd/lxd/operations"
 	"github.com/canonical/lxd/lxd/project"
 	"github.com/canonical/lxd/lxd/request"
 	"github.com/canonical/lxd/lxd/response"
@@ -476,36 +478,56 @@ func storagePoolBucketsPost(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(fmt.Errorf("Failed loading storage pool: %w", err))
 	}
 
-	revert := revert.New()
-	defer revert.Fail()
+	run := func(ctx context.Context, op *operations.Operation) error {
+		reverter := revert.New()
+		defer reverter.Fail()
 
-	err = pool.CreateBucket(bucketProjectName, req, nil)
+		err := pool.CreateBucket(bucketProjectName, req, nil)
+		if err != nil {
+			return fmt.Errorf("Failed creating storage bucket: %w", err)
+		}
+
+		reverter.Add(func() { _ = pool.DeleteBucket(bucketProjectName, req.Name, nil) })
+
+		// Create admin key for new bucket.
+		adminKeyReq := api.StorageBucketKeysPost{
+			StorageBucketKeyPut: api.StorageBucketKeyPut{
+				Role:        "admin",
+				Description: "Admin user",
+			},
+			Name: "admin",
+		}
+
+		adminKey, err := pool.CreateBucketKey(bucketProjectName, req.Name, adminKeyReq, nil)
+		if err != nil {
+			return fmt.Errorf("Failed creating storage bucket admin key: %w", err)
+		}
+
+		err = op.UpdateMetadata(map[string]any{"key": adminKey})
+		if err != nil {
+			return fmt.Errorf("Failed updating operation metadata: %w", err)
+		}
+
+		s.Events.SendLifecycle(bucketProjectName, lifecycle.StorageBucketCreated.Event(pool, bucketProjectName, req.Name, request.CreateRequestor(ctx), nil))
+
+		reverter.Success()
+		return nil
+	}
+
+	args := operations.OperationArgs{
+		ProjectName: bucketProjectName,
+		Type:        operationtype.StorageBucketCreate,
+		Class:       operations.OperationClassTask,
+		RunHook:     run,
+		EntityURL:   entity.ProjectURL(bucketProjectName),
+	}
+
+	op, err := operations.ScheduleUserOperationFromRequest(s, r, args)
 	if err != nil {
-		return response.SmartError(fmt.Errorf("Failed creating storage bucket: %w", err))
+		return response.InternalError(err)
 	}
 
-	revert.Add(func() { _ = pool.DeleteBucket(bucketProjectName, req.Name, nil) })
-
-	// Create admin key for new bucket.
-	adminKeyReq := api.StorageBucketKeysPost{
-		StorageBucketKeyPut: api.StorageBucketKeyPut{
-			Role:        "admin",
-			Description: "Admin user",
-		},
-		Name: "admin",
-	}
-
-	adminKey, err := pool.CreateBucketKey(bucketProjectName, req.Name, adminKeyReq, nil)
-	if err != nil {
-		return response.SmartError(fmt.Errorf("Failed creating storage bucket admin key: %w", err))
-	}
-
-	s.Events.SendLifecycle(bucketProjectName, lifecycle.StorageBucketCreated.Event(pool, bucketProjectName, req.Name, request.CreateRequestor(r.Context()), nil))
-
-	u := api.NewURL().Path(version.APIVersion, "storage-pools", pool.Name(), "buckets", req.Name)
-
-	revert.Success()
-	return response.SyncResponseLocation(true, adminKey, u.String())
+	return operations.OperationResponse(op)
 }
 
 // swagger:operation PATCH /1.0/storage-pools/{name}/buckets/{bucketName} storage storage_pool_bucket_patch
