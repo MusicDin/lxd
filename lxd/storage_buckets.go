@@ -665,14 +665,38 @@ func storagePoolBucketPut(d *Daemon, r *http.Request) response.Response {
 		}
 	}
 
-	err = details.pool.UpdateBucket(effectiveProjectName, details.bucketName, req, nil)
-	if err != nil {
-		return response.SmartError(fmt.Errorf("Failed updating storage bucket: %w", err))
+	location := ""
+	if !details.pool.Driver().Info().Remote {
+		location = request.QueryParam(r, "target")
 	}
 
-	s.Events.SendLifecycle(effectiveProjectName, lifecycle.StorageBucketUpdated.Event(details.pool, effectiveProjectName, details.bucketName, request.CreateRequestor(r.Context()), nil))
+	entityURL := entity.StorageBucketURL(effectiveProjectName, location, details.pool.Name(), details.bucketName)
 
-	return response.EmptySyncResponse
+	run := func(ctx context.Context, op *operations.Operation) error {
+		err := details.pool.UpdateBucket(effectiveProjectName, details.bucketName, req, nil)
+		if err != nil {
+			return fmt.Errorf("Failed updating storage bucket: %w", err)
+		}
+
+		s.Events.SendLifecycle(effectiveProjectName, lifecycle.StorageBucketUpdated.Event(details.pool, effectiveProjectName, details.bucketName, request.CreateRequestor(ctx), nil))
+
+		return nil
+	}
+
+	args := operations.OperationArgs{
+		ProjectName: request.ProjectParam(r),
+		Type:        operationtype.StorageBucketUpdate,
+		Class:       operations.OperationClassTask,
+		RunHook:     run,
+		EntityURL:   entityURL,
+	}
+
+	op, err := operations.ScheduleUserOperationFromRequest(s, r, args)
+	if err != nil {
+		return response.InternalError(err)
+	}
+
+	return operations.OperationResponse(op)
 }
 
 // swagger:operation DELETE /1.0/storage-pools/{name}/buckets/{bucketName} storage storage_pool_bucket_delete
