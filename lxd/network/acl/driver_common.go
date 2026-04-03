@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"slices"
 	"sort"
@@ -663,18 +664,15 @@ func (d *common) Update(ctx context.Context, config *api.NetworkACLPut, clientTy
 
 	// Apply ACL changes to non-OVN networks on cluster members.
 	if clientType == request.ClientTypeNormal && len(aclNets) > 0 {
-		// Notify all other nodes to update the network if no target specified.
-		notifier, err := cluster.NewNotifier(d.state, d.state.Endpoints.NetworkCert(), d.state.ServerCert(), cluster.NotifyAll)
+		// Notify all other nodes to update the ACL synchronously.
+		notifier, err := cluster.NewOperationNotifier(d.state, d.state.Endpoints.NetworkCert(), d.state.ServerCert(), cluster.NotifyAll)
 		if err != nil {
 			return err
 		}
 
 		err = notifier(func(member db.NodeInfo, client lxd.InstanceServer) error {
-			op, err := client.UseProject(d.projectName).UpdateNetworkACL(d.info.Name, d.info.Writable(), "")
-			if err == nil {
-				err = op.WaitContext(ctx)
-			}
-
+			aclURL := api.NewURL().Path(version.APIVersion, "network-acls", d.info.Name).Project(d.projectName)
+			_, _, err := client.RawQuery(http.MethodPut, aclURL.String(), d.info.Writable(), "")
 			return err
 		})
 		if err != nil {
