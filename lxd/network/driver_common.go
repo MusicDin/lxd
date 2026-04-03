@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/http"
 	"os"
 	"slices"
 	"strconv"
@@ -489,10 +490,10 @@ func (n *common) update(applyNetwork api.NetworkPut, targetNode string, clientTy
 
 	// If this update isn't coming via a cluster notification itself, then notify all nodes of change and then
 	// update the database.
-	if clientType != request.ClientTypeNotifier {
+	if clientType != request.ClientTypeNotifier && clientType != request.ClientTypeOperationNotifier {
 		if targetNode == "" {
 			// Notify all other nodes to update the network if no target specified.
-			notifier, err := cluster.NewNotifier(n.state, n.state.Endpoints.NetworkCert(), n.state.ServerCert(), cluster.NotifyAll)
+			notifier, err := cluster.NewOperationNotifier(n.state, n.state.Endpoints.NetworkCert(), n.state.ServerCert(), cluster.NotifyAll)
 			if err != nil {
 				return err
 			}
@@ -509,11 +510,8 @@ func (n *common) update(applyNetwork api.NetworkPut, targetNode string, clientTy
 			}
 
 			err = notifier(func(member db.NodeInfo, client lxd.InstanceServer) error {
-				op, err := client.UseProject(n.project).UpdateNetwork(n.name, sendNetwork, "")
-				if err == nil {
-					err = op.Wait()
-				}
-
+				networkURL := api.NewURL().Path(version.APIVersion, "networks", n.name).Project(n.project)
+				_, _, err := client.RawQuery(http.MethodPut, networkURL.String(), sendNetwork, "")
 				return err
 			})
 			if err != nil {
