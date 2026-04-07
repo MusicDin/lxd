@@ -1,13 +1,15 @@
 package drivers
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/canonical/lxd/lxd/operations"
 	"github.com/canonical/lxd/lxd/storage/connectors"
-	"github.com/canonical/lxd/lxd/storage/drivers/powerstoreclient"
+	"github.com/canonical/lxd/lxd/storage/drivers/clients"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/validate"
@@ -69,7 +71,7 @@ type powerstore struct {
 
 	// Holds the low level client for the PowerStore API.
 	// Use powerstore.client() to retrieve the initialized client struct.
-	apiClient *powerstoreclient.Client
+	httpClient *clients.PowerStoreClient
 
 	// Holds the low level connector for the PowerStore driver.
 	// Use powerstore.connector() to retrieve the initialized connector.
@@ -77,11 +79,33 @@ type powerstore struct {
 
 	// Derived initiator resource associated with current host, mode and transport
 	// Use powerstore.initiator() to retrieve the initialized initiator resource.
-	initiatorResource *powerstoreclient.HostInitiatorResource
+	initiatorResource *clients.PowerStoreHostInitiator
 
 	// List of discovered targets ant theirs QNs (qualified names)
 	// Use powerstore.targets() to retrieve the discovered PowerStore targets.
 	discoveredTargets []powerStoreTarget
+}
+
+// powerStoreTarget represent a PowerStore connection target.
+type powerStoreTarget struct {
+	Address       string
+	QualifiedName string
+}
+
+// powerStoreGroupTargetsAddressesByQualifiedName combines target addresses
+// from targets with the same qualified names together into a single map key.
+func powerStoreGroupTargetsAddressesByQualifiedName(targets ...powerStoreTarget) map[string][]string {
+	grouped := map[string][]string{}
+	// Attempt to preserve order while grouping.
+	for _, target := range targets {
+		grouped[target.QualifiedName] = append(grouped[target.QualifiedName], target.Address)
+	}
+
+	for qn, addresses := range grouped {
+		grouped[qn] = shared.Unique(addresses)
+	}
+
+	return grouped
 }
 
 // load is used to run one-time action per-driver rather than per-pool.
@@ -119,6 +143,31 @@ func (d *powerstore) connector() (connectors.Connector, error) {
 	}
 
 	return d.storageConnector, nil
+}
+
+// client returns the PowerStore API client.
+// A new client gets created if one does not exists.
+func (d *powerstore) client() *clients.PowerStoreClient {
+	if d.httpClient == nil {
+		d.httpClient = clients.NewPowerStoreClient(
+			d.logger,
+			d.config["powerstore.gateway"],
+			d.config["powerstore.user.name"],
+			d.config["powerstore.user.password"],
+			shared.IsFalse(d.config["powerstore.gateway.verify"]),
+			d.globalVolumeNamePrefix(),
+		)
+	}
+
+	return d.httpClient
+}
+
+// globalVolumeNamePrefix returns the prefix used by all volumes. This prevents conflicts with other
+// volumes created on the root level.
+func (d *powerstore) globalVolumeNamePrefix() string {
+	poolHash := sha256.Sum256([]byte(d.Name()))
+	poolName := base64.StdEncoding.EncodeToString(poolHash[:])
+	return powerStoreResourceNamePrefix + poolName + powerStorePoolAndVolSep
 }
 
 // isRemote returns true indicating this driver uses remote storage.
