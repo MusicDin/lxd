@@ -170,7 +170,12 @@ var api10 = []APIEndpoint{
 
 // changedBlockTrackingCmds are the API endpoints gated behind the changed_block_tracking
 // feature preview. restServer registers them only when the preview is enabled.
-var changedBlockTrackingCmds = []APIEndpoint{}
+var changedBlockTrackingCmds = []APIEndpoint{
+	instanceBitmapsCmd,
+	instanceBitmapCmd,
+	instanceSnapshotBitmapsCmd,
+	instanceSnapshotBitmapCmd,
+}
 
 // swagger:operation GET /1.0?public server server_get_untrusted
 //
