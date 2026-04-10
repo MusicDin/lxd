@@ -19,6 +19,7 @@ import (
 
 	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/logger"
+	"github.com/osrg/gobgp/v3/pkg/log"
 )
 
 var powerStoreSessions = make(map[string]powerStoreSession)
@@ -362,6 +363,13 @@ func (c *PowerStoreClient) login(ctx context.Context) (*powerStoreSession, error
 	if sessionInfo.IsPasswordChangeRequired {
 		return nil, errors.New("Failed logging into PowerStore: Password change required")
 	}
+
+	logCtx := make(map[string]any, len(respHeaders))
+	for k, v := range respHeaders {
+		logCtx[k] = v
+	}
+
+	c.logger.Warn("RESPONSE HEADERS", logCtx)
 
 	// Parse CSRF token from response headers.
 	csrf := respHeaders[powerStoreCSRFHeaderName]
