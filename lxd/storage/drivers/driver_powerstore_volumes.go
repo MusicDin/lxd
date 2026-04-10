@@ -724,7 +724,7 @@ func (d *powerstore) ensureHost() (hostID string, cleanup revert.Hook, err error
 		})
 	} else {
 		// Hostname already exists with the given qualified name.
-		hostname = host.Name
+		hostID = host.ID
 	}
 
 	cleanup = revert.Clone().Fail
