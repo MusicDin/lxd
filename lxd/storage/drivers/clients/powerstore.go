@@ -17,64 +17,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/canonical/lxd/lxd/storage/drivers/tokencache"
 	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/logger"
 )
 
 var powerStoreSessions = make(map[string]powerStoreSession)
 var powerStoreSessionsLock = &sync.RWMutex{}
-
-// SessionKey() generates a hashtable key for a session.
-func (p *PowerStoreClient) SessionKey() string {
-	return p.url + p.username + p.password
-}
-
-// SessionKey() gets a session key from the cache.
-func (p *PowerStoreClient) Session() *powerStoreSession {
-	if p.session != nil {
-		return p.session
-	}
-
-	key := p.SessionKey()
-
-	powerStoreSessionsLock.RLock()
-	defer powerStoreSessionsLock.RUnlock()
-
-	session, ok := powerStoreSessions[key]
-	if ok {
-		s := session
-		p.session = &s
-		return p.session
-	}
-
-	return nil
-}
-
-// SetSession() adds a session key to the cache.
-func (p *PowerStoreClient) SetSession(session powerStoreSession) {
-	key := p.SessionKey()
-
-	powerStoreSessionsLock.Lock()
-	defer powerStoreSessionsLock.Unlock()
-
-	powerStoreSessions[key] = session
-	p.session = &session
-}
-
-// InvalidateSession() removes a session key from the cache.
-func (p *PowerStoreClient) InvalidateSession() {
-	key := p.SessionKey()
-
-	powerStoreSessionsLock.Lock()
-	defer powerStoreSessionsLock.Unlock()
-
-	delete(powerStoreSessions, key)
-	p.session = nil
-}
-
-// powerStoreTokenCache stores shared PowerStore login sessions.
-var powerStoreTokenCache = tokencache.New[powerStoreSession]("powerstore")
 
 const (
 	powerStoreAuthCookieName = "auth_cookie"
@@ -283,6 +231,20 @@ type PowerStoreHostVolumeMapping struct {
 	VolumeID string `json:"volume_id,omitempty"`
 }
 
+// PowerStoreApplianceMetrics describes an appliance metric resource in
+// PowerStore API.
+type PowerStoreApplianceMetrics struct {
+	ID                     string  `json:"id,omitempty"`
+	Name                   string  `json:"name,omitempty"`
+	AvgLatency             float64 `json:"avg_latency,omitempty"`
+	TotalIops              float64 `json:"total_iops,omitempty"`
+	TotalBandwidth         float64 `json:"total_bandwidth,omitempty"`
+	LastLogicalTotalSpace  int64   `json:"last_logical_total_space,omitempty"`
+	LastLogicalUsedSpace   int64   `json:"last_logical_used_space,omitempty"`
+	LastPhysicalTotalSpace int64   `json:"last_physical_total_space,omitempty"`
+	LastPhysicalUsedSpace  int64   `json:"last_physical_used_space,omitempty"`
+}
+
 // PowerStoreClient holds the PowerStore HTTP API client.
 type PowerStoreClient struct {
 	logger        logger.Logger
@@ -312,82 +274,52 @@ func NewPowerStoreClient(logger logger.Logger, url string, username string, pass
 	}
 }
 
-// request issues a HTTP request against the PowerStore gateway.
-func (p *PowerStoreClient) request(ctx context.Context, method string, url url.URL, reqBody map[string]any, reqHeaders map[string]string, respBody any, respHeaders map[string]string) error {
-	gw := p.url
-	if !strings.Contains(gw, "://") {
-		return fmt.Errorf("Invalid PowerStore URL %q: Missing protocol", gw)
+// sessionKey generates a hashtable key for a session.
+func (c *PowerStoreClient) sessionKey() string {
+	return c.url + c.username + c.password
+}
+
+// Session retrieves the current session.
+func (c *PowerStoreClient) Session() *powerStoreSession {
+	if c.session != nil {
+		return c.session
 	}
 
-	gwURL, err := url.Parse(gw)
-	if err != nil {
-		return fmt.Errorf("Failed parsing PowerStore URL %q: %w", gw, err)
-	}
+	key := c.sessionKey()
 
-	url.Scheme = gwURL.Scheme
-	url.Host = gwURL.Host
+	powerStoreSessionsLock.RLock()
+	defer powerStoreSessionsLock.RUnlock()
 
-	// Prepand gateway path with the request path in case PowerStore is served on a sub-path.
-	url.Path = path.Join(gwURL.Path, url.Path)
-
-	var reqBodyReader io.Reader
-
-	if reqBody != nil {
-		reqBodyReader, err = createBodyReader(reqBody)
-		if err != nil {
-			return err
-		}
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, url.String(), reqBodyReader)
-	if err != nil {
-		return fmt.Errorf("Failed creating request: %w", err)
-	}
-
-	// Set custom request headers.
-	for k, v := range reqHeaders {
-		req.Header.Add(k, v)
-	}
-
-	req.Header.Add("Accept", "application/json")
-	if reqBody != nil {
-		req.Header.Add("Content-Type", "application/json")
-	}
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: p.skipTLSVerify,
-			},
-		},
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("Failed sending request: %w", err)
-	}
-
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		return newPowerStoreError(resp)
-	}
-
-	if respBody != nil {
-		err := json.NewDecoder(resp.Body).Decode(respBody)
-		if err != nil {
-			return fmt.Errorf("Failed reading response body from %q: %w", url.String(), err)
-		}
-	}
-
-	// Extract the response headers if requested.
-	if respHeaders != nil {
-		for k, v := range resp.Header {
-			respHeaders[k] = strings.Join(v, ",")
-		}
+	session, ok := powerStoreSessions[key]
+	if ok {
+		s := session
+		c.session = &s
+		return c.session
 	}
 
 	return nil
+}
+
+// SetSession sets the current session.
+func (c *PowerStoreClient) SetSession(session powerStoreSession) {
+	key := c.sessionKey()
+
+	powerStoreSessionsLock.Lock()
+	defer powerStoreSessionsLock.Unlock()
+
+	powerStoreSessions[key] = session
+	c.session = &session
+}
+
+// InvalidateSession invalidates the current session.
+func (c *PowerStoreClient) InvalidateSession() {
+	key := c.sessionKey()
+
+	powerStoreSessionsLock.Lock()
+	defer powerStoreSessionsLock.Unlock()
+
+	delete(powerStoreSessions, key)
+	c.session = nil
 }
 
 // login initiates request() using PowerStore username and password.
@@ -472,16 +404,94 @@ func (c *PowerStoreClient) login(ctx context.Context) (*powerStoreSession, error
 	return session, nil
 }
 
+// request issues a HTTP request against the PowerStore gateway.
+func (c *PowerStoreClient) request(ctx context.Context, method string, url url.URL, reqBody map[string]any, reqHeaders map[string]string, respBody any, respHeaders map[string]string) error {
+	gw := c.url
+	if !strings.Contains(gw, "://") {
+		return fmt.Errorf("Invalid PowerStore URL %q: Missing protocol", gw)
+	}
+
+	gwURL, err := url.Parse(gw)
+	if err != nil {
+		return fmt.Errorf("Failed parsing PowerStore URL %q: %w", gw, err)
+	}
+
+	url.Scheme = gwURL.Scheme
+	url.Host = gwURL.Host
+
+	// Prepand gateway path with the request path in case PowerStore is served on a sub-path.
+	url.Path = path.Join(gwURL.Path, url.Path)
+
+	var reqBodyReader io.Reader
+
+	if reqBody != nil {
+		reqBodyReader, err = createBodyReader(reqBody)
+		if err != nil {
+			return err
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url.String(), reqBodyReader)
+	if err != nil {
+		return fmt.Errorf("Failed creating request: %w", err)
+	}
+
+	// Set custom request headers.
+	for k, v := range reqHeaders {
+		req.Header.Add(k, v)
+	}
+
+	req.Header.Add("Accept", "application/json")
+	if reqBody != nil {
+		req.Header.Add("Content-Type", "application/json")
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: c.skipTLSVerify,
+			},
+		},
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("Failed sending request: %w", err)
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return newPowerStoreError(resp)
+	}
+
+	if respBody != nil {
+		err := json.NewDecoder(resp.Body).Decode(respBody)
+		if err != nil {
+			return fmt.Errorf("Failed reading response body from %q: %w", url.String(), err)
+		}
+	}
+
+	// Extract the response headers if requested.
+	if respHeaders != nil {
+		for k, v := range resp.Header {
+			respHeaders[k] = strings.Join(v, ",")
+		}
+	}
+
+	return nil
+}
+
 // requestAuthenticated issues an authenticated HTTP request against the PowerStore gateway.
 // In case the access token is expired, the function will try to obtain a new one.
-func (p *PowerStoreClient) requestAuthenticated(ctx context.Context, method string, url url.URL, reqBody map[string]any, respBody any, respHeaders map[string]string) error {
+func (c *PowerStoreClient) requestAuthenticated(ctx context.Context, method string, url url.URL, reqBody map[string]any, respBody any, respHeaders map[string]string) error {
 	// If request fails with an unauthorized error, the request will be retried after
 	// requesting a new access token.
 	retries := 1
 
 	for {
-		// Ensure we are logged into the Pure Storage.
-		session, err := p.login(ctx)
+		// Ensure we are logged into the PowerStore.
+		session, err := c.login(ctx)
 		if err != nil {
 			return err
 		}
@@ -493,12 +503,12 @@ func (p *PowerStoreClient) requestAuthenticated(ctx context.Context, method stri
 		}
 
 		// Initiate request.
-		err = p.request(ctx, method, url, reqBody, reqHeaders, respBody, respHeaders)
+		err = c.request(ctx, method, url, reqBody, reqHeaders, respBody, respHeaders)
 		if err != nil {
 			if api.StatusErrorCheck(err, http.StatusUnauthorized) && retries > 0 {
 				// The failure seems to be due to an expired session.
 				// Invalidate session and try again.
-				p.InvalidateSession()
+				c.InvalidateSession()
 				retries--
 				continue
 			}
@@ -570,20 +580,6 @@ func parsePaginationOffset(headers map[string]string) (newOffset uint64, hasMore
 
 	newOffset = lastOffset + 1
 	return newOffset, totalItems > newOffset, nil
-}
-
-// PowerStoreApplianceMetrics describes an appliance metric resource in
-// PowerStore API.
-type PowerStoreApplianceMetrics struct {
-	ID                     string  `json:"id,omitempty"`
-	Name                   string  `json:"name,omitempty"`
-	AvgLatency             float64 `json:"avg_latency,omitempty"`
-	TotalIops              float64 `json:"total_iops,omitempty"`
-	TotalBandwidth         float64 `json:"total_bandwidth,omitempty"`
-	LastLogicalTotalSpace  int64   `json:"last_logical_total_space,omitempty"`
-	LastLogicalUsedSpace   int64   `json:"last_logical_used_space,omitempty"`
-	LastPhysicalTotalSpace int64   `json:"last_physical_total_space,omitempty"`
-	LastPhysicalUsedSpace  int64   `json:"last_physical_used_space,omitempty"`
 }
 
 // GetApplianceMetrics retrieves appliance metrics.
@@ -660,10 +656,10 @@ func (c *PowerStoreClient) getHosts(ctx context.Context, queryFilters map[string
 // GetCurrentHost retrieves the HPE Alletra Storage host linked to the current LXD host.
 // The Alletra Storage host is considered a match if it includes the fully qualified
 // name of the LXD host that is determined by the configured mode.
-func (p *PowerStoreClient) GetCurrentHost(ctx context.Context, connectorType string, qn string) (*PowerStoreHost, error) {
+func (c *PowerStoreClient) GetCurrentHost(ctx context.Context, connectorType string, qn string) (*PowerStoreHost, error) {
 	filters := map[string]string{}
 
-	hosts, err := p.getHosts(ctx, filters, -1)
+	hosts, err := c.getHosts(ctx, filters, -1)
 	if err != nil {
 		return nil, err
 	}
@@ -959,8 +955,8 @@ func (c *PowerStoreClient) GetVolumeByName(ctx context.Context, name string) (*P
 }
 
 // GetVolumeID returns the volume ID for the given name.
-func (p *PowerStoreClient) GetVolumeID(ctx context.Context, volumeName string) (volumeID string, err error) {
-	vol, err := p.GetVolumeByName(ctx, volumeName)
+func (c *PowerStoreClient) GetVolumeID(ctx context.Context, volumeName string) (volumeID string, err error) {
+	vol, err := c.GetVolumeByName(ctx, volumeName)
 	if err != nil {
 		return "", err
 	}
