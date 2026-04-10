@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
 	"path"
@@ -18,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/canonical/lxd/lxd/storage/connectors"
 	"github.com/canonical/lxd/lxd/storage/drivers/tokencache"
 	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/logger"
@@ -112,62 +110,6 @@ const (
 	// initiator port type.
 	InitiatorPortTypeEnumNVMe PowerStoreInitiatorType = "NVMe"
 )
-
-// // pagination encapsulates query request pagination data.
-// type pagination struct {
-// 	Page         int
-// 	ItemsPerPage int
-// }
-
-// // Offset computes offset value for the provided pagination state.
-// func (p pagination) Offset() int {
-// 	page := max(0, p.Page)
-// 	limit := p.Limit()
-// 	return page * limit
-// }
-
-// // Limit computes limit value for the provided pagination state.
-// func (p pagination) Limit() int {
-// 	return min(max(0, p.ItemsPerPage), PowerStoreQueryResponseLimit)
-// }
-
-// // query is a container for PowerStore query request parameters.
-// type query map[string]string
-
-// // Clone clones the provided query. If the query is nil it returns
-// // an initialized empty query.
-// func (q query) Clone() query {
-// 	if q == nil {
-// 		return query{}
-// 	}
-
-// 	return maps.Clone(q)
-// }
-
-// // Set sets the provided value under the specified key returning the new query.
-// func (q query) Set(key, val string) query {
-// 	q = q.Clone()
-// 	q[key] = val
-// 	return q
-// }
-
-// // Paginate adds pagination parameters returning a new query.
-// func (q query) Paginate(pagination pagination) query {
-// 	q = q.Clone()
-// 	q["offset"] = strconv.Itoa(pagination.Offset())
-// 	q["limit"] = strconv.Itoa(pagination.Limit())
-// 	return q
-// }
-
-// // URLParameters transforms query into URL parameters.
-// func (q query) URLParameters() url.Values {
-// 	params := url.Values{}
-// 	for key, val := range q {
-// 		params.Set(key, val)
-// 	}
-
-// 	return params
-// }
 
 // powerStoreError contains arbitrary error responses from PowerStore.
 type powerStoreError struct {
@@ -774,41 +716,7 @@ func (c *PowerStoreClient) GetApplianceMetrics(ctx context.Context) ([]PowerStor
 	return metrics, nil
 }
 
-// GetCurrentHost retrieves the HPE Alletra Storage host linked to the current LXD host.
-// The Alletra Storage host is considered a match if it includes the fully qualified
-// name of the LXD host that is determined by the configured mode.
-func (p *PowerStoreClient) GetCurrentHost(connectorType string, qn string) (*PowerStoreHost, error) {
-	hosts, hasMore, err := p.getHosts(context.TODO())
-	if err != nil {
-		return nil, err
-	}
-
-	if hasMore {
-		p.logger.Warn("Not all hosts have been retrieved!")
-	}
-
-	for _, host := range hosts {
-		if connectorType == connectors.TypeISCSI {
-			for _, iscsiPath := range host.ISCSIPaths {
-				if iscsiPath.Name == qn {
-					return &host, nil
-				}
-			}
-		}
-
-		if connectorType == connectors.TypeNVME {
-			for _, nvmePath := range host.NVMETCPPaths {
-				if nvmePath.NQN == qn {
-					return &host, nil
-				}
-			}
-		}
-	}
-
-	return nil, api.StatusErrorf(http.StatusNotFound, "Host with qualified name %q not found", qn)
-}
-
-func (c *PowerStoreClient) getHosts(ctx context.Context, queryFilters map[string]string) ([]PowerStoreHost, error) {
+func (c *PowerStoreClient) getHosts(ctx context.Context, queryFilters map[string]string, limit int) ([]PowerStoreHost, error) {
 	url := api.NewURL().Path("api", "rest", "host")
 	url = url.WithQuery("select", "id,name,description,initiators(id,port_name,port_type),os_type,host_connectivity,mapped_hosts(id,host_id,volume_id)")
 
@@ -823,7 +731,7 @@ func (c *PowerStoreClient) getHosts(ctx context.Context, queryFilters map[string
 		respBody := []PowerStoreHost{}
 		respHeaders := make(map[string]string)
 
-		pageURL := withPaginationQuery(url.URL, offset, -1)
+		pageURL := withPaginationQuery(url.URL, offset, limit)
 		err := c.requestAuthenticated(ctx, http.MethodGet, pageURL, nil, &respBody, respHeaders)
 		if err != nil {
 			return nil, fmt.Errorf("Failed retrieving PowerStore hosts: %w", err)
@@ -845,38 +753,62 @@ func (c *PowerStoreClient) getHosts(ctx context.Context, queryFilters map[string
 	return hosts, nil
 }
 
-// GetHostByID retrieves host using its ID.
-func (c *PowerStoreClient) GetHostByID(ctx context.Context, id string) (*PowerStoreHost, error) {
-	hosts, err := c.getHosts(ctx, map[string]string{"id": "eq." + id})
+// GetCurrentHost retrieves the HPE Alletra Storage host linked to the current LXD host.
+// The Alletra Storage host is considered a match if it includes the fully qualified
+// name of the LXD host that is determined by the configured mode.
+func (p *PowerStoreClient) GetCurrentHost(ctx context.Context, connectorType string, qn string) (*PowerStoreHost, error) {
+	filters := map[string]string{}
+
+	hosts, err := p.getHosts(ctx, filters, -1)
 	if err != nil {
 		return nil, err
 	}
 
-	switch len(hosts) {
-	case 0:
-		return nil, api.StatusErrorf(http.StatusNotFound, "Host with ID %q not found", id)
-	case 1:
-		return &hosts[0], nil
-	default:
-		return nil, api.StatusErrorf(http.StatusInternalServerError, "Multiple hosts with ID %q found", id)
+	for _, host := range hosts {
+		for _, initiator := range host.Initiators {
+			if initiator.PortName == qn {
+				return &host, nil
+			}
+		}
 	}
+
+	return nil, api.StatusErrorf(http.StatusNotFound, "Host with qualified name %q (%q) not found", qn, connectorType)
+}
+
+// GetHostByID retrieves host using its ID.
+func (c *PowerStoreClient) GetHostByID(ctx context.Context, id string) (*PowerStoreHost, error) {
+	filters := map[string]string{
+		"id": "eq." + id,
+	}
+
+	hosts, err := c.getHosts(ctx, filters, 1)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(hosts) == 0 {
+		return nil, api.StatusErrorf(http.StatusNotFound, "Host with ID %q not found", id)
+	}
+
+	return &hosts[0], nil
 }
 
 // GetHostByName retrieves host using its name.
 func (c *PowerStoreClient) GetHostByName(ctx context.Context, name string) (*PowerStoreHost, error) {
-	hosts, err := c.getHosts(ctx, map[string]string{"name": "eq." + name})
+	filters := map[string]string{
+		"name": "eq." + name,
+	}
+
+	hosts, err := c.getHosts(ctx, filters, 1)
 	if err != nil {
 		return nil, err
 	}
 
-	switch len(hosts) {
-	case 0:
+	if len(hosts) == 0 {
 		return nil, api.StatusErrorf(http.StatusNotFound, "Host with name %q not found", name)
-	case 1:
-		return &hosts[0], nil
-	default:
-		return nil, api.StatusErrorf(http.StatusInternalServerError, "Multiple hosts with name %q found", name)
 	}
+
+	return &hosts[0], nil
 }
 
 // CreateHost creates new host.
@@ -971,7 +903,7 @@ func (c *PowerStoreClient) DetachHostFromVolume(ctx context.Context, hostID, vol
 	return nil
 }
 
-func (c *PowerStoreClient) getInitiatorsByQuery(ctx context.Context, queryFilters map[string]string) ([]PowerStoreInitiator, error) {
+func (c *PowerStoreClient) getInitiatorsByQuery(ctx context.Context, queryFilters map[string]string, limit int) ([]PowerStoreInitiator, error) {
 	url := api.NewURL().Path("api", "rest", "initiator")
 	url = url.WithQuery("select", "id,host_id,port_name,port_type")
 
@@ -986,7 +918,7 @@ func (c *PowerStoreClient) getInitiatorsByQuery(ctx context.Context, queryFilter
 		respBody := []PowerStoreInitiator{}
 		respHeaders := make(map[string]string)
 
-		pageURL := withPaginationQuery(url.URL, offset, -1)
+		pageURL := withPaginationQuery(url.URL, offset, limit)
 		err := c.requestAuthenticated(ctx, http.MethodGet, pageURL, nil, &respBody, respHeaders)
 		if err != nil {
 			return nil, fmt.Errorf("Failed retrieving PowerStore initiators: %w", err)
@@ -1010,49 +942,21 @@ func (c *PowerStoreClient) getInitiatorsByQuery(ctx context.Context, queryFilter
 
 // GetHostByInitiator retrieves host that have initiator matching port name and type.
 func (c *PowerStoreClient) GetHostByInitiator(ctx context.Context, initiator *PowerStoreHostInitiator) (*PowerStoreHost, error) {
-	url := api.NewURL().Path("api", "rest", "initiator")
-	url = url.WithQuery("port_name", "eq."+initiator.PortName)
-	url = url.WithQuery("port_type", "eq."+string(initiator.Type))
-
-	// Parse up to 2 initiators to ensure there are no duplicates.
-	initiators := []PowerStoreInitiator{}
-	err := c.requestAuthenticated(ctx, http.MethodGet, withPaginationQuery(url.URL, 0, 2), nil, &initiators, nil)
-	if err != nil {
-		return nil, fmt.Errorf("Failed retrieving PowerStore initiators: %w", err)
+	filters := map[string]string{
+		"port_name": "eq." + initiator.PortName,
+		"port_type": "eq." + string(initiator.Type),
 	}
 
-	switch len(initiators) {
-	case 0:
+	initiators, err := c.getInitiatorsByQuery(ctx, filters, 1)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(initiators) == 0 {
 		return nil, api.StatusErrorf(http.StatusNotFound, "Host with initiator port %q and type %q not found", initiator.PortName, initiator.Type)
-	case 1:
-		return c.GetHostByID(ctx, initiators[0].HostID)
-	default:
-		return nil, api.StatusErrorf(http.StatusInternalServerError, "Multiple initiators with port %q and type %q found", initiator.PortName, initiator.Type)
-	}
-}
-
-// GetVolumeID returns the volume ID for the given name.
-func (p *PowerStoreClient) GetVolumeID(name string) (string, error) {
-	body := map[string]any{
-		"name": name,
 	}
 
-	var actualResponse string
-	err := p.requestAuthenticated(http.MethodPost, "/api/types/Volume/instances/action/queryIdByKey", body, &actualResponse)
-	if err != nil {
-		powerFlexError, ok := err.(*powerFlexError)
-		if ok {
-			// API returns 500 if the volume does not exist.
-			// To not confuse it with other 500 that might occur check the error code too.
-			if powerFlexError.HTTPStatusCode() == http.StatusInternalServerError && powerFlexError.ErrorCode() == powerFlexCodeVolumeNotFound {
-				return "", api.StatusErrorf(http.StatusNotFound, "PowerFlex volume not found: %q", name)
-			}
-		}
-
-		return "", fmt.Errorf("Failed getting volume ID: %q: %w", name, err)
-	}
-
-	return actualResponse, nil
+	return c.GetHostByID(ctx, initiators[0].HostID)
 }
 
 func (c *PowerStoreClient) getVolumes(ctx context.Context, queryFilter map[string]string, limit int) ([]PowerStoreVolume, error) {
@@ -1149,6 +1053,16 @@ func (c *PowerStoreClient) GetVolumeByName(ctx context.Context, name string) (*P
 	return &vols[0], nil
 }
 
+// GetVolumeID returns the volume ID for the given name.
+func (p *PowerStoreClient) GetVolumeID(ctx context.Context, volumeName string) (volumeID string, err error) {
+	vol, err := p.GetVolumeByName(ctx, volumeName)
+	if err != nil {
+		return "", err
+	}
+
+	return vol.ID, nil
+}
+
 // CreateVolume creates a new volume.
 func (c *PowerStoreClient) CreateVolume(ctx context.Context, volumeName string, sizeBytes int64) (id string, err error) {
 	url := api.NewURL().Path("api", "rest", "volume")
@@ -1232,13 +1146,13 @@ func (c *PowerStoreClient) RestoreVolume(ctx context.Context, srcVolSnapID strin
 
 // RefreshVolume refreshes the volume form the volume or the volume snapshot.
 func (c *PowerStoreClient) RefreshVolume(ctx context.Context, srcVolID, dstVolID string) error {
-	type refreshVolumeRequest struct {
-		FromObjectID         string `json:"from_object_id"`
-		CreateBackupSnapshot bool   `json:"create_backup_snap"`
+	url := api.NewURL().Path("api", "rest", "volume", dstVolID, "refresh")
+
+	req := map[string]any{
+		"from_object_id": srcVolID,
 	}
 
-	reqBody := &refreshVolumeRequest{FromObjectID: srcVolID}
-	_, err := c.doAuthenticatedHTTPRequest(ctx, http.MethodPost, "/api/rest/volume/"+dstVolID+"/refresh", reqBody, nil)
+	err := c.requestAuthenticated(ctx, http.MethodPost, url.URL, req, nil, nil)
 	if err != nil {
 		return fmt.Errorf("Failed refreshing PowerStore volume: %w", err)
 	}
@@ -1303,30 +1217,22 @@ func (c *PowerStoreClient) GetVolumeSnapshotByName(ctx context.Context, name str
 }
 
 // CreateVolumeSnapshot creates a new snapshot of a volume.
-func (c *PowerStoreClient) CreateVolumeSnapshot(ctx context.Context, volumeID string, snapshotName string) (*PowerStoreVolume, error) {
+func (c *PowerStoreClient) CreateVolumeSnapshot(ctx context.Context, volumeID string, snapshotName string) (snapshotID string, err error) {
+	url := api.NewURL().Path("api", "rest", "volume", volumeID, "snapshot")
+
 	req := map[string]any{
 		"name":        snapshotName,
-		"description": "LXD Volume Snapshot",
+		"description": "LXD Volume Snapshot of " + snapshotName,
 	}
 
-	body := &PowerStoreResourceID{}
-	reqBody := &createVolumeSnapshotRequest{Name: name, Description: description}
-	_, err := c.doAuthenticatedHTTPRequest(ctx, http.MethodPost, "/api/rest/volume/"+volumeID+"/snapshot", reqBody, body)
+	var resp PowerStoreResourceID
+
+	err = c.requestAuthenticated(ctx, http.MethodPost, url.URL, req, &resp, nil)
 	if err != nil {
-		return nil, fmt.Errorf("Failed creating PowerStore volume snapshot: %w", err)
+		return "", fmt.Errorf("Failed creating PowerStore volume snapshot: %w", err)
 	}
 
-	// Fetch volume snapshot to populate all fields.
-	created, err := c.GetVolumeSnapshotByID(ctx, body.ID)
-	if err != nil {
-		return nil, fmt.Errorf("Failed creating PowerStore volume snapshot: %w", err)
-	}
-
-	if created == nil {
-		return nil, errors.New("Failed creating PowerStore volume snapshot: No data of new volume snapshot found")
-	}
-
-	return created, nil
+	return resp.ID, nil
 }
 
 // RemoveMembersFromVolumeGroup removes volumes from the volume group.
