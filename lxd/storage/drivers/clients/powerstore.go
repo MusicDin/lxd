@@ -19,7 +19,6 @@ import (
 
 	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/logger"
-	"github.com/osrg/gobgp/v3/pkg/log"
 )
 
 var powerStoreSessions = make(map[string]powerStoreSession)
