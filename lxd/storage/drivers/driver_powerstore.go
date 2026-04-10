@@ -197,14 +197,14 @@ func (d *powerstore) Info() Info {
 }
 
 // SourceIdentifier returns a combined string consisting of the gateway address and pool name.
-func (d *powerstore) SourceIdentifier() (string, error) {
-	gateway := d.config["powerstore.gateway"]
-	if gateway == "" {
-		return "", errors.New("Cannot derive identifier from empty gateway address")
-	}
+// func (d *powerstore) SourceIdentifier() (string, error) {
+// 	gateway := d.config["powerstore.gateway"]
+// 	if gateway == "" {
+// 		return "", errors.New("Cannot derive identifier from empty gateway address")
+// 	}
 
-	return fmt.Sprintf("%s-%s", gateway, d.Name()), nil
-}
+// 	return fmt.Sprintf("%s-%s", gateway, d.Name()), nil
+// }
 
 // FillConfig populates the storage pool's configuration file with the default values.
 func (d *powerstore) FillConfig() error {
@@ -273,44 +273,6 @@ func (d *powerstore) GetResources() (*api.ResourcesStoragePool, error) {
 	}
 
 	return res, nil
-}
-
-// commonVolumeRules returns validation rules which are common for pool and
-// volume.
-func (d *powerstore) commonVolumeRules() map[string]func(value string) error {
-	return map[string]func(value string) error{
-		// lxdmeta:generate(entities=storage-powerstore; group=volume-conf; key=block.filesystem)
-		// Valid options are: `btrfs`, `ext4`, `xfs`
-		// If not set, `ext4` is assumed.
-		// ---
-		//  type: string
-		//  condition: block-based volume with content type `filesystem`
-		//  defaultdesc: same as `volume.block.filesystem`
-		//  shortdesc: File system of the storage volume
-		//  scope: global
-		"block.filesystem": validate.Optional(validate.IsOneOf(blockBackedAllowedFilesystems...)),
-		// lxdmeta:generate(entities=storage-powerstore; group=volume-conf; key=block.mount_options)
-		//
-		// ---
-		//  type: string
-		//  condition: block-based volume with content type `filesystem`
-		//  defaultdesc: same as `volume.block.mount_options`
-		//  shortdesc: Mount options for block-backed file system volumes
-		//  scope: global
-		"block.mount_options": validate.IsAny,
-		// lxdmeta:generate(entities=storage-powerstore; group=volume-conf; key=size)
-		// The size must be in multiples of 1 MiB. The minimum size is 1 MiB and maximum is 256 TiB.
-		// ---
-		//  type: string
-		//  defaultdesc: same as `volume.size`
-		//  shortdesc: Size/quota of the storage volume
-		//  scope: global
-		"size": validate.Optional(
-			validate.IsNoLessThanUnit(powerStoreMinVolumeSizeUnit),
-			validate.IsNoGreaterThanUnit(powerStoreMaxVolumeSizeUnit),
-			validate.IsMultipleOfUnit(powerStoreMinVolumeSizeAlignmentUnit),
-		),
-	}
 }
 
 // Validate checks that all provided keys are supported and that no conflicting or missing configuration is present.

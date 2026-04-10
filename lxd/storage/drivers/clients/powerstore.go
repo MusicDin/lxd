@@ -248,7 +248,7 @@ type PowerStoreHost struct {
 	Initiators       []*PowerStoreHostInitiator     `json:"initiators,omitempty"`
 	OsType           OSTypeEnum                     `json:"os_type,omitempty"`
 	HostConnectivity string                         `json:"host_connectivity,omitempty"`
-	MappedHosts      []*PowerStoreHostVolumeMapping `json:"mapped_hosts,omitempty"`
+	MappedVolumes    []*PowerStoreHostVolumeMapping `json:"mapped_hosts,omitempty"`
 }
 
 // PowerStoreHostInitiator describes an initiator resource of some host in
@@ -512,102 +512,6 @@ func (p *PowerStoreClient) requestAuthenticated(ctx context.Context, method stri
 	}
 }
 
-// func (c *PowerStoreClient) doAuthenticatedHTTPRequest(ctx context.Context, method string, path string, requestData, responseData any, requestEditors ...func(*http.Request) error) (*http.Response, error) {
-// 	session, err := c.getOrCreateLoginSession(ctx, sessionKey)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-
-// 	requestEditors = append([]func(*http.Request) error{c.withLoginSession(session)}, requestEditors...)
-// 	resp, err := c.doUnauthenticatedHTTPRequest(ctx, method, path, requestData, responseData, requestEditors...)
-// 	if resp != nil && resp.StatusCode == http.StatusUnauthorized {
-// 		// there is something wrong with the session token, remove it
-// 		c.forceLoginSessionRemoval(sessionKey, session)
-// 	}
-
-// 	return resp, err
-// }
-
-// func (c *PowerStoreClient) doUnauthenticatedHTTPRequest(ctx context.Context, method string, path string, requestData, responseData any, requestEditors ...func(*http.Request) error) (*http.Response, error) {
-// 	body, err := c.marshalHTTPRequestBody(requestData)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("Marshal HTTP request body: %s: %w", path, err)
-// 	}
-
-// 	url := c.url + path
-// 	req, err := http.NewRequestWithContext(ctx, method, url, body)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("Create request: %w", err)
-// 	}
-
-// 	req.Header.Add("Accept", "application/json")
-// 	if body != nil {
-// 		req.Header.Add("Content-Type", "application/json")
-// 	}
-
-// 	for _, edit := range requestEditors {
-// 		err := edit(req)
-// 		if err != nil {
-// 			return nil, err
-// 		}
-// 	}
-
-// 	client := &http.Client{
-// 		Transport: &http.Transport{
-// 			TLSClientConfig: &tls.Config{
-// 				InsecureSkipVerify: c.skipTLSVerify,
-// 			},
-// 		},
-// 	}
-
-// 	resp, err := client.Do(req)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("Send request: %w", err)
-// 	}
-
-// 	defer resp.Body.Close()
-
-// 	if resp.StatusCode > 299 {
-// 		return resp, newPowerStoreError(resp)
-// 	}
-
-// 	if responseData != nil {
-// 		err := json.NewDecoder(resp.Body).Decode(responseData)
-// 		if err != nil {
-// 			return resp, fmt.Errorf("Unmarshal HTTP response body: %s: %w", path, err)
-// 		}
-// 	}
-// 	return resp, nil
-// }
-
-// func (c *PowerStoreClient) withBasicAuthorization(username, password string) func(req *http.Request) error {
-// 	return func(req *http.Request) error {
-// 		token := base64.StdEncoding.EncodeToString(fmt.Appendf(nil, "%s:%s", username, password))
-// 		req.Header.Set("Authorization", "Basic "+token)
-// 		return nil
-// 	}
-// }
-
-// func (c *PowerStoreClient) withLoginSession(ls *powerStoreSession) func(req *http.Request) error {
-// 	return func(req *http.Request) error {
-// 		req.Header.Add("Cookie", fmt.Sprintf("%s=%s", powerStoreAuthCookieName, ls.AuthToken))
-// 		req.Header.Set(powerStoreCSRFHeaderName, ls.CSRFToken)
-// 		return nil
-// 	}
-// }
-
-// func (c *PowerStoreClient) withQuery(query query) func(req *http.Request) error {
-// 	return func(req *http.Request) error {
-// 		if len(query) == 0 {
-// 			req.URL.RawQuery = ""
-// 			return nil
-// 		}
-
-// 		req.URL.RawQuery = query.URLParameters().Encode()
-// 		return nil
-// 	}
-// }
-
 // withPaginationQuery adds pagination parameters to the provided URL query.
 func withPaginationQuery(url url.URL, offset uint64, limit int) url.URL {
 	if limit <= 0 {
@@ -812,7 +716,7 @@ func (c *PowerStoreClient) GetHostByName(ctx context.Context, name string) (*Pow
 }
 
 // CreateHost creates new host.
-func (c *PowerStoreClient) CreateHost(ctx context.Context, hostname string, qn string) (id string, err error) {
+func (c *PowerStoreClient) CreateHost(ctx context.Context, connectorType string, hostname string, qn string) (hostID string, err error) {
 	url := api.NewURL().Path("api", "rest", "host")
 
 	req := map[string]any{
@@ -828,9 +732,9 @@ func (c *PowerStoreClient) CreateHost(ctx context.Context, hostname string, qn s
 	return resp.ID, nil
 }
 
-// DeleteHostByID deletes host using its ID.
-func (c *PowerStoreClient) DeleteHostByID(ctx context.Context, id string) error {
-	url := api.NewURL().Path("api", "rest", "host", id)
+// DeleteHost deletes host using its ID.
+func (c *PowerStoreClient) DeleteHost(ctx context.Context, hostID string) error {
+	url := api.NewURL().Path("api", "rest", "host", hostID)
 
 	err := c.requestAuthenticated(ctx, http.MethodDelete, url.URL, nil, nil, nil)
 	if err != nil {
@@ -840,8 +744,8 @@ func (c *PowerStoreClient) DeleteHostByID(ctx context.Context, id string) error 
 	return nil
 }
 
-// AddInitiatorToHostByID adds initiator to host using its ID.
-func (c *PowerStoreClient) AddInitiatorToHostByID(ctx context.Context, hostID string, initiator *PowerStoreHostInitiator) error {
+// AddHostInitiator adds initiator to host using its ID.
+func (c *PowerStoreClient) AddHostInitiator(ctx context.Context, hostID string, initiator *PowerStoreHostInitiator) error {
 	url := api.NewURL().Path("api", "rest", "host", hostID)
 	req := map[string]any{
 		"add_initiators": []PowerStoreHostInitiator{*initiator},
@@ -855,8 +759,8 @@ func (c *PowerStoreClient) AddInitiatorToHostByID(ctx context.Context, hostID st
 	return nil
 }
 
-// RemoveInitiatorFromHostByID removes initiator matching port name from host using its ID.
-func (c *PowerStoreClient) RemoveInitiatorFromHostByID(ctx context.Context, hostID string, initiator *PowerStoreHostInitiator) error {
+// DeleteHostInitiator removes initiator matching port name from host using its ID.
+func (c *PowerStoreClient) DeleteHostInitiator(ctx context.Context, hostID string, initiator *PowerStoreHostInitiator) error {
 	url := api.NewURL().Path("api", "rest", "host", hostID)
 
 	req := map[string]any{
@@ -871,8 +775,9 @@ func (c *PowerStoreClient) RemoveInitiatorFromHostByID(ctx context.Context, host
 	return nil
 }
 
-// AttachHostToVolume attaches (maps) host to volume.
-func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID string, volumeID string) error {
+// AttachHostToVolume attaches (maps) host to volume, returning true if the volume was freshly
+// attached to the host, and false if the volume was already attached to the host.
+func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID string, volumeID string) (bool, error) {
 	url := api.NewURL().Path("api", "rest", "host", hostID, "attach")
 
 	req := map[string]any{
@@ -881,10 +786,10 @@ func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID string
 
 	err := c.requestAuthenticated(ctx, http.MethodPost, url.URL, req, nil, nil)
 	if err != nil {
-		return fmt.Errorf("Failed attaching PowerStore host to a volume: %w", err)
+		return false, fmt.Errorf("Failed attaching PowerStore host to a volume: %w", err)
 	}
 
-	return nil
+	return true, nil
 }
 
 // DetachHostFromVolume detaches (unmaps) host from volume.
@@ -1229,10 +1134,22 @@ func (c *PowerStoreClient) CreateVolumeSnapshot(ctx context.Context, volumeID st
 
 	err = c.requestAuthenticated(ctx, http.MethodPost, url.URL, req, &resp, nil)
 	if err != nil {
-		return "", fmt.Errorf("Failed creating PowerStore volume snapshot: %w", err)
+		return "", fmt.Errorf("Failed creating PowerStore volume snapshot with name %q: %w", snapshotName, err)
 	}
 
 	return resp.ID, nil
+}
+
+// DeleteVolumeSnapshot deletes a snapshot of a volume.
+func (c *PowerStoreClient) DeleteVolumeSnapshot(ctx context.Context, volumeID string, snapshotID string) error {
+	url := api.NewURL().Path("api", "rest", "volume", volumeID, "snapshot", snapshotID)
+
+	err := c.requestAuthenticated(ctx, http.MethodDelete, url.URL, nil, nil, nil)
+	if err != nil {
+		return fmt.Errorf("Failed deleting PowerStore volume snapshot with ID %q: %w", snapshotID, err)
+	}
+
+	return nil
 }
 
 // RemoveVolumeGroupMembers removes volumes from the volume group.
