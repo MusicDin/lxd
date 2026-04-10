@@ -26,7 +26,7 @@ var powerStoreSessionsLock = &sync.RWMutex{}
 
 const (
 	powerStoreAuthCookieName = "auth_cookie"
-	powerStoreCSRFHeaderName = "DELL-EMC-TOKEN"
+	powerStoreCSRFHeaderName = "dell-emc-token"
 
 	// PowerStoreQueryResponseLimit is the maximum number of items PowerStore can return in
 	// a single query response.
@@ -370,18 +370,18 @@ func (c *PowerStoreClient) login(ctx context.Context) (*powerStoreSession, error
 
 	c.logger.Warn("RESPONSE HEADERS", logCtx)
 
-	// Parse CSRF token from response headers.
-	csrf := respHeaders[powerStoreCSRFHeaderName]
-	if csrf == "" {
-		return nil, errors.New("Failed logging into PowerStore: Login response missing CSRF token")
-	}
-
 	csrfDuration := time.Duration(sessionInfo.IdleTimeout) * time.Second
 
 	// Parse auth cookie.
 	resp := &http.Response{Header: http.Header{}}
 	for k, v := range respHeaders {
 		resp.Header[k] = []string{v}
+	}
+
+	// Parse CSRF token from response headers.
+	csrf := resp.Header.Get(powerStoreCSRFHeaderName)
+	if csrf == "" {
+		return nil, errors.New("Failed logging into PowerStore: Login response missing CSRF token")
 	}
 
 	var authCookie *http.Cookie
