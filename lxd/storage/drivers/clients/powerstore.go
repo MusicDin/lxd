@@ -363,14 +363,15 @@ func (c *PowerStoreClient) login(ctx context.Context) (*powerStoreSession, error
 		return nil, errors.New("Failed logging into PowerStore: Password change required")
 	}
 
+	// TODO: Remove DEBUG
+	// DEBUG: Start
 	logCtx := make(map[string]any, len(respHeaders))
 	for k, v := range respHeaders {
 		logCtx[k] = v
 	}
 
 	c.logger.Warn("RESPONSE HEADERS", logCtx)
-
-	csrfDuration := time.Duration(sessionInfo.IdleTimeout) * time.Second
+	// DEBUG: End
 
 	// Parse auth cookie.
 	resp := &http.Response{Header: http.Header{}}
@@ -379,6 +380,7 @@ func (c *PowerStoreClient) login(ctx context.Context) (*powerStoreSession, error
 	}
 
 	// Parse CSRF token from response headers.
+	csrfDuration := time.Duration(sessionInfo.IdleTimeout) * time.Second
 	csrf := resp.Header.Get(powerStoreCSRFHeaderName)
 	if csrf == "" {
 		return nil, errors.New("Failed logging into PowerStore: Login response missing CSRF token")
@@ -781,6 +783,9 @@ func (c *PowerStoreClient) DeleteHostInitiator(ctx context.Context, hostID strin
 // AttachHostToVolume attaches (maps) host to volume, returning true if the volume was freshly
 // attached to the host, and false if the volume was already attached to the host.
 func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID string, volumeID string) (bool, error) {
+	// TODO: Remove DEBUG
+	c.logger.Warn("Attaching host to volume", logger.Ctx{"host_id": hostID, "volume_id": volumeID})
+
 	url := api.NewURL().Path("api", "rest", "host", hostID, "attach")
 
 	req := map[string]any{
@@ -797,6 +802,9 @@ func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID string
 
 // DetachHostFromVolume detaches (unmaps) host from volume.
 func (c *PowerStoreClient) DetachHostFromVolume(ctx context.Context, hostID string, volumeID string) error {
+	// TODO: Remove DEBUG
+	c.logger.Warn("Detaching host from volume", logger.Ctx{"host_id": hostID, "volume_id": volumeID})
+
 	url := api.NewURL().Path("api", "rest", "host", hostID, "detach")
 
 	req := map[string]any{
