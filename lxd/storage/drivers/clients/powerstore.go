@@ -872,11 +872,11 @@ func (c *PowerStoreClient) RemoveInitiatorFromHostByID(ctx context.Context, host
 }
 
 // AttachHostToVolume attaches (maps) host to volume.
-func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID, volID string) error {
+func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID string, volumeID string) error {
 	url := api.NewURL().Path("api", "rest", "host", hostID, "attach")
 
 	req := map[string]any{
-		"volume_id": volID,
+		"volume_id": volumeID,
 	}
 
 	err := c.requestAuthenticated(ctx, http.MethodPost, url.URL, req, nil, nil)
@@ -888,11 +888,11 @@ func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID, volID
 }
 
 // DetachHostFromVolume detaches (unmaps) host from volume.
-func (c *PowerStoreClient) DetachHostFromVolume(ctx context.Context, hostID, volID string) error {
+func (c *PowerStoreClient) DetachHostFromVolume(ctx context.Context, hostID string, volumeID string) error {
 	url := api.NewURL().Path("api", "rest", "host", hostID, "detach")
 
 	req := map[string]any{
-		"volume_id": volID,
+		"volume_id": volumeID,
 	}
 
 	err := c.requestAuthenticated(ctx, http.MethodPost, url.URL, req, nil, nil)
@@ -1082,8 +1082,8 @@ func (c *PowerStoreClient) CreateVolume(ctx context.Context, volumeName string, 
 	return resp.ID, nil
 }
 
-// DeleteVolumeByID deletes volume using its ID.
-func (c *PowerStoreClient) DeleteVolumeByID(ctx context.Context, volumeID string) error {
+// DeleteVolume deletes volume using its ID.
+func (c *PowerStoreClient) DeleteVolume(ctx context.Context, volumeID string) error {
 	url := api.NewURL().Path("api", "rest", "volume", volumeID)
 
 	err := c.requestAuthenticated(ctx, http.MethodDelete, url.URL, nil, nil, nil)
@@ -1094,9 +1094,9 @@ func (c *PowerStoreClient) DeleteVolumeByID(ctx context.Context, volumeID string
 	return nil
 }
 
-// ResizeVolumeByID creates a new volume.
-func (c *PowerStoreClient) ResizeVolume(ctx context.Context, id string, newSize int64) error {
-	url := api.NewURL().Path("api", "rest", "volume", id)
+// ResizeVolume creates a new volume.
+func (c *PowerStoreClient) ResizeVolume(ctx context.Context, volumeID string, newSize int64) error {
+	url := api.NewURL().Path("api", "rest", "volume", volumeID)
 
 	req := map[string]any{
 		"size": newSize,
@@ -1111,12 +1111,12 @@ func (c *PowerStoreClient) ResizeVolume(ctx context.Context, id string, newSize 
 }
 
 // CloneVolume clones the volume or the volume snapshot with the provided ID to a new volume.
-func (c *PowerStoreClient) CloneVolume(ctx context.Context, srcVolID string, dstVolName string) (newVolID string, err error) {
-	url := api.NewURL().Path("api", "rest", "volume", srcVolID, "clone")
+func (c *PowerStoreClient) CloneVolume(ctx context.Context, srcVolumeID string, dstVolumeName string) (dstVolumeID string, err error) {
+	url := api.NewURL().Path("api", "rest", "volume", srcVolumeID, "clone")
 
 	req := map[string]any{
-		"name":        dstVolName,
-		"description": `LXD Volume Clone from "` + dstVolName + `"`,
+		"name":        dstVolumeName,
+		"description": `LXD Volume Clone from "` + dstVolumeName + `"`,
 	}
 
 	var resp PowerStoreResourceID
@@ -1129,11 +1129,11 @@ func (c *PowerStoreClient) CloneVolume(ctx context.Context, srcVolID string, dst
 }
 
 // RestoreVolume restores the volume form the volume snapshot.
-func (c *PowerStoreClient) RestoreVolume(ctx context.Context, srcVolSnapID string, dstVolID string) error {
-	url := api.NewURL().Path("api", "rest", "volume", dstVolID, "restore")
+func (c *PowerStoreClient) RestoreVolume(ctx context.Context, srcVolumeSnapshotID string, dstVolumeID string) error {
+	url := api.NewURL().Path("api", "rest", "volume", dstVolumeID, "restore")
 
 	req := map[string]any{
-		"from_snap_id": srcVolSnapID,
+		"from_snap_id": srcVolumeSnapshotID,
 	}
 
 	err := c.requestAuthenticated(ctx, http.MethodPost, url.URL, req, nil, nil)
@@ -1145,11 +1145,11 @@ func (c *PowerStoreClient) RestoreVolume(ctx context.Context, srcVolSnapID strin
 }
 
 // RefreshVolume refreshes the volume form the volume or the volume snapshot.
-func (c *PowerStoreClient) RefreshVolume(ctx context.Context, srcVolID, dstVolID string) error {
-	url := api.NewURL().Path("api", "rest", "volume", dstVolID, "refresh")
+func (c *PowerStoreClient) RefreshVolume(ctx context.Context, srcVolumeID string, dstVolumeID string) error {
+	url := api.NewURL().Path("api", "rest", "volume", dstVolumeID, "refresh")
 
 	req := map[string]any{
-		"from_object_id": srcVolID,
+		"from_object_id": srcVolumeID,
 	}
 
 	err := c.requestAuthenticated(ctx, http.MethodPost, url.URL, req, nil, nil)
@@ -1177,20 +1177,20 @@ func (c *PowerStoreClient) GetVolumeSnapshots(ctx context.Context, volumeID stri
 }
 
 // GetVolumeSnapshotByID retrieves volume snapshot using its ID.
-func (c *PowerStoreClient) GetVolumeSnapshotByID(ctx context.Context, id string) (*PowerStoreVolume, error) {
+func (c *PowerStoreClient) GetVolumeSnapshotByID(ctx context.Context, snapshotID string) (*PowerStoreVolume, error) {
 	filter := map[string]string{
 		// "protection_data->>parent_id": "eq." + volumeID, // TODO: Should we search snapshot for a specific parent as well?
 		"type": "eq.Snapshot",
-		"id":   "eq." + id,
+		"id":   "eq." + snapshotID,
 	}
 
 	snapshots, err := c.getVolumes(ctx, filter, 1)
 	if err != nil {
-		return nil, fmt.Errorf("Failed retrieving PowerStore volume snapshot with ID %q: %w", id, err)
+		return nil, fmt.Errorf("Failed retrieving PowerStore volume snapshot with ID %q: %w", snapshotID, err)
 	}
 
 	if len(snapshots) == 0 {
-		return nil, api.StatusErrorf(http.StatusNotFound, "Volume snapshot with ID %q not found", id)
+		return nil, api.StatusErrorf(http.StatusNotFound, "Volume snapshot with ID %q not found", snapshotID)
 	}
 
 	return &snapshots[0], nil
@@ -1235,9 +1235,9 @@ func (c *PowerStoreClient) CreateVolumeSnapshot(ctx context.Context, volumeID st
 	return resp.ID, nil
 }
 
-// RemoveMembersFromVolumeGroup removes volumes from the volume group.
-func (c *PowerStoreClient) RemoveMembersFromVolumeGroup(ctx context.Context, id string, volumeIDs []string) error {
-	url := api.NewURL().Path("api", "rest", "volume_group", id, "remove_members")
+// RemoveVolumeGroupMembers removes volumes from the volume group.
+func (c *PowerStoreClient) RemoveVolumeGroupMembers(ctx context.Context, volumeGroupID string, volumeIDs []string) error {
+	url := api.NewURL().Path("api", "rest", "volume_group", volumeGroupID, "remove_members")
 
 	req := map[string]any{
 		"volume_ids": volumeIDs,

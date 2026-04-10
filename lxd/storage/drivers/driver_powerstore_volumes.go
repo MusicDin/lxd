@@ -13,9 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
 
 	"github.com/canonical/lxd/lxd/operations"
+	"github.com/canonical/lxd/lxd/storage/block"
 	"github.com/canonical/lxd/lxd/storage/filesystem"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
@@ -25,12 +27,24 @@ import (
 	"github.com/canonical/lxd/shared/validate"
 )
 
+// powerStoreResourceNamePrefix common prefix for all resource names in PowerStore.
+const powerStoreResourceNamePrefix = "lxd:"
+
+// powerStorePoolAndVolSep separates pool name and volume data in encoded volume names.
+const powerStorePoolAndVolSep = "-"
+
 const (
-	powerStoreVolPrefixSep       = "_" // volume name prefix separator
+	powerStoreVolPrefixSep = "_" // volume name prefix separator
+	powerStoreVolSuffixSep = "." // volume name suffix separator
+
 	powerStoreContainerVolPrefix = "c" // volume name prefix indicating container volume
 	powerStoreVMVolPrefix        = "v" // volume name prefix indicating virtual machine volume
 	powerStoreImageVolPrefix     = "i" // volume name prefix indicating image volume
 	powerStoreCustomVolPrefix    = "u" // volume name prefix indicating custom volume
+
+	powerStoreBlockVolSuffix = "b"     // volume name suffix used for block content type volumes
+	powerStoreISOVolSuffix   = "i"     // volume name suffix used for iso content type volumes
+	powerStoreVolSnapSuffix  = "-snap" // volume snapshot name suffix
 )
 
 // powerStoreVolTypePrefixes maps volume type to storage volume name prefix.
@@ -49,12 +63,6 @@ var powerStoreVolTypePrefixesRev = map[string]VolumeType{
 	powerStoreCustomVolPrefix:    VolumeTypeCustom,
 }
 
-const (
-	powerStoreVolSuffixSep   = "." // volume name suffix separator
-	powerStoreBlockVolSuffix = "b" // volume name suffix used for block content type volumes
-	powerStoreISOVolSuffix   = "i" // volume name suffix used for iso content type volumes
-)
-
 // powerStoreVolContentTypeSuffixes maps volume content type to storage volume name suffix.
 var powerStoreVolContentTypeSuffixes = map[ContentType]string{
 	ContentTypeBlock: powerStoreBlockVolSuffix,
@@ -66,12 +74,6 @@ var powerStoreVolContentTypeSuffixesRev = map[string]ContentType{
 	powerStoreBlockVolSuffix: ContentTypeBlock,
 	powerStoreISOVolSuffix:   ContentTypeISO,
 }
-
-// powerStoreResourceNamePrefix common prefix for all resource names in PowerStore.
-const powerStoreResourceNamePrefix = "lxd:"
-
-// powerStorePoolAndVolSep separates pool name and volume data in encoded volume names.
-const powerStorePoolAndVolSep = "-"
 
 // volumeResourceNamePrefix returns the prefix used by all volume resource
 // names in PowerStore associated with the current storage pool.
@@ -146,19 +148,6 @@ func (d *powerstore) extractDataFromVolumeResourceName(name string) (poolHash st
 	return poolHash, volType, volUUID, volContentType, nil
 }
 
-// volumeWWN derives the world wide name of a volume resource in PowerStore
-// from the provided volume resource.
-func (d *powerstore) volumeWWN(volResource *powerStoreVolumeResource) string {
-	_, wwn, _ := strings.Cut(volResource.WWN, ".")
-	return wwn
-}
-
-// roundVolumeBlockSizeBytes rounds the given size (in bytes) up to the next
-// multiple of 1 MiB, which is the minimum volume size on PowerStore.
-func (d *powerstore) roundVolumeBlockSizeBytes(_ Volume, sizeBytes int64) int64 {
-	return roundAbove(powerStoreMinVolumeSizeBytes, sizeBytes)
-}
-
 // commonVolumeRules returns validation rules which are common for pool and
 // volume.
 func (d *powerstore) commonVolumeRules() map[string]func(value string) error {
@@ -196,41 +185,6 @@ func (d *powerstore) commonVolumeRules() map[string]func(value string) error {
 		),
 	}
 }
-
-// powerStoreVolTypePrefixesRev maps storage volume name prefix to volume type.
-var powerStoreVolTypePrefixesRev = map[string]VolumeType{
-	powerStoreContainerVolPrefix: VolumeTypeContainer,
-	powerStoreVMVolPrefix:        VolumeTypeVM,
-	powerStoreImageVolPrefix:     VolumeTypeImage,
-	powerStoreCustomVolPrefix:    VolumeTypeCustom,
-}
-
-const (
-	powerStoreVolSuffixSep   = "." // volume name suffix separator
-	powerStoreBlockVolSuffix = "b" // volume name suffix used for block content type volumes
-	powerStoreISOVolSuffix   = "i" // volume name suffix used for iso content type volumes
-)
-
-// powerStoreVolContentTypeSuffixes maps volume content type to storage volume name suffix.
-var powerStoreVolContentTypeSuffixes = map[ContentType]string{
-	ContentTypeBlock: powerStoreBlockVolSuffix,
-	ContentTypeISO:   powerStoreISOVolSuffix,
-}
-
-// powerStoreVolContentTypeSuffixesRev maps storage volume name suffix to volume content type.
-var powerStoreVolContentTypeSuffixesRev = map[string]ContentType{
-	powerStoreBlockVolSuffix: ContentTypeBlock,
-	powerStoreISOVolSuffix:   ContentTypeISO,
-}
-
-// powerStoreResourceNamePrefix common prefix for all resource names in PowerStore.
-const powerStoreResourceNamePrefix = "lxd:"
-
-// powerStorePoolAndVolSep separates pool name and volume data in encoded volume names.
-const powerStorePoolAndVolSep = "-"
-
-// powerStoreVolSnapSuffix volume snapshot name suffix
-const powerStoreVolSnapSuffix = "-snap"
 
 // // volumeWWN derives the world wide name of a volume resource in PowerStore
 // // from the provided volume resource.
@@ -315,7 +269,6 @@ func (d *powerstore) ValidateVolume(vol Volume, removeUnknownKeys bool) error {
 	return d.validateVolume(vol, commonRules, removeUnknownKeys)
 }
 
-
 // SetVolumeQuota applies a size limit on volume.
 func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, op *operations.Operation) error {
 	// Convert to bytes.
@@ -329,18 +282,23 @@ func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize b
 		return nil
 	}
 
-	volResource, err := d.getExistingVolumeResourceByVolume(vol)
+	volName, err := d.getVolumeName(vol)
+	if err != nil {
+		return err
+	}
+
+	psVol, err := d.client().GetVolumeByName(d.state.ShutdownCtx, volName)
 	if err != nil {
 		return err
 	}
 
 	// Do nothing if volume is already specified size (+/- 512 bytes).
-	if volResource.Size+512 > sizeBytes && volResource.Size-512 < sizeBytes {
+	if psVol.Size+512 > sizeBytes && psVol.Size-512 < sizeBytes {
 		return nil
 	}
 
 	// PowerStore supports increasing of size only.
-	if sizeBytes < volResource.Size {
+	if sizeBytes < psVol.Size {
 		return errors.New("Volume capacity can only be increased")
 	}
 
@@ -371,7 +329,7 @@ func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize b
 		}
 
 		// Resize block device.
-		err = d.client().ResizeVolumeByID(d.state.ShutdownCtx, volResource.ID, sizeBytes)
+		err = d.client().ResizeVolume(d.state.ShutdownCtx, psVol.ID, sizeBytes)
 		if err != nil {
 			return err
 		}
@@ -406,7 +364,7 @@ func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize b
 	}
 
 	// Resize block device.
-	err = d.client().ResizeVolumeByID(d.state.ShutdownCtx, volResource.ID, sizeBytes)
+	err = d.client().ResizeVolume(d.state.ShutdownCtx, psVol.ID, sizeBytes)
 	if err != nil {
 		return err
 	}
@@ -518,7 +476,7 @@ func (d *powerstore) CreateVolume(vol Volume, filler *VolumeFiller, op *operatio
 		return err
 	}
 
-	revert.Add(func() { _ = client.DeleteVolumeByID(d.state.ShutdownCtx, volID) })
+	revert.Add(func() { _ = client.DeleteVolume(d.state.ShutdownCtx, volID) })
 
 	if vol.contentType == ContentTypeFS {
 		devPath, cleanup, err := d.getMappedDevicePath(vol, true)
@@ -598,28 +556,50 @@ func (d *powerstore) CreateVolume(vol Volume, filler *VolumeFiller, op *operatio
 
 // DeleteVolume deletes a volume of the storage device.
 func (d *powerstore) DeleteVolume(vol Volume, op *operations.Operation) error {
-	volResource, err := d.getVolumeName(vol)
+	client := d.client()
+	ctx := d.state.ShutdownCtx
+
+	connector, err := d.connector()
 	if err != nil {
 		return err
 	}
 
-	if volResource != nil {
-		err = d.deleteVolumeResource(volResource)
-		if err != nil {
-			return err
-		}
-	}
-
-	hostResource, _, err := d.getHostWithInitiatorResource()
+	qn, err := connector.QualifiedName()
 	if err != nil {
 		return err
 	}
 
-	if hostResource != nil {
-		err = d.deleteHostAndInitiatorResource(hostResource)
-		if err != nil {
+	volName, err := d.getVolumeName(vol)
+	if err != nil {
+		return err
+	}
+
+	volID, err := client.GetVolumeID(ctx, volName)
+	if err != nil {
+		return err
+	}
+
+	err = client.DeleteVolume(ctx, volID)
+	if err != nil {
+		return err
+	}
+
+	psHost, err := client.GetCurrentHost(ctx, connector.Type(), qn)
+	if err != nil {
+		// If the host doesn't exist, continue with the deletion of
+		// the volume and do not try to delete the volume mapping as
+		// it cannot exist.
+		if !api.StatusErrorCheck(err, http.StatusNotFound) {
 			return err
 		}
+	} else {
+		// If the host exists, attempt to delete the volume mapping for the deleted volume.
+		// If the mapping doesn't exist, continue with the deletion as the volume is already deleted.
+		err = client.DetachHostFromVolume(ctx, psHost.ID, volID)
+	}
+
+	if psHost != nil {
+
 	}
 
 	if vol.IsVMBlock() {
@@ -662,19 +642,26 @@ func (d *powerstore) UnmountVolume(vol Volume, keepBlockDev bool, op *operations
 
 // VolumeSnapshots returns a list of volume snapshot names for the given volume.
 func (d *powerstore) VolumeSnapshots(vol Volume, op *operations.Operation) ([]string, error) {
-	volResource, err := d.getExistingVolumeResourceByVolume(vol)
+	client := d.client()
+
+	volName, err := d.getVolumeName(vol)
 	if err != nil {
 		return nil, err
 	}
 
-	volSnapResources, err := d.client().GetVolumeSnapshots(d.state.ShutdownCtx, volResource.ID)
+	volID, err := client.GetVolumeID(d.state.ShutdownCtx, volName)
 	if err != nil {
 		return nil, err
 	}
 
-	snapshotNames := make([]string, 0, len(volSnapResources))
-	for _, volSnapResource := range volSnapResources {
-		snapshotNames = append(snapshotNames, volSnapResource.Name)
+	snapshots, err := client.GetVolumeSnapshots(d.state.ShutdownCtx, volID)
+	if err != nil {
+		return nil, err
+	}
+
+	snapshotNames := make([]string, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		snapshotNames = append(snapshotNames, snapshot.Name)
 	}
 
 	return snapshotNames, nil
@@ -682,6 +669,8 @@ func (d *powerstore) VolumeSnapshots(vol Volume, op *operations.Operation) ([]st
 
 // CreateVolumeSnapshot creates a snapshot of a volume.
 func (d *powerstore) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
+	client := d.client()
+
 	revert := revert.New()
 	defer revert.Fail()
 
@@ -710,7 +699,22 @@ func (d *powerstore) CreateVolumeSnapshot(snapVol Volume, op *operations.Operati
 		return err
 	}
 
-	_, err = d.createVolumeResourceSnapshot(snapVol)
+	volName, err := d.getVolumeName(snapVol.GetParent())
+	if err != nil {
+		return err
+	}
+
+	snapVolName, err := d.getVolumeName(snapVol)
+	if err != nil {
+		return err
+	}
+
+	volID, err := client.GetVolumeID(d.state.ShutdownCtx, volName)
+	if err != nil {
+		return err
+	}
+
+	_, err = d.client().CreateVolumeSnapshot(d.state.ShutdownCtx, volID, snapVol.name)
 	if err != nil {
 		return err
 	}
@@ -1418,76 +1422,6 @@ func (d *powerstore) UnmountVolume(vol Volume, keepBlockDev bool, op *operations
 	return unmountVolume(d, vol, keepBlockDev, d.getMappedDevicePath, unmapVolume, op)
 }
 
-// MountVolumeSnapshot mounts a storage volume snapshot.
-func (d *powerstore) MountVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
-	revert := revert.New()
-	defer revert.Fail()
-
-	volSnapResource, err := d.getExistingVolumeResourceSnapshotByVolumeSnapshot(snapVol)
-// mapVolume maps the volume onto this host.
-func (d *powerstore) mapVolume(vol Volume) (revert.Hook, error) {
-	connector, err := d.connector()
-	if err != nil {
-		return nil, err
-	}
-
-	unlock, err := remoteVolumeMapLock(connector.Type(), d.Info().Name)
-	if err != nil {
-		return nil, err
-	}
-
-	defer unlock()
-
-	reverter := revert.New()
-	defer reverter.Fail()
-
-	hostResource, err := d.getOrCreateHostWithInitiatorResource()
-	if err != nil {
-		return nil, err
-	}
-
-	reverter.Add(func() { _ = d.deleteHostAndInitiatorResource(hostResource) })
-
-	volResource, err := d.getExistingVolumeResourceByVolume(vol)
->>>>>>> Stashed changes
-	if err != nil {
-		return err
-	}
-
-<<<<<<< Updated upstream
-	volResource, err := d.copyVolumeResourceSnapshotToVolume(volSnapResource, snapVol)
-	if err != nil {
-		return err
-	}
-
-	revert.Add(func() { _ = d.deleteVolumeResource(volResource) })
-
-	// For VMs, also create the temporary filesystem volume snapshot.
-	if snapVol.IsVMBlock() {
-		snapFsVol := snapVol.NewVMBlockFilesystemVolume()
-
-		volFsSnapResource, err := d.getExistingVolumeResourceSnapshotByVolumeSnapshot(snapFsVol)
-		if err != nil {
-			return err
-		}
-
-		volFsResource, err := d.copyVolumeResourceSnapshotToVolume(volFsSnapResource, snapFsVol)
-		if err != nil {
-			return err
-		}
-
-		revert.Add(func() { _ = d.deleteVolumeResource(volFsResource) })
-	}
-
-	err = d.MountVolume(snapVol, op)
-	if err != nil {
-		return err
-	}
-
-	revert.Success()
-	return nil
-}
-
 // UnmountVolume unmounts a storage volume snapshot, returns true if unmounted,
 // false if was not mounted.
 func (d *powerstore) UnmountVolumeSnapshot(snapVol Volume, op *operations.Operation) (bool, error) {
@@ -1601,7 +1535,6 @@ func (d *powerstore) mapVolume(vol Volume) (revert.Hook, error) {
 	reverter.Success()
 	return outerReverter.Fail, nil
 }
-
 
 // CreateVolumeSnapshot creates a snapshot of a volume.
 func (d *powerstore) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
