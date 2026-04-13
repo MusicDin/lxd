@@ -770,7 +770,20 @@ func (c *PowerStoreClient) DeleteHostInitiator(ctx context.Context, hostID strin
 // AttachHostToVolume attaches (maps) host to volume, returning true if the volume was freshly
 // attached to the host, and false if the volume was already attached to the host.
 func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID string, volumeID string) (bool, error) {
+	// Check if the volume is already attached to the host.
+	host, err := c.GetHostByID(ctx, hostID)
+	if err != nil {
+		return false, fmt.Errorf("Failed retrieving PowerStore host with ID %q: %w", hostID, err)
+	}
 
+	for _, mapping := range host.MappedVolumes {
+		if mapping.VolumeID == volumeID {
+			// The volume is already attached to the host.
+			return false, nil
+		}
+	}
+
+	// Attach the volume to the host.
 	url := api.NewURL().Path("api", "rest", "host", hostID, "attach")
 
 	req := map[string]any{
@@ -780,7 +793,7 @@ func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID string
 	// TODO: Remove DEBUG
 	c.logger.Warn("Attaching host to volume", logger.Ctx{"host_id": hostID, "volume_id": volumeID, "url": url.URL, "req": req})
 
-	err := c.requestAuthenticated(ctx, http.MethodPost, url.URL, req, nil, nil)
+	err = c.requestAuthenticated(ctx, http.MethodPost, url.URL, req, nil, nil)
 	if err != nil {
 		return false, fmt.Errorf("Failed attaching PowerStore volume to the host: %w", err)
 	}
@@ -790,7 +803,6 @@ func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID string
 
 // DetachHostFromVolume detaches (unmaps) host from volume.
 func (c *PowerStoreClient) DetachHostFromVolume(ctx context.Context, hostID string, volumeID string) error {
-
 	url := api.NewURL().Path("api", "rest", "host", hostID, "detach")
 
 	req := map[string]any{
