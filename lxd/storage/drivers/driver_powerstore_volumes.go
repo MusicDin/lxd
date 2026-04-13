@@ -913,7 +913,7 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 	// Remove disk device.
 	err = connector.RemoveDiskDevice(d.state.ShutdownCtx, volumePath)
 	if err != nil {
-		return fmt.Errorf("Failed unmapping Pure Storage volume %q: %w", vol.name, err)
+		return fmt.Errorf("Failed unmapping PowerStore volume %q: %w", vol.name, err)
 	}
 
 	// Disconnect the volume from the host and ignore error if connection does not exist.
@@ -927,11 +927,11 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 	defer cancel()
 
 	if volumePath != "" && !block.WaitDiskDeviceGone(ctx, volumePath) {
-		return fmt.Errorf("Timeout exceeded waiting for Pure Storage volume %q to disappear on path %q", vol.name, volumePath)
+		return fmt.Errorf("Timeout exceeded waiting for PowerStore volume %q to disappear on path %q", vol.name, volumePath)
 	}
 
 	// If this was the last volume being unmapped from this system, disconnect the active session
-	// and remove the host from Pure Storage.
+	// and remove the host from PowerStore.
 	if len(host.MappedVolumes) <= 1 {
 		targets, err := d.getTargets()
 		if err != nil {
