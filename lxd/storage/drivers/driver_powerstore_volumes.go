@@ -987,12 +987,17 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 
 		logger.Warn("Disconnect targets", logger.Ctx{"vol": vol.name, "found_targets": strings.Join(targetsString, ","), "host": fmt.Sprintf("%#v", host)})
 
+		var disconnectErr error
 		for _, target := range targets {
 			// Disconnect from the target.
 			err = connector.Disconnect(target.QualifiedName)
 			if err != nil {
-				return err
+				disconnectErr = err
 			}
+		}
+
+		if disconnectErr != nil {
+			return fmt.Errorf("Failed disconnecting from targets after unmapping the last volume %q: %w", vol.name, disconnectErr)
 		}
 
 		// Remove the host from PowerStore.

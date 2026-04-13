@@ -164,6 +164,16 @@ func (c *connectorISCSI) Disconnect(targetQN string) error {
 	logger.Warn("Disconnecting from iSCSI target", logger.Ctx{"target_qn": targetQN})
 	defer logger.Warn("iSCSI target disconnected", logger.Ctx{"target_qn": targetQN})
 
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	unlock, err := locking.Lock(ctx, targetQN)
+	if err != nil {
+		return fmt.Errorf("Failed acquiring lock when disconnecting from iSCSI target %q", targetQN)
+	}
+
+	defer unlock()
+
 	// Find an existing iSCSI session.
 	session, err := c.findSession(targetQN)
 	if err != nil {
@@ -172,16 +182,6 @@ func (c *connectorISCSI) Disconnect(targetQN string) error {
 
 	// Disconnect from the iSCSI target if there is an existing session.
 	if session != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		unlock, err := locking.Lock(ctx, targetQN)
-		if err != nil {
-			return fmt.Errorf("Failed acquiring lock when disconnecting from iSCSI target %q", targetQN)
-		}
-
-		defer unlock()
-
 		// Do not pass a cancelable context as the operation is relatively short
 		// and most importantly we do not want to "partially" disconnect from
 		// the target - potentially leaving some unclosed sessions.
@@ -201,7 +201,12 @@ func (c *connectorISCSI) Disconnect(targetQN string) error {
 		// Remove target entries from local iSCSI database.
 		_, err = shared.RunCommand(context.Background(), "iscsiadm", "--mode", "node", "--targetname", targetQN, "--op", "delete")
 		if err != nil {
-			return fmt.Errorf("Failed removing local iSCSI entries for target %q: %w", targetQN, err)
+			exitCode, _ := shared.ExitStatus(err)
+			if exitCode == 6 {
+				logger.Errorf("Failed removing local iSCSI entry for target %q: %v", targetQN, err)
+			} else {
+				return fmt.Errorf("Failed removing local iSCSI entries for target %q: %w", targetQN, err)
+			}
 		}
 	}
 
