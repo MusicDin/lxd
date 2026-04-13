@@ -1078,6 +1078,17 @@ func (c *PowerStoreClient) GetVolumeSnapshots(ctx context.Context, volumeID stri
 	return snapshots, nil
 }
 
+// GetVolumeSnapshotID returns the volume snapshot ID for the given name.
+func (c *PowerStoreClient) GetVolumeSnapshotID(ctx context.Context, snapshotName string) (volumeID string, err error) {
+	c.logger.Warn("Getting volume snapshot ID", logger.Ctx{"snapshot_name": snapshotName})
+	snapshot, err := c.GetVolumeSnapshotByName(ctx, snapshotName)
+	if err != nil {
+		return "", err
+	}
+
+	return snapshot.ID, nil
+}
+
 // GetVolumeSnapshotByID retrieves volume snapshot using its ID.
 func (c *PowerStoreClient) GetVolumeSnapshotByID(ctx context.Context, snapshotID string) (*PowerStoreVolume, error) {
 	c.logger.Warn("Getting volume snapshot by ID", logger.Ctx{"snapshot_id": snapshotID})
