@@ -29,7 +29,7 @@ import (
 )
 
 // powerStoreResourceNamePrefix common prefix for all resource names in PowerStore.
-const powerStoreResourceNamePrefix = "lxd:"
+const powerStoreResourceNamePrefix = "lxd/"
 
 // powerStorePoolAndVolSep separates pool name and volume data in encoded volume names.
 const powerStorePoolAndVolSep = "-"
