@@ -494,7 +494,7 @@ func (d *powerstore) DeleteVolume(vol Volume, op *operations.Operation) error {
 	} else {
 		// If the host exists, attempt to delete the volume mapping for the deleted volume.
 		// If the mapping doesn't exist, continue with the deletion as the volume is already deleted.
-		err = client.DetachHostFromVolume(ctx, psHost.ID, volID)
+		err = client.DetachVolumeFromHost(ctx, psHost.ID, volID)
 		if err != nil {
 			return err
 		}
@@ -865,13 +865,13 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 	reverter.Add(cleanup)
 
 	// Ensure the volume is connected to the host.
-	connCreated, err := client.AttachHostToVolume(context.TODO(), hostID, volID)
+	connCreated, err := client.AttachVolumeToHost(context.TODO(), hostID, volID)
 	if err != nil {
 		return nil, err
 	}
 
 	if connCreated {
-		reverter.Add(func() { _ = client.DetachHostFromVolume(context.TODO(), hostID, volID) })
+		reverter.Add(func() { _ = client.DetachVolumeFromHost(context.TODO(), hostID, volID) })
 	}
 
 	// Find the array's qualified name for the configured mode.
@@ -959,7 +959,7 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 	}
 
 	// Disconnect the volume from the host and ignore error if connection does not exist.
-	err = d.client().DetachHostFromVolume(context.TODO(), host.ID, volID)
+	err = d.client().DetachVolumeFromHost(context.TODO(), host.ID, volID)
 	if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
 		return err
 	}
@@ -1301,7 +1301,7 @@ func (d *powerstore) MountVolumeSnapshot(snapVol Volume, op *operations.Operatio
 	return d.MountVolume(snapVol, op)
 }
 
-// UnmountVolume unmounts a storage volume snapshot, returns true if unmounted,
+// UnmountVolumeSnapshot unmounts a storage volume snapshot, returns true if unmounted,
 // false if was not mounted.
 func (d *powerstore) UnmountVolumeSnapshot(snapVol Volume, op *operations.Operation) (bool, error) {
 	return d.UnmountVolume(snapVol, false, op)

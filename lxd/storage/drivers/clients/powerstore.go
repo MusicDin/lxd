@@ -799,9 +799,9 @@ func (c *PowerStoreClient) DeleteHost(ctx context.Context, hostID string) error 
 // 	return nil
 // }
 
-// AttachHostToVolume attaches (maps) host to volume, returning true if the volume was freshly
+// AttachVolumeToHost attaches (maps) volume to host, returning true if the volume was freshly
 // attached to the host, and false if the volume was already attached to the host.
-func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID string, volumeID string) (bool, error) {
+func (c *PowerStoreClient) AttachVolumeToHost(ctx context.Context, hostID string, volumeID string) (bool, error) {
 	// Check if the volume is already attached to the host.
 	host, err := c.GetHost(ctx, hostID)
 	if err != nil {
@@ -822,7 +822,7 @@ func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID string
 		"volume_id": volumeID,
 	}
 
-	c.logger.Warn("Attaching host to volume", logger.Ctx{"host_id": hostID, "volume_id": volumeID})
+	c.logger.Warn("Attaching volume to host", logger.Ctx{"host_id": hostID, "volume_id": volumeID})
 
 	err = c.requestAuthenticated(ctx, http.MethodPost, url.URL, req, nil, nil)
 	if err != nil {
@@ -832,15 +832,15 @@ func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID string
 	return true, nil
 }
 
-// DetachHostFromVolume detaches (unmaps) host from volume.
-func (c *PowerStoreClient) DetachHostFromVolume(ctx context.Context, hostID string, volumeID string) error {
+// DetachVolumeFromHost detaches (unmaps) volume from host.
+func (c *PowerStoreClient) DetachVolumeFromHost(ctx context.Context, hostID string, volumeID string) error {
 	url := api.NewURL().Path("api", "rest", "host", hostID, "detach")
 
 	req := map[string]any{
 		"volume_id": volumeID,
 	}
 
-	c.logger.Warn("Detaching host from volume", logger.Ctx{"host_id": hostID, "volume_id": volumeID})
+	c.logger.Warn("Detaching volume from host", logger.Ctx{"host_id": hostID, "volume_id": volumeID})
 
 	err := c.requestAuthenticated(ctx, http.MethodPost, url.URL, req, nil, nil)
 	if err != nil {
