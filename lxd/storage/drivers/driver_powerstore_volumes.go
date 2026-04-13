@@ -791,6 +791,9 @@ func (d *powerstore) getMappedDevicePath(vol Volume, mapVolume bool) (string, re
 
 // mapVolume maps the given volume onto this host.
 func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
+	logger.Warn("Mapping volume", logger.Ctx{"vol": vol.name})
+	defer logger.Warn("Volume mapped", logger.Ctx{"vol": vol.name})
+
 	client := d.client()
 
 	reverter := revert.New()
@@ -847,6 +850,7 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 
 	// Connect to the array.
 	for _, target := range targets {
+		logger.Warn("Connecting to target", logger.Ctx{"vol": vol.name, "target": target.QualifiedName, "address": target.Address})
 		connReverter, err := connector.Connect(d.state.ShutdownCtx, target.QualifiedName, target.Address)
 		if err != nil {
 			return nil, err
@@ -875,6 +879,9 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 
 // unmapVolume unmaps the given volume from this host.
 func (d *powerstore) unmapVolume(vol Volume) error {
+	logger.Warn("Unmapping volume", logger.Ctx{"vol": vol.name})
+	defer logger.Warn("Volume unmapped", logger.Ctx{"vol": vol.name})
+
 	connector, err := d.connector()
 	if err != nil {
 		return err
@@ -937,6 +944,13 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 		if err != nil {
 			return err
 		}
+
+		targetsString := make([]string, len(targets))
+		for i, target := range targets {
+			targetsString[i] = target.QualifiedName + "[" + target.Address + "]"
+		}
+
+		logger.Warn("Disconnect targets", logger.Ctx{"vol": vol.name, "found_targets": strings.Join(targetsString, ","), "host": fmt.Sprintf("%#v", host)})
 
 		for _, target := range targets {
 			// Disconnect from the target.
