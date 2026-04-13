@@ -798,7 +798,7 @@ func (d *powerstore) getMappedDevicePath(vol Volume, mapVolume bool) (string, re
 
 	_, wwn, ok := strings.Cut(psVol.WWN, ".")
 	if !ok {
-		return "", nil, fmt.Errorf("Failed parsing WWN for volume %q: %w", vol.name, err)
+		return "", nil, fmt.Errorf("Failed parsing WWN for volume %q: Invalid format %q", vol.name, psVol.WWN)
 	}
 
 	// Filters devices by matching the device path with the WWN.
