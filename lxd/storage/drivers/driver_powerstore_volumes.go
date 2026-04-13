@@ -1236,9 +1236,9 @@ func (d *powerstore) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operati
 		return err
 	}
 
-	mountPath := snapVol.MountPath()
-
 	if snapVol.contentType == ContentTypeFS {
+		mountPath := snapVol.MountPath()
+
 		err = wipeDirectory(mountPath)
 		if err != nil {
 			return err

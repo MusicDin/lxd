@@ -682,21 +682,36 @@ func (c *PowerStoreClient) GetCurrentHost(ctx context.Context, connectorType str
 
 // GetHost retrieves host using its ID.
 func (c *PowerStoreClient) GetHost(ctx context.Context, hostID string) (*PowerStoreHost, error) {
-	c.logger.Warn("Getting host by ID", logger.Ctx{"host_id": hostID})
-	filters := map[string]string{
-		"id": "eq." + hostID,
-	}
+	c.logger.Warn("Retrieving host", logger.Ctx{"host_id": hostID})
+	url := api.NewURL().Path("api", "rest", "host", hostID)
 
-	hosts, err := c.getHosts(ctx, filters, 1)
+	var host PowerStoreHost
+	err := c.requestAuthenticated(ctx, http.MethodGet, url.URL, nil, &host, nil)
 	if err != nil {
-		return nil, err
+		psErr, ok := err.(*powerStoreError)
+		if ok && psErr.HTTPStatusCode() == http.StatusNotFound {
+			return nil, api.StatusErrorf(http.StatusNotFound, "Host with ID %q not found", hostID)
+		}
+
+		return nil, fmt.Errorf("Failed retrieving PowerStore host: %w", err)
 	}
 
-	if len(hosts) == 0 {
-		return nil, api.StatusErrorf(http.StatusNotFound, "Host with ID %q not found", hostID)
-	}
+	return &host, nil
+	// c.logger.Warn("Getting host by ID", logger.Ctx{"host_id": hostID})
+	// filters := map[string]string{
+	// 	"id": "eq." + hostID,
+	// }
 
-	return &hosts[0], nil
+	// hosts, err := c.getHosts(ctx, filters, 1)
+	// if err != nil {
+	// 	return nil, err
+	// }
+
+	// if len(hosts) == 0 {
+	// 	return nil, api.StatusErrorf(http.StatusNotFound, "Host with ID %q not found", hostID)
+	// }
+
+	// return &hosts[0], nil
 }
 
 // GetHostByName retrieves host using its name.
@@ -908,43 +923,40 @@ func (c *PowerStoreClient) GetVolumes(ctx context.Context) ([]PowerStoreVolume, 
 }
 
 // GetVolumeByID retrieves volume using its ID.
-func (c *PowerStoreClient) GetVolumeByID(ctx context.Context, id string) (*PowerStoreVolume, error) {
-	c.logger.Warn("Getting volume by ID", logger.Ctx{"volume_id": id})
-	filter := map[string]string{
-		"id": "eq." + id,
-		"or": "(type.eq.Primary,type.eq.Clone)",
-	}
+func (c *PowerStoreClient) GetVolumeByID(ctx context.Context, volumeID string) (*PowerStoreVolume, error) {
+	url := api.NewURL().Path("api", "rest", "volume", volumeID)
 
-	vols, err := c.getVolumes(ctx, filter, 1)
+	var resp PowerStoreVolume
+	err := c.requestAuthenticated(ctx, http.MethodGet, url.URL, nil, &resp, nil)
 	if err != nil {
-		return nil, fmt.Errorf("Failed retrieving PowerStore volume with ID %q: %w", id, err)
+		psErr, ok := err.(*powerStoreError)
+		if ok && psErr.HTTPStatusCode() == http.StatusNotFound {
+			return nil, api.StatusErrorf(http.StatusNotFound, "Volume with ID %q not found", volumeID)
+		}
+
+		return nil, fmt.Errorf("Failed retrieving PowerStore volume with ID %q: %w", volumeID, err)
 	}
 
-	if len(vols) == 0 {
-		return nil, api.StatusErrorf(http.StatusNotFound, "Volume with ID %q not found", id)
-	}
-
-	return &vols[0], nil
+	return &resp, nil
 }
 
 // GetVolumeByName retrieves volume using its name.
-func (c *PowerStoreClient) GetVolumeByName(ctx context.Context, name string) (*PowerStoreVolume, error) {
-	c.logger.Warn("Getting volume by name", logger.Ctx{"name": name})
-	filter := map[string]string{
-		"name": "eq." + name,
-		"or":   "(type.eq.Primary,type.eq.Clone)",
-	}
+// GetVolumeByID retrieves volume using its ID.
+func (c *PowerStoreClient) GetVolumeByName(ctx context.Context, volumeName string) (*PowerStoreVolume, error) {
+	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName)
 
-	vols, err := c.getVolumes(ctx, filter, 1)
+	var resp PowerStoreVolume
+	err := c.requestAuthenticated(ctx, http.MethodGet, url.URL, nil, &resp, nil)
 	if err != nil {
-		return nil, fmt.Errorf("Failed retrieving PowerStore volume with name %q: %w", name, err)
+		psErr, ok := err.(*powerStoreError)
+		if ok && psErr.HTTPStatusCode() == http.StatusNotFound {
+			return nil, api.StatusErrorf(http.StatusNotFound, "Volume with name %q not found", volumeName)
+		}
+
+		return nil, fmt.Errorf("Failed retrieving PowerStore volume with name %q: %w", volumeName, err)
 	}
 
-	if len(vols) == 0 {
-		return nil, api.StatusErrorf(http.StatusNotFound, "Volume with name %q not found", name)
-	}
-
-	return &vols[0], nil
+	return &resp, nil
 }
 
 // GetVolumeID returns the volume ID for the given name.
@@ -1091,44 +1103,46 @@ func (c *PowerStoreClient) GetVolumeSnapshotID(ctx context.Context, snapshotName
 
 // GetVolumeSnapshotByID retrieves volume snapshot using its ID.
 func (c *PowerStoreClient) GetVolumeSnapshotByID(ctx context.Context, snapshotID string) (*PowerStoreVolume, error) {
-	c.logger.Warn("Getting volume snapshot by ID", logger.Ctx{"snapshot_id": snapshotID})
-	filter := map[string]string{
-		// "protection_data->>parent_id": "eq." + volumeID, // TODO: Should we search snapshot for a specific parent as well?
-		"type": "eq.Snapshot",
-		"id":   "eq." + snapshotID,
-	}
+	return c.GetVolumeByID(ctx, snapshotID)
+	// c.logger.Warn("Getting volume snapshot by ID", logger.Ctx{"snapshot_id": snapshotID})
+	// filter := map[string]string{
+	// 	// "protection_data->>parent_id": "eq." + volumeID, // TODO: Should we search snapshot for a specific parent as well?
+	// 	"type": "eq.Snapshot",
+	// 	"id":   "eq." + snapshotID,
+	// }
 
-	snapshots, err := c.getVolumes(ctx, filter, 1)
-	if err != nil {
-		return nil, fmt.Errorf("Failed retrieving PowerStore volume snapshot with ID %q: %w", snapshotID, err)
-	}
+	// snapshots, err := c.getVolumes(ctx, filter, 1)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("Failed retrieving PowerStore volume snapshot with ID %q: %w", snapshotID, err)
+	// }
 
-	if len(snapshots) == 0 {
-		return nil, api.StatusErrorf(http.StatusNotFound, "Volume snapshot with ID %q not found", snapshotID)
-	}
+	// if len(snapshots) == 0 {
+	// 	return nil, api.StatusErrorf(http.StatusNotFound, "Volume snapshot with ID %q not found", snapshotID)
+	// }
 
-	return &snapshots[0], nil
+	// return &snapshots[0], nil
 }
 
 // GetVolumeSnapshotByName retrieves volume snapshot using its name.
-func (c *PowerStoreClient) GetVolumeSnapshotByName(ctx context.Context, name string) (*PowerStoreVolume, error) {
-	c.logger.Warn("Getting volume snapshot by name", logger.Ctx{"name": name})
-	filter := map[string]string{
-		// "protection_data->>parent_id": "eq." + volumeID, // TODO: Should we search snapshot for a specific parent as well?
-		"type": "eq.Snapshot",
-		"name": "eq." + name,
-	}
+func (c *PowerStoreClient) GetVolumeSnapshotByName(ctx context.Context, snapshotName string) (*PowerStoreVolume, error) {
+	return c.GetVolumeByName(ctx, snapshotName)
+	// c.logger.Warn("Getting volume snapshot by name", logger.Ctx{"name": snapshotName})
+	// filter := map[string]string{
+	// 	// "protection_data->>parent_id": "eq." + volumeID, // TODO: Should we search snapshot for a specific parent as well?
+	// 	"type": "eq.Snapshot",
+	// 	"name": "eq." + snapshotName,
+	// }
 
-	snapshots, err := c.getVolumes(ctx, filter, 1)
-	if err != nil {
-		return nil, fmt.Errorf("Failed retrieving PowerStore volume snapshot with name %q: %w", name, err)
-	}
+	// snapshots, err := c.getVolumes(ctx, filter, 1)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("Failed retrieving PowerStore volume snapshot with name %q: %w", snapshotName, err)
+	// }
 
-	if len(snapshots) == 0 {
-		return nil, api.StatusErrorf(http.StatusNotFound, "Volume snapshot with name %q not found", name)
-	}
+	// if len(snapshots) == 0 {
+	// 	return nil, api.StatusErrorf(http.StatusNotFound, "Volume snapshot with name %q not found", snapshotName)
+	// }
 
-	return &snapshots[0], nil
+	// return &snapshots[0], nil
 }
 
 // CreateVolumeSnapshot creates a new snapshot of a volume.
@@ -1142,7 +1156,6 @@ func (c *PowerStoreClient) CreateVolumeSnapshot(ctx context.Context, volumeID st
 	}
 
 	var resp PowerStoreResourceID
-
 	err = c.requestAuthenticated(ctx, http.MethodPost, url.URL, req, &resp, nil)
 	if err != nil {
 		return "", fmt.Errorf("Failed creating PowerStore volume snapshot with name %q: %w", snapshotName, err)
