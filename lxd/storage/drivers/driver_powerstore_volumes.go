@@ -29,7 +29,7 @@ import (
 )
 
 // powerStoreResourceNamePrefix common prefix for all resource names in PowerStore.
-const powerStoreResourceNamePrefix = "lxd/"
+const powerStoreResourceNamePrefix = "lxd-"
 
 // powerStorePoolAndVolSep separates pool name and volume data in encoded volume names.
 const powerStorePoolAndVolSep = "-"
@@ -682,7 +682,7 @@ func (d *powerstore) getVolumeName(vol Volume) (string, error) {
 		return "", fmt.Errorf(`Failed parsing "volatile.uuid" from volume %q: %w`, vol.name, err)
 	}
 
-	volName := base64.StdEncoding.EncodeToString(volUUID[:])
+	volName := volUUID.String()
 
 	// Search for the volume type prefix, and if found, prepend it to the volume
 	// name.
