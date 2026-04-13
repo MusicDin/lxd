@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/canonical/lxd/lxd/storage/connectors"
 	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/logger"
 )
@@ -570,40 +571,42 @@ func parsePaginationOffset(headers map[string]string) (newOffset uint64, hasMore
 	return newOffset, totalItems > newOffset, nil
 }
 
-// GetApplianceMetrics retrieves appliance metrics.
-func (c *PowerStoreClient) GetApplianceMetrics(ctx context.Context) ([]PowerStoreApplianceMetrics, error) {
-	c.logger.Warn("Getting appliance metrics")
-	url := api.NewURL().Path("api", "rest", "appliance_list_cma_view")
-	url = url.WithQuery("select", "id,name,avg_latency,total_iops,total_bandwidth,last_logical_total_space,last_logical_used_space,last_physical_total_space,last_physical_used_space")
+// func (c *PowerStoreClient) getInitiatorsByQuery(ctx context.Context, queryFilters map[string]string, limit int) ([]PowerStoreInitiator, error) {
+// 	url := api.NewURL().Path("api", "rest", "initiator")
+// 	url = url.WithQuery("select", "id,host_id,port_name,port_type")
 
-	var offset uint64
-	var metrics []PowerStoreApplianceMetrics
+// 	for k, v := range queryFilters {
+// 		url = url.WithQuery(k, v)
+// 	}
 
-	for {
-		respBody := []PowerStoreApplianceMetrics{}
-		respHeaders := make(map[string]string)
+// 	var offset uint64
+// 	initiators := []PowerStoreInitiator{}
 
-		pageURL := withPaginationQuery(url.URL, offset, -1)
-		err := c.requestAuthenticated(ctx, http.MethodGet, pageURL, nil, &respBody, respHeaders)
-		if err != nil {
-			return nil, fmt.Errorf("Failed retrieving metrics of PowerStore appliances: %w", err)
-		}
+// 	for {
+// 		respBody := []PowerStoreInitiator{}
+// 		respHeaders := make(map[string]string)
 
-		nextOffset, hasMoreItems, err := parsePaginationOffset(respHeaders)
-		if err != nil {
-			return nil, fmt.Errorf("Failed retrieving metrics of PowerStore appliances: %w", err)
-		}
+// 		pageURL := withPaginationQuery(url.URL, offset, limit)
+// 		err := c.requestAuthenticated(ctx, http.MethodGet, pageURL, nil, &respBody, respHeaders)
+// 		if err != nil {
+// 			return nil, fmt.Errorf("Failed retrieving PowerStore initiators: %w", err)
+// 		}
 
-		metrics = append(metrics, respBody...)
-		offset = nextOffset
+// 		nextOffset, hasMoreItems, err := parsePaginationOffset(respHeaders)
+// 		if err != nil {
+// 			return nil, fmt.Errorf("Failed retrieving PowerStore initiators: %w", err)
+// 		}
 
-		if !hasMoreItems {
-			break
-		}
-	}
+// 		initiators = append(initiators, respBody...)
+// 		offset = nextOffset
 
-	return metrics, nil
-}
+// 		if !hasMoreItems {
+// 			break
+// 		}
+// 	}
+
+// 	return initiators, nil
+// }
 
 func (c *PowerStoreClient) getHosts(ctx context.Context, queryFilters map[string]string, limit int) ([]PowerStoreHost, error) {
 	url := api.NewURL().Path("api", "rest", "host")
@@ -665,11 +668,31 @@ func (c *PowerStoreClient) GetCurrentHost(ctx context.Context, connectorType str
 	return nil, api.StatusErrorf(http.StatusNotFound, "Host with qualified name %q (%q) not found", qn, connectorType)
 }
 
-// GetHostByID retrieves host using its ID.
-func (c *PowerStoreClient) GetHostByID(ctx context.Context, id string) (*PowerStoreHost, error) {
-	c.logger.Warn("Getting host by ID", logger.Ctx{"host_id": id})
+// GetHostByInitiator retrieves host that have initiator matching port name and type.
+// func (c *PowerStoreClient) GetHostByInitiator(ctx context.Context, initiator *PowerStoreHostInitiator) (*PowerStoreHost, error) {
+// 	c.logger.Warn("Getting host by initiator", logger.Ctx{"port_name": initiator.PortName, "port_type": initiator.Type})
+// 	filters := map[string]string{
+// 		"port_name": "eq." + initiator.PortName,
+// 		"port_type": "eq." + string(initiator.Type),
+// 	}
+
+// 	initiators, err := c.getInitiatorsByQuery(ctx, filters, 1)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	if len(initiators) == 0 {
+// 		return nil, api.StatusErrorf(http.StatusNotFound, "Host with initiator port %q and type %q not found", initiator.PortName, initiator.Type)
+// 	}
+
+// 	return c.GetHostByID(ctx, initiators[0].HostID)
+// }
+
+// GetHost retrieves host using its ID.
+func (c *PowerStoreClient) GetHost(ctx context.Context, hostID string) (*PowerStoreHost, error) {
+	c.logger.Warn("Getting host by ID", logger.Ctx{"host_id": hostID})
 	filters := map[string]string{
-		"id": "eq." + id,
+		"id": "eq." + hostID,
 	}
 
 	hosts, err := c.getHosts(ctx, filters, 1)
@@ -678,38 +701,54 @@ func (c *PowerStoreClient) GetHostByID(ctx context.Context, id string) (*PowerSt
 	}
 
 	if len(hosts) == 0 {
-		return nil, api.StatusErrorf(http.StatusNotFound, "Host with ID %q not found", id)
+		return nil, api.StatusErrorf(http.StatusNotFound, "Host with ID %q not found", hostID)
 	}
 
 	return &hosts[0], nil
 }
 
 // GetHostByName retrieves host using its name.
-func (c *PowerStoreClient) GetHostByName(ctx context.Context, name string) (*PowerStoreHost, error) {
-	c.logger.Warn("Getting host by name", logger.Ctx{"name": name})
-	filters := map[string]string{
-		"name": "eq." + name,
-	}
+// func (c *PowerStoreClient) GetHostByName(ctx context.Context, name string) (*PowerStoreHost, error) {
+// 	c.logger.Warn("Getting host by name", logger.Ctx{"name": name})
+// 	filters := map[string]string{
+// 		"name": "eq." + name,
+// 	}
 
-	hosts, err := c.getHosts(ctx, filters, 1)
-	if err != nil {
-		return nil, err
-	}
+// 	hosts, err := c.getHosts(ctx, filters, 1)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	if len(hosts) == 0 {
-		return nil, api.StatusErrorf(http.StatusNotFound, "Host with name %q not found", name)
-	}
+// 	if len(hosts) == 0 {
+// 		return nil, api.StatusErrorf(http.StatusNotFound, "Host with name %q not found", name)
+// 	}
 
-	return &hosts[0], nil
-}
+// 	return &hosts[0], nil
+// }
 
 // CreateHost creates new host.
 func (c *PowerStoreClient) CreateHost(ctx context.Context, connectorType string, hostname string, qn string) (hostID string, err error) {
 	c.logger.Warn("Creating host", logger.Ctx{"hostname": hostname, "connector_type": connectorType, "qn": qn})
 	url := api.NewURL().Path("api", "rest", "host")
 
+	var portType PowerStoreInitiatorType
+	switch connectorType {
+	case connectors.TypeISCSI:
+		portType = InitiatorPortTypeEnumISCSI
+	case connectors.TypeNVME:
+		portType = InitiatorPortTypeEnumNVMe
+	default:
+		return "", fmt.Errorf("Unsupported connector type: %q", connectorType)
+	}
+
 	req := map[string]any{
 		"name": hostname,
+		"initiators": []map[string]any{
+			{
+				"port_name": qn,
+				"port_type": portType,
+			},
+		},
 	}
 
 	resp := PowerStoreResourceID{}
@@ -735,43 +774,43 @@ func (c *PowerStoreClient) DeleteHost(ctx context.Context, hostID string) error 
 }
 
 // AddHostInitiator adds initiator to host using its ID.
-func (c *PowerStoreClient) AddHostInitiator(ctx context.Context, hostID string, initiator *PowerStoreHostInitiator) error {
-	c.logger.Warn("Adding host initiator", logger.Ctx{"host_id": hostID, "port_name": initiator.PortName})
-	url := api.NewURL().Path("api", "rest", "host", hostID)
-	req := map[string]any{
-		"add_initiators": []PowerStoreHostInitiator{*initiator},
-	}
+// func (c *PowerStoreClient) AddHostInitiator(ctx context.Context, hostID string, initiator *PowerStoreHostInitiator) error {
+// 	c.logger.Warn("Adding host initiator", logger.Ctx{"host_id": hostID, "port_name": initiator.PortName})
+// 	url := api.NewURL().Path("api", "rest", "host", hostID)
+// 	req := map[string]any{
+// 		"add_initiators": []PowerStoreHostInitiator{*initiator},
+// 	}
 
-	err := c.requestAuthenticated(ctx, http.MethodPatch, url.URL, req, nil, nil)
-	if err != nil {
-		return fmt.Errorf("Failed adding initiator to PowerStore host: %w", err)
-	}
+// 	err := c.requestAuthenticated(ctx, http.MethodPatch, url.URL, req, nil, nil)
+// 	if err != nil {
+// 		return fmt.Errorf("Failed adding initiator to PowerStore host: %w", err)
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
-// DeleteHostInitiator removes initiator matching port name from host using its ID.
-func (c *PowerStoreClient) DeleteHostInitiator(ctx context.Context, hostID string, initiator *PowerStoreHostInitiator) error {
-	c.logger.Warn("Deleting host initiator", logger.Ctx{"host_id": hostID, "port_name": initiator.PortName})
-	url := api.NewURL().Path("api", "rest", "host", hostID)
+// // DeleteHostInitiator removes initiator matching port name from host using its ID.
+// func (c *PowerStoreClient) DeleteHostInitiator(ctx context.Context, hostID string, initiator *PowerStoreHostInitiator) error {
+// 	c.logger.Warn("Deleting host initiator", logger.Ctx{"host_id": hostID, "port_name": initiator.PortName})
+// 	url := api.NewURL().Path("api", "rest", "host", hostID)
 
-	req := map[string]any{
-		"remove_initiators": []string{initiator.PortName},
-	}
+// 	req := map[string]any{
+// 		"remove_initiators": []string{initiator.PortName},
+// 	}
 
-	err := c.requestAuthenticated(ctx, http.MethodPatch, url.URL, req, nil, nil)
-	if err != nil {
-		return fmt.Errorf("Failed removing initiator from PowerStore host: %w", err)
-	}
+// 	err := c.requestAuthenticated(ctx, http.MethodPatch, url.URL, req, nil, nil)
+// 	if err != nil {
+// 		return fmt.Errorf("Failed removing initiator from PowerStore host: %w", err)
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 // AttachHostToVolume attaches (maps) host to volume, returning true if the volume was freshly
 // attached to the host, and false if the volume was already attached to the host.
 func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID string, volumeID string) (bool, error) {
 	// Check if the volume is already attached to the host.
-	host, err := c.GetHostByID(ctx, hostID)
+	host, err := c.GetHost(ctx, hostID)
 	if err != nil {
 		return false, fmt.Errorf("Failed retrieving PowerStore host with ID %q: %w", hostID, err)
 	}
@@ -816,63 +855,6 @@ func (c *PowerStoreClient) DetachHostFromVolume(ctx context.Context, hostID stri
 	}
 
 	return nil
-}
-
-func (c *PowerStoreClient) getInitiatorsByQuery(ctx context.Context, queryFilters map[string]string, limit int) ([]PowerStoreInitiator, error) {
-	url := api.NewURL().Path("api", "rest", "initiator")
-	url = url.WithQuery("select", "id,host_id,port_name,port_type")
-
-	for k, v := range queryFilters {
-		url = url.WithQuery(k, v)
-	}
-
-	var offset uint64
-	initiators := []PowerStoreInitiator{}
-
-	for {
-		respBody := []PowerStoreInitiator{}
-		respHeaders := make(map[string]string)
-
-		pageURL := withPaginationQuery(url.URL, offset, limit)
-		err := c.requestAuthenticated(ctx, http.MethodGet, pageURL, nil, &respBody, respHeaders)
-		if err != nil {
-			return nil, fmt.Errorf("Failed retrieving PowerStore initiators: %w", err)
-		}
-
-		nextOffset, hasMoreItems, err := parsePaginationOffset(respHeaders)
-		if err != nil {
-			return nil, fmt.Errorf("Failed retrieving PowerStore initiators: %w", err)
-		}
-
-		initiators = append(initiators, respBody...)
-		offset = nextOffset
-
-		if !hasMoreItems {
-			break
-		}
-	}
-
-	return initiators, nil
-}
-
-// GetHostByInitiator retrieves host that have initiator matching port name and type.
-func (c *PowerStoreClient) GetHostByInitiator(ctx context.Context, initiator *PowerStoreHostInitiator) (*PowerStoreHost, error) {
-	c.logger.Warn("Getting host by initiator", logger.Ctx{"port_name": initiator.PortName, "port_type": initiator.Type})
-	filters := map[string]string{
-		"port_name": "eq." + initiator.PortName,
-		"port_type": "eq." + string(initiator.Type),
-	}
-
-	initiators, err := c.getInitiatorsByQuery(ctx, filters, 1)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(initiators) == 0 {
-		return nil, api.StatusErrorf(http.StatusNotFound, "Host with initiator port %q and type %q not found", initiator.PortName, initiator.Type)
-	}
-
-	return c.GetHostByID(ctx, initiators[0].HostID)
 }
 
 func (c *PowerStoreClient) getVolumes(ctx context.Context, queryFilter map[string]string, limit int) ([]PowerStoreVolume, error) {
@@ -1193,4 +1175,39 @@ func (c *PowerStoreClient) RemoveVolumeGroupMembers(ctx context.Context, volumeG
 	}
 
 	return nil
+}
+
+// GetApplianceMetrics retrieves appliance metrics.
+func (c *PowerStoreClient) GetApplianceMetrics(ctx context.Context) ([]PowerStoreApplianceMetrics, error) {
+	c.logger.Warn("Getting appliance metrics")
+	url := api.NewURL().Path("api", "rest", "appliance_list_cma_view")
+	url = url.WithQuery("select", "id,name,avg_latency,total_iops,total_bandwidth,last_logical_total_space,last_logical_used_space,last_physical_total_space,last_physical_used_space")
+
+	var offset uint64
+	var metrics []PowerStoreApplianceMetrics
+
+	for {
+		respBody := []PowerStoreApplianceMetrics{}
+		respHeaders := make(map[string]string)
+
+		pageURL := withPaginationQuery(url.URL, offset, -1)
+		err := c.requestAuthenticated(ctx, http.MethodGet, pageURL, nil, &respBody, respHeaders)
+		if err != nil {
+			return nil, fmt.Errorf("Failed retrieving metrics of PowerStore appliances: %w", err)
+		}
+
+		nextOffset, hasMoreItems, err := parsePaginationOffset(respHeaders)
+		if err != nil {
+			return nil, fmt.Errorf("Failed retrieving metrics of PowerStore appliances: %w", err)
+		}
+
+		metrics = append(metrics, respBody...)
+		offset = nextOffset
+
+		if !hasMoreItems {
+			break
+		}
+	}
+
+	return metrics, nil
 }

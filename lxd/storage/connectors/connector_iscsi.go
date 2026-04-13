@@ -180,34 +180,42 @@ func (c *connectorISCSI) Disconnect(targetQN string) error {
 		return err
 	}
 
-	// Disconnect from the iSCSI target if there is an existing session.
-	if session != nil {
-		// Do not pass a cancelable context as the operation is relatively short
-		// and most importantly we do not want to "partially" disconnect from
-		// the target - potentially leaving some unclosed sessions.
-		_, err = shared.RunCommand(context.Background(), "iscsiadm", "--mode", "node", "--targetname", targetQN, "--logout")
-		if err != nil {
-			exitCode, _ := shared.ExitStatus(err)
-			if exitCode == iscsiErrCodeNotFound {
-				// Nothing to do. Status code indicates that the session
-				// was not found. This just prevents an error in case the
-				// disconnect is called multiple times on the same target.
-				return nil
-			}
+	if session == nil {
+		// Session does not exist, nothing to do.
+		return nil
+	}
 
-			return fmt.Errorf("Failed disconnecting from iSCSI target %q: %w", targetQN, err)
+	// Do not pass a cancelable context as the operation is relatively short
+	// and most importantly we do not want to "partially" disconnect from
+	// the target - potentially leaving some unclosed sessions.
+	_, err = shared.RunCommand(context.Background(), "iscsiadm", "--mode", "node", "--targetname", targetQN, "--logout")
+	if err != nil {
+		exitCode, _ := shared.ExitStatus(err)
+		if exitCode == iscsiErrCodeNotFound {
+			// Nothing to do. Status code indicates that the session
+			// was not found. This just prevents an error in case the
+			// disconnect is called multiple times on the same target.
+			return nil
 		}
 
-		// Remove target entries from local iSCSI database.
-		_, err = shared.RunCommand(context.Background(), "iscsiadm", "--mode", "node", "--targetname", targetQN, "--op", "delete")
-		if err != nil {
-			exitCode, _ := shared.ExitStatus(err)
-			if exitCode == 6 {
-				logger.Errorf("Failed removing local iSCSI entry for target %q: %v", targetQN, err)
-			} else {
-				return fmt.Errorf("Failed removing local iSCSI entries for target %q: %w", targetQN, err)
-			}
+		return fmt.Errorf("Failed disconnecting from iSCSI target %q: %w", targetQN, err)
+	}
+
+	// Remove target entries from local iSCSI database.
+	_, err = shared.RunCommand(context.Background(), "iscsiadm", "--mode", "node", "--targetname", targetQN, "--op", "delete")
+	if err != nil {
+		exitCode, _ := shared.ExitStatus(err)
+		if exitCode != 6 {
+			return fmt.Errorf("Failed removing local iSCSI entries for target %q: %w", targetQN, err)
 		}
+
+		// TODO: There is an issue removing iSCSI entries for a target with multiple sessions.
+		// The "iscsiadm --mode node --targetname <targetQN> --op delete" command removes all
+		// entries for the target, but it returns exit code 6 (indicating that the target was
+		// not found) if there is still an active session for the target.
+		// This can happen when there are multiple sessions for the same target and we delete
+		// the entries after logging out of the first session.
+		logger.Errorf("Failed removing local iSCSI entry for target %q: %v", targetQN, err)
 	}
 
 	return nil
