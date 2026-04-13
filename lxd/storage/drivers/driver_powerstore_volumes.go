@@ -230,6 +230,7 @@ func (d *powerstore) ValidateVolume(vol Volume, removeUnknownKeys bool) error {
 
 // GetVolumeDiskPath returns the location of a root disk block device.
 func (d *powerstore) GetVolumeDiskPath(vol Volume) (string, error) {
+	d.logger.Warn("Getting volume disk path", logger.Ctx{"vol": vol.name})
 	if vol.IsVMBlock() || (vol.volType == VolumeTypeCustom && IsContentBlock(vol.contentType)) {
 		devPath, _, err := d.getMappedDevicePath(vol, false)
 		return devPath, err
@@ -240,6 +241,7 @@ func (d *powerstore) GetVolumeDiskPath(vol Volume) (string, error) {
 
 // GetVolumeUsage returns the disk space used by the volume.
 func (d *powerstore) GetVolumeUsage(vol Volume) (int64, error) {
+	d.logger.Warn("Getting volume usage", logger.Ctx{"vol": vol.name})
 	// If mounted, use the filesystem stats for pretty accurate usage information.
 	if vol.contentType == ContentTypeFS && filesystem.IsMountPoint(vol.MountPath()) {
 		var stat unix.Statfs_t
@@ -266,6 +268,7 @@ func (d *powerstore) GetVolumeUsage(vol Volume) (int64, error) {
 
 // HasVolume indicates whether a specific volume exists on the storage pool.
 func (d *powerstore) HasVolume(vol Volume) (bool, error) {
+	d.logger.Warn("Checking if volume exists", logger.Ctx{"vol": vol.name})
 	volName, err := d.getVolumeName(vol)
 	if err != nil {
 		return false, err
@@ -283,6 +286,7 @@ func (d *powerstore) HasVolume(vol Volume) (bool, error) {
 // It returns all volumes and sets the volume's volatile.uuid extracted from
 // the name.
 func (d *powerstore) ListVolumes() ([]Volume, error) {
+	d.logger.Warn("Listing volumes")
 	volResources, err := d.client().GetVolumes(d.state.ShutdownCtx)
 	if err != nil {
 		return nil, err
@@ -314,6 +318,9 @@ func (d *powerstore) ListVolumes() ([]Volume, error) {
 // CreateVolume creates an empty volume and can optionally fill it by executing
 // the supplied filler function.
 func (d *powerstore) CreateVolume(vol Volume, filler *VolumeFiller, op *operations.Operation) error {
+	d.logger.Warn("Creating volume", logger.Ctx{"vol": vol.name})
+	defer d.logger.Warn("Volume created", logger.Ctx{"vol": vol.name})
+
 	client := d.client()
 
 	revert := revert.New()
@@ -416,6 +423,7 @@ func (d *powerstore) CreateVolume(vol Volume, filler *VolumeFiller, op *operatio
 
 // UpdateVolume applies config changes to the volume.
 func (d *powerstore) UpdateVolume(vol Volume, changedConfig map[string]string) error {
+	d.logger.Warn("Updating volume", logger.Ctx{"vol": vol.name})
 	newSize, sizeChanged := changedConfig["size"]
 	if sizeChanged {
 		err := d.SetVolumeQuota(vol, newSize, false, nil)
@@ -429,6 +437,9 @@ func (d *powerstore) UpdateVolume(vol Volume, changedConfig map[string]string) e
 
 // DeleteVolume deletes a volume of the storage device.
 func (d *powerstore) DeleteVolume(vol Volume, op *operations.Operation) error {
+	d.logger.Warn("Deleting volume", logger.Ctx{"vol": vol.name})
+	defer d.logger.Warn("Volume deleted", logger.Ctx{"vol": vol.name})
+
 	client := d.client()
 	ctx := d.state.ShutdownCtx
 
@@ -500,6 +511,8 @@ func (d *powerstore) DeleteVolume(vol Volume, op *operations.Operation) error {
 
 // SetVolumeQuota applies a size limit on volume.
 func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, op *operations.Operation) error {
+	d.logger.Warn("Setting volume quota", logger.Ctx{"vol": vol.name, "size": size})
+
 	// Convert to bytes.
 	sizeBytes, err := units.ParseByteSizeString(size)
 	if err != nil {
@@ -626,6 +639,7 @@ func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize b
 // MountVolume mounts a volume and increments ref counter. Please call
 // UnmountVolume() when done with the volume.
 func (d *powerstore) MountVolume(vol Volume, op *operations.Operation) error {
+	d.logger.Warn("Mounting volume", logger.Ctx{"vol": vol.name})
 	return mountVolume(d, vol, d.getMappedDevicePath, op)
 }
 
@@ -634,11 +648,13 @@ func (d *powerstore) MountVolume(vol Volume, op *operations.Operation) error {
 // keepBlockDev indicates if the backing block device should not be unmapped if
 // the volume is unmounted.
 func (d *powerstore) UnmountVolume(vol Volume, keepBlockDev bool, op *operations.Operation) (bool, error) {
+	d.logger.Warn("Unmounting volume", logger.Ctx{"vol": vol.name, "keep_block_dev": keepBlockDev})
 	return unmountVolume(d, vol, keepBlockDev, d.getMappedDevicePath, d.unmapVolume, op)
 }
 
 // RenameVolume renames a volume and its snapshots.
 func (d *powerstore) RenameVolume(vol Volume, newVolName string, op *operations.Operation) error {
+	d.logger.Warn("Renaming volume", logger.Ctx{"vol": vol.name, "new_name": newVolName})
 	// Renaming a volume in PowerStore will not change the name of the associated volume resource.
 	return nil
 }
@@ -674,6 +690,8 @@ func (d *powerstore) getVolumeName(vol Volume) (string, error) {
 // does not exist, a new one is created, where host's name equals to the server name with a
 // mode included.
 func (d *powerstore) ensureHost() (hostID string, cleanup revert.Hook, err error) {
+	d.logger.Warn("Ensuring host")
+
 	var hostname string
 
 	client := d.client()
@@ -734,6 +752,8 @@ func (d *powerstore) ensureHost() (hostID string, cleanup revert.Hook, err error
 // getMappedDevicePath returns the local device path for the given volume.
 // Indicate with mapVolume if the volume should get mapped to the system if it isn't present.
 func (d *powerstore) getMappedDevicePath(vol Volume, mapVolume bool) (string, revert.Hook, error) {
+	d.logger.Warn("Getting mapped device path", logger.Ctx{"vol": vol.name, "map_volume": mapVolume})
+
 	revert := revert.New()
 	defer revert.Fail()
 
@@ -973,6 +993,8 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 // targets return discovered PowerStore targets (their addresses and associated
 // qualified names).
 func (d *powerstore) getTargets() ([]powerStoreTarget, error) {
+	d.logger.Warn("Getting targets")
+
 	if len(d.discoveredTargets) > 0 {
 		return d.discoveredTargets, nil
 	}

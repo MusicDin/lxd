@@ -350,15 +350,7 @@ func (c *PowerStoreClient) login(ctx context.Context) (*powerStoreSession, error
 		return nil, errors.New("Failed logging into PowerStore: Password change required")
 	}
 
-	// TODO: Remove DEBUG
-	// DEBUG: Start
-	logCtx := make(map[string]any, len(respHeaders))
-	for k, v := range respHeaders {
-		logCtx[k] = v
-	}
-
-	c.logger.Warn("RESPONSE HEADERS", logCtx)
-	// DEBUG: End
+	c.logger.Warn("Logged into PowerStore")
 
 	// Parse auth cookie.
 	resp := &http.Response{Header: http.Header{}}
@@ -580,6 +572,7 @@ func parsePaginationOffset(headers map[string]string) (newOffset uint64, hasMore
 
 // GetApplianceMetrics retrieves appliance metrics.
 func (c *PowerStoreClient) GetApplianceMetrics(ctx context.Context) ([]PowerStoreApplianceMetrics, error) {
+	c.logger.Warn("Getting appliance metrics")
 	url := api.NewURL().Path("api", "rest", "appliance_list_cma_view")
 	url = url.WithQuery("select", "id,name,avg_latency,total_iops,total_bandwidth,last_logical_total_space,last_logical_used_space,last_physical_total_space,last_physical_used_space")
 
@@ -653,6 +646,7 @@ func (c *PowerStoreClient) getHosts(ctx context.Context, queryFilters map[string
 // The Alletra Storage host is considered a match if it includes the fully qualified
 // name of the LXD host that is determined by the configured mode.
 func (c *PowerStoreClient) GetCurrentHost(ctx context.Context, connectorType string, qn string) (*PowerStoreHost, error) {
+	c.logger.Warn("Getting current host", logger.Ctx{"connector_type": connectorType, "qn": qn})
 	filters := map[string]string{}
 
 	hosts, err := c.getHosts(ctx, filters, -1)
@@ -673,6 +667,7 @@ func (c *PowerStoreClient) GetCurrentHost(ctx context.Context, connectorType str
 
 // GetHostByID retrieves host using its ID.
 func (c *PowerStoreClient) GetHostByID(ctx context.Context, id string) (*PowerStoreHost, error) {
+	c.logger.Warn("Getting host by ID", logger.Ctx{"host_id": id})
 	filters := map[string]string{
 		"id": "eq." + id,
 	}
@@ -691,6 +686,7 @@ func (c *PowerStoreClient) GetHostByID(ctx context.Context, id string) (*PowerSt
 
 // GetHostByName retrieves host using its name.
 func (c *PowerStoreClient) GetHostByName(ctx context.Context, name string) (*PowerStoreHost, error) {
+	c.logger.Warn("Getting host by name", logger.Ctx{"name": name})
 	filters := map[string]string{
 		"name": "eq." + name,
 	}
@@ -709,6 +705,7 @@ func (c *PowerStoreClient) GetHostByName(ctx context.Context, name string) (*Pow
 
 // CreateHost creates new host.
 func (c *PowerStoreClient) CreateHost(ctx context.Context, connectorType string, hostname string, qn string) (hostID string, err error) {
+	c.logger.Warn("Creating host", logger.Ctx{"hostname": hostname, "connector_type": connectorType, "qn": qn})
 	url := api.NewURL().Path("api", "rest", "host")
 
 	req := map[string]any{
@@ -726,6 +723,7 @@ func (c *PowerStoreClient) CreateHost(ctx context.Context, connectorType string,
 
 // DeleteHost deletes host using its ID.
 func (c *PowerStoreClient) DeleteHost(ctx context.Context, hostID string) error {
+	c.logger.Warn("Deleting host", logger.Ctx{"host_id": hostID})
 	url := api.NewURL().Path("api", "rest", "host", hostID)
 
 	err := c.requestAuthenticated(ctx, http.MethodDelete, url.URL, nil, nil, nil)
@@ -738,6 +736,7 @@ func (c *PowerStoreClient) DeleteHost(ctx context.Context, hostID string) error 
 
 // AddHostInitiator adds initiator to host using its ID.
 func (c *PowerStoreClient) AddHostInitiator(ctx context.Context, hostID string, initiator *PowerStoreHostInitiator) error {
+	c.logger.Warn("Adding host initiator", logger.Ctx{"host_id": hostID, "port_name": initiator.PortName})
 	url := api.NewURL().Path("api", "rest", "host", hostID)
 	req := map[string]any{
 		"add_initiators": []PowerStoreHostInitiator{*initiator},
@@ -753,6 +752,7 @@ func (c *PowerStoreClient) AddHostInitiator(ctx context.Context, hostID string, 
 
 // DeleteHostInitiator removes initiator matching port name from host using its ID.
 func (c *PowerStoreClient) DeleteHostInitiator(ctx context.Context, hostID string, initiator *PowerStoreHostInitiator) error {
+	c.logger.Warn("Deleting host initiator", logger.Ctx{"host_id": hostID, "port_name": initiator.PortName})
 	url := api.NewURL().Path("api", "rest", "host", hostID)
 
 	req := map[string]any{
@@ -790,8 +790,7 @@ func (c *PowerStoreClient) AttachHostToVolume(ctx context.Context, hostID string
 		"volume_id": volumeID,
 	}
 
-	// TODO: Remove DEBUG
-	c.logger.Warn("Attaching host to volume", logger.Ctx{"host_id": hostID, "volume_id": volumeID, "url": url.URL, "req": req})
+	c.logger.Warn("Attaching host to volume", logger.Ctx{"host_id": hostID, "volume_id": volumeID})
 
 	err = c.requestAuthenticated(ctx, http.MethodPost, url.URL, req, nil, nil)
 	if err != nil {
@@ -809,8 +808,7 @@ func (c *PowerStoreClient) DetachHostFromVolume(ctx context.Context, hostID stri
 		"volume_id": volumeID,
 	}
 
-	// TODO: Remove DEBUG
-	c.logger.Warn("Detaching host from volume", logger.Ctx{"host_id": hostID, "volume_id": volumeID, "url": url.URL, "req": req})
+	c.logger.Warn("Detaching host from volume", logger.Ctx{"host_id": hostID, "volume_id": volumeID})
 
 	err := c.requestAuthenticated(ctx, http.MethodPost, url.URL, req, nil, nil)
 	if err != nil {
@@ -859,6 +857,7 @@ func (c *PowerStoreClient) getInitiatorsByQuery(ctx context.Context, queryFilter
 
 // GetHostByInitiator retrieves host that have initiator matching port name and type.
 func (c *PowerStoreClient) GetHostByInitiator(ctx context.Context, initiator *PowerStoreHostInitiator) (*PowerStoreHost, error) {
+	c.logger.Warn("Getting host by initiator", logger.Ctx{"port_name": initiator.PortName, "port_type": initiator.Type})
 	filters := map[string]string{
 		"port_name": "eq." + initiator.PortName,
 		"port_type": "eq." + string(initiator.Type),
@@ -919,6 +918,7 @@ func (c *PowerStoreClient) getVolumes(ctx context.Context, queryFilter map[strin
 
 // GetVolumes retrieves list of volume associated with the storage pool.
 func (c *PowerStoreClient) GetVolumes(ctx context.Context) ([]PowerStoreVolume, error) {
+	c.logger.Warn("Getting volumes")
 	filter := map[string]string{
 		"name": "ilike." + c.volumeNamePrefix + "*",
 		"or":   "(type.eq.Primary,type.eq.Clone)",
@@ -934,6 +934,7 @@ func (c *PowerStoreClient) GetVolumes(ctx context.Context) ([]PowerStoreVolume, 
 
 // GetVolumeByID retrieves volume using its ID.
 func (c *PowerStoreClient) GetVolumeByID(ctx context.Context, id string) (*PowerStoreVolume, error) {
+	c.logger.Warn("Getting volume by ID", logger.Ctx{"volume_id": id})
 	filter := map[string]string{
 		"id": "eq." + id,
 		"or": "(type.eq.Primary,type.eq.Clone)",
@@ -953,6 +954,7 @@ func (c *PowerStoreClient) GetVolumeByID(ctx context.Context, id string) (*Power
 
 // GetVolumeByName retrieves volume using its name.
 func (c *PowerStoreClient) GetVolumeByName(ctx context.Context, name string) (*PowerStoreVolume, error) {
+	c.logger.Warn("Getting volume by name", logger.Ctx{"name": name})
 	filter := map[string]string{
 		"name": "eq." + name,
 		"or":   "(type.eq.Primary,type.eq.Clone)",
@@ -972,6 +974,7 @@ func (c *PowerStoreClient) GetVolumeByName(ctx context.Context, name string) (*P
 
 // GetVolumeID returns the volume ID for the given name.
 func (c *PowerStoreClient) GetVolumeID(ctx context.Context, volumeName string) (volumeID string, err error) {
+	c.logger.Warn("Getting volume ID", logger.Ctx{"volume_name": volumeName})
 	vol, err := c.GetVolumeByName(ctx, volumeName)
 	if err != nil {
 		return "", err
@@ -982,6 +985,7 @@ func (c *PowerStoreClient) GetVolumeID(ctx context.Context, volumeName string) (
 
 // CreateVolume creates a new volume.
 func (c *PowerStoreClient) CreateVolume(ctx context.Context, volumeName string, sizeBytes int64) (id string, err error) {
+	c.logger.Warn("Creating volume", logger.Ctx{"volume_name": volumeName, "size_bytes": sizeBytes})
 	url := api.NewURL().Path("api", "rest", "volume")
 
 	req := map[string]any{
@@ -1001,6 +1005,7 @@ func (c *PowerStoreClient) CreateVolume(ctx context.Context, volumeName string, 
 
 // DeleteVolume deletes volume using its ID.
 func (c *PowerStoreClient) DeleteVolume(ctx context.Context, volumeID string) error {
+	c.logger.Warn("Deleting volume", logger.Ctx{"volume_id": volumeID})
 	url := api.NewURL().Path("api", "rest", "volume", volumeID)
 
 	err := c.requestAuthenticated(ctx, http.MethodDelete, url.URL, nil, nil, nil)
@@ -1013,6 +1018,7 @@ func (c *PowerStoreClient) DeleteVolume(ctx context.Context, volumeID string) er
 
 // ResizeVolume creates a new volume.
 func (c *PowerStoreClient) ResizeVolume(ctx context.Context, volumeID string, newSize int64) error {
+	c.logger.Warn("Resizing volume", logger.Ctx{"volume_id": volumeID, "new_size": newSize})
 	url := api.NewURL().Path("api", "rest", "volume", volumeID)
 
 	req := map[string]any{
@@ -1029,6 +1035,7 @@ func (c *PowerStoreClient) ResizeVolume(ctx context.Context, volumeID string, ne
 
 // CloneVolume clones the volume or the volume snapshot with the provided ID to a new volume.
 func (c *PowerStoreClient) CloneVolume(ctx context.Context, srcVolumeID string, dstVolumeName string) (dstVolumeID string, err error) {
+	c.logger.Warn("Cloning volume", logger.Ctx{"src_volume_id": srcVolumeID, "dst_volume_name": dstVolumeName})
 	url := api.NewURL().Path("api", "rest", "volume", srcVolumeID, "clone")
 
 	req := map[string]any{
@@ -1047,6 +1054,7 @@ func (c *PowerStoreClient) CloneVolume(ctx context.Context, srcVolumeID string, 
 
 // RestoreVolume restores the volume form the volume snapshot.
 func (c *PowerStoreClient) RestoreVolume(ctx context.Context, srcVolumeSnapshotID string, dstVolumeID string) error {
+	c.logger.Warn("Restoring volume", logger.Ctx{"snapshot_id": srcVolumeSnapshotID, "volume_id": dstVolumeID})
 	url := api.NewURL().Path("api", "rest", "volume", dstVolumeID, "restore")
 
 	req := map[string]any{
@@ -1063,6 +1071,7 @@ func (c *PowerStoreClient) RestoreVolume(ctx context.Context, srcVolumeSnapshotI
 
 // RefreshVolume refreshes the volume form the volume or the volume snapshot.
 func (c *PowerStoreClient) RefreshVolume(ctx context.Context, srcVolumeID string, dstVolumeID string) error {
+	c.logger.Warn("Refreshing volume", logger.Ctx{"src_volume_id": srcVolumeID, "dst_volume_id": dstVolumeID})
 	url := api.NewURL().Path("api", "rest", "volume", dstVolumeID, "refresh")
 
 	req := map[string]any{
@@ -1079,6 +1088,7 @@ func (c *PowerStoreClient) RefreshVolume(ctx context.Context, srcVolumeID string
 
 // GetVolumeSnapshots retrieves list of volume snapshots associated with the provided volume.
 func (c *PowerStoreClient) GetVolumeSnapshots(ctx context.Context, volumeID string) ([]PowerStoreVolume, error) {
+	c.logger.Warn("Getting volume snapshots", logger.Ctx{"volume_id": volumeID})
 	filter := map[string]string{
 		// "name": "ilike." + c.volumeNamePrefix + "*", // TODO: We need to filter LXD snapshots.
 		"type":                        "eq.Snapshot",
@@ -1095,6 +1105,7 @@ func (c *PowerStoreClient) GetVolumeSnapshots(ctx context.Context, volumeID stri
 
 // GetVolumeSnapshotByID retrieves volume snapshot using its ID.
 func (c *PowerStoreClient) GetVolumeSnapshotByID(ctx context.Context, snapshotID string) (*PowerStoreVolume, error) {
+	c.logger.Warn("Getting volume snapshot by ID", logger.Ctx{"snapshot_id": snapshotID})
 	filter := map[string]string{
 		// "protection_data->>parent_id": "eq." + volumeID, // TODO: Should we search snapshot for a specific parent as well?
 		"type": "eq.Snapshot",
@@ -1115,6 +1126,7 @@ func (c *PowerStoreClient) GetVolumeSnapshotByID(ctx context.Context, snapshotID
 
 // GetVolumeSnapshotByName retrieves volume snapshot using its name.
 func (c *PowerStoreClient) GetVolumeSnapshotByName(ctx context.Context, name string) (*PowerStoreVolume, error) {
+	c.logger.Warn("Getting volume snapshot by name", logger.Ctx{"name": name})
 	filter := map[string]string{
 		// "protection_data->>parent_id": "eq." + volumeID, // TODO: Should we search snapshot for a specific parent as well?
 		"type": "eq.Snapshot",
@@ -1135,6 +1147,7 @@ func (c *PowerStoreClient) GetVolumeSnapshotByName(ctx context.Context, name str
 
 // CreateVolumeSnapshot creates a new snapshot of a volume.
 func (c *PowerStoreClient) CreateVolumeSnapshot(ctx context.Context, volumeID string, snapshotName string) (snapshotID string, err error) {
+	c.logger.Warn("Creating volume snapshot", logger.Ctx{"volume_id": volumeID, "snapshot_name": snapshotName})
 	url := api.NewURL().Path("api", "rest", "volume", volumeID, "snapshot")
 
 	req := map[string]any{
@@ -1154,6 +1167,7 @@ func (c *PowerStoreClient) CreateVolumeSnapshot(ctx context.Context, volumeID st
 
 // DeleteVolumeSnapshot deletes a snapshot of a volume.
 func (c *PowerStoreClient) DeleteVolumeSnapshot(ctx context.Context, volumeID string, snapshotID string) error {
+	c.logger.Warn("Deleting volume snapshot", logger.Ctx{"volume_id": volumeID, "snapshot_id": snapshotID})
 	url := api.NewURL().Path("api", "rest", "volume", volumeID, "snapshot", snapshotID)
 
 	err := c.requestAuthenticated(ctx, http.MethodDelete, url.URL, nil, nil, nil)
@@ -1166,6 +1180,7 @@ func (c *PowerStoreClient) DeleteVolumeSnapshot(ctx context.Context, volumeID st
 
 // RemoveVolumeGroupMembers removes volumes from the volume group.
 func (c *PowerStoreClient) RemoveVolumeGroupMembers(ctx context.Context, volumeGroupID string, volumeIDs []string) error {
+	c.logger.Warn("Removing volume group members", logger.Ctx{"volume_group_id": volumeGroupID, "volume_ids": volumeIDs})
 	url := api.NewURL().Path("api", "rest", "volume_group", volumeGroupID, "remove_members")
 
 	req := map[string]any{

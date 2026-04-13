@@ -118,6 +118,9 @@ func (c *connectorISCSI) QualifiedName() (string, error) {
 
 // Connect establishes a connection with the target on the given address.
 func (c *connectorISCSI) Connect(ctx context.Context, targetQN string, targetAddresses ...string) (revert.Hook, error) {
+	logger.Warn("Connecting to iSCSI target", logger.Ctx{"target_qn": targetQN, "target_addresses": targetAddresses})
+	defer logger.Warn("iSCSI target connected", logger.Ctx{"target_qn": targetQN})
+
 	// Connects to the provided target address. If the connection is already established,
 	// the session is rescanned to detect new volumes.
 	connectFunc := func(ctx context.Context, s *session, targetAddr string) error {
@@ -158,6 +161,9 @@ func (c *connectorISCSI) Connect(ctx context.Context, targetQN string, targetAdd
 
 // Disconnect terminates a connection with the target.
 func (c *connectorISCSI) Disconnect(targetQN string) error {
+	logger.Warn("Disconnecting from iSCSI target", logger.Ctx{"target_qn": targetQN})
+	defer logger.Warn("iSCSI target disconnected", logger.Ctx{"target_qn": targetQN})
+
 	// Find an existing iSCSI session.
 	session, err := c.findSession(targetQN)
 	if err != nil {
@@ -364,6 +370,7 @@ func (c *connectorISCSI) Discover(ctx context.Context, targetAddresses ...string
 // If the device is not a multipath device, multipath is forced and the device path is looked up again.
 // An error is returned if no multipath device is found after that.
 func (c *connectorISCSI) WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc) (string, error) {
+	logger.Warn("Waiting for iSCSI disk device path")
 	_, ok := ctx.Deadline()
 	if !ok {
 		// Set a default timeout of 30 seconds for the context
@@ -426,6 +433,9 @@ func (c *connectorISCSI) GetDiskDevicePath(diskPathFilter block.DevicePathFilter
 // to D-state (and this task can be systemd-udevd which tries to remove a device node!).
 // That's why it is better to remove the device node from the host and then remove vLUN.
 func (c *connectorISCSI) RemoveDiskDevice(ctx context.Context, devicePath string) error {
+	logger.Warn("Removing iSCSI disk device", logger.Ctx{"device_path": devicePath})
+	defer logger.Warn("iSCSI disk device removed", logger.Ctx{"device_path": devicePath})
+
 	if devicePath == "" {
 		return nil
 	}
@@ -510,6 +520,7 @@ func (c *connectorISCSI) RemoveDiskDevice(ctx context.Context, devicePath string
 // WaitDiskDeviceResize waits until the disk device reflects the new size.
 // For iSCSI multipath device, the device-mapper is refreshed before waiting for the new size.
 func (c *connectorISCSI) WaitDiskDeviceResize(ctx context.Context, diskPath string, newSizeBytes int64) error {
+	logger.Warn("Waiting for iSCSI disk device resize", logger.Ctx{"disk_path": diskPath, "new_size_bytes": newSizeBytes})
 	_, ok := ctx.Deadline()
 	if !ok {
 		var cancel context.CancelFunc
