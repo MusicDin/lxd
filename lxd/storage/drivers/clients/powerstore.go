@@ -734,10 +734,10 @@ func (c *PowerStoreClient) CreateHost(ctx context.Context, connectorType string,
 	}
 
 	req := map[string]any{
-		"name": hostname,
+		"name":    hostname,
+		"os_type": "Linux", // Required by PowerStore API.
 		"initiators": []map[string]any{
 			{
-				"os_type":   "Linux", // Required by PowerStore API.
 				"port_name": qn,
 				"port_type": portType,
 			},
