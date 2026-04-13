@@ -318,8 +318,8 @@ func (d *powerstore) ListVolumes() ([]Volume, error) {
 // CreateVolume creates an empty volume and can optionally fill it by executing
 // the supplied filler function.
 func (d *powerstore) CreateVolume(vol Volume, filler *VolumeFiller, op *operations.Operation) error {
-	d.logger.Warn("Creating volume", logger.Ctx{"vol": vol.name})
-	defer d.logger.Warn("Volume created", logger.Ctx{"vol": vol.name})
+	d.logger.Warn("Creating volume", logger.Ctx{"vol": vol.name, "content_type": vol.contentType, "vol_type": vol.volType, "size": vol.ConfigSize(), "block_filesystem": vol.ConfigBlockFilesystem()})
+	defer d.logger.Warn("Volume created", logger.Ctx{"vol": vol.name, "content_type": vol.contentType, "vol_type": vol.volType, "size": vol.ConfigSize(), "block_filesystem": vol.ConfigBlockFilesystem()})
 
 	client := d.client()
 
@@ -385,8 +385,23 @@ func (d *powerstore) CreateVolume(vol Volume, filler *VolumeFiller, op *operatio
 				}
 			}
 
+			allowUnsafeResize := false
+			if vol.volType == VolumeTypeImage {
+				// Allow filler to resize initial image volume as needed.
+				// Some storage drivers don't normally allow image volumes to be resized due to
+				// them having read-only snapshots that cannot be resized. However when creating
+				// the initial image volume and filling it before the snapshot is taken resizing
+				// can be allowed and is required in order to support unpacking images larger than
+				// the default volume size. The filler function is still expected to obey any
+				// volume size restrictions configured on the pool.
+				// Unsafe resize is also needed to disable filesystem resize safety checks.
+				// This is safe because if for some reason an error occurs the volume will be
+				// discarded rather than leaving a corrupt filesystem.
+				allowUnsafeResize = true
+			}
+
 			// Run the filler.
-			err = d.runFiller(vol, devPath, filler, true)
+			err = d.runFiller(vol, devPath, filler, allowUnsafeResize)
 			if err != nil {
 				return err
 			}
