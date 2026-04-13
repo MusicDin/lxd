@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/canonical/lxd/lxd/locking"
 	"github.com/canonical/lxd/lxd/storage/block"
 	"github.com/canonical/lxd/lxd/util"
 	"github.com/canonical/lxd/shared"
@@ -165,6 +166,16 @@ func (c *connectorISCSI) Disconnect(targetQN string) error {
 
 	// Disconnect from the iSCSI target if there is an existing session.
 	if session != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		unlock, err := locking.Lock(ctx, targetQN)
+		if err != nil {
+			return fmt.Errorf("Failed acquiring lock when disconnecting from iSCSI target %q", targetQN)
+		}
+
+		defer unlock()
+
 		// Do not pass a cancelable context as the operation is relatively short
 		// and most importantly we do not want to "partially" disconnect from
 		// the target - potentially leaving some unclosed sessions.
