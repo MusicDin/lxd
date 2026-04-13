@@ -179,6 +179,10 @@ type PowerStoreHost struct {
 	MappedVolumes    []*PowerStoreHostVolumeMapping `json:"mapped_hosts,omitempty"`
 }
 
+func (PowerStoreHost) selector() string {
+	return "id,name,description,initiators(id,port_name,port_type),os_type,host_connectivity,mapped_hosts(id,host_id,volume_id)"
+}
+
 // PowerStoreHostInitiator describes an initiator resource of some host in
 // PowerStore API.
 type PowerStoreHostInitiator struct {
@@ -201,6 +205,10 @@ type PowerStoreVolume struct {
 	AppTypeOther  string                        `json:"app_type_other,omitempty"`
 	VolumeGroups  []PowerStoreResourceID        `json:"volume_groups,omitempty"`
 	MappedVolumes []PowerStoreHostVolumeMapping `json:"mapped_volumes,omitempty"`
+}
+
+func (PowerStoreVolume) selector() string {
+	return "id,name,description,type,state,size,logical_used,wwn,app_type,app_type_other,volume_groups(id),mapped_volumes(id,host_id,volume_id)"
 }
 
 // PowerStoreHostVolumeMapping describes a mapping between host and volume in
@@ -682,10 +690,12 @@ func (c *PowerStoreClient) GetCurrentHost(ctx context.Context, connectorType str
 
 // GetHost retrieves host using its ID.
 func (c *PowerStoreClient) GetHost(ctx context.Context, hostID string) (*PowerStoreHost, error) {
+	var host PowerStoreHost
+
 	c.logger.Warn("Retrieving host", logger.Ctx{"host_id": hostID})
 	url := api.NewURL().Path("api", "rest", "host", hostID)
+	url = url.WithQuery("select", host.selector())
 
-	var host PowerStoreHost
 	err := c.requestAuthenticated(ctx, http.MethodGet, url.URL, nil, &host, nil)
 	if err != nil {
 		psErr, ok := err.(*powerStoreError)
@@ -924,9 +934,11 @@ func (c *PowerStoreClient) GetVolumes(ctx context.Context) ([]PowerStoreVolume, 
 
 // GetVolumeByID retrieves volume using its ID.
 func (c *PowerStoreClient) GetVolumeByID(ctx context.Context, volumeID string) (*PowerStoreVolume, error) {
-	url := api.NewURL().Path("api", "rest", "volume", volumeID)
-
 	var resp PowerStoreVolume
+
+	url := api.NewURL().Path("api", "rest", "volume", volumeID)
+	url = url.WithQuery("select", resp.selector())
+
 	err := c.requestAuthenticated(ctx, http.MethodGet, url.URL, nil, &resp, nil)
 	if err != nil {
 		psErr, ok := err.(*powerStoreError)
@@ -943,9 +955,11 @@ func (c *PowerStoreClient) GetVolumeByID(ctx context.Context, volumeID string) (
 // GetVolumeByName retrieves volume using its name.
 // GetVolumeByID retrieves volume using its ID.
 func (c *PowerStoreClient) GetVolumeByName(ctx context.Context, volumeName string) (*PowerStoreVolume, error) {
-	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName)
-
 	var resp PowerStoreVolume
+
+	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName)
+	url = url.WithQuery("select", resp.selector())
+
 	err := c.requestAuthenticated(ctx, http.MethodGet, url.URL, nil, &resp, nil)
 	if err != nil {
 		psErr, ok := err.(*powerStoreError)
