@@ -34,14 +34,6 @@ const (
 	PowerStoreQueryResponseLimit = 2000
 )
 
-// OSTypeEnum is an enumeration of operating system type in PowerStore API.
-type OSTypeEnum string
-
-const (
-	// OSTypeEnumLinux is an enumeration value indicating Linux operating system.
-	OSTypeEnumLinux OSTypeEnum = "Linux"
-)
-
 // PowerStoreInitiatorType is an enumeration of initiator port type in
 // PowerStore API.
 type PowerStoreInitiatorType string
@@ -182,7 +174,7 @@ type PowerStoreHost struct {
 	Name             string                         `json:"name,omitempty"`
 	Description      string                         `json:"description,omitempty"`
 	Initiators       []*PowerStoreHostInitiator     `json:"initiators,omitempty"`
-	OsType           OSTypeEnum                     `json:"os_type,omitempty"`
+	OsType           string                         `json:"os_type,omitempty"`
 	HostConnectivity string                         `json:"host_connectivity,omitempty"`
 	MappedVolumes    []*PowerStoreHostVolumeMapping `json:"mapped_hosts,omitempty"`
 }
@@ -745,6 +737,7 @@ func (c *PowerStoreClient) CreateHost(ctx context.Context, connectorType string,
 		"name": hostname,
 		"initiators": []map[string]any{
 			{
+				"os_type":   "Linux", // Required by PowerStore API.
 				"port_name": qn,
 				"port_type": portType,
 			},
