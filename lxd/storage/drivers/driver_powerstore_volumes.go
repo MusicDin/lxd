@@ -209,7 +209,7 @@ func (d *powerstore) GetVolumeUsage(vol Volume) (int64, error) {
 		return -1, err
 	}
 
-	psVol, err := d.client().GetVolumeByName(volName)
+	psVol, err := d.client().GetVolume(volName)
 	if err != nil {
 		return -1, err
 	}
@@ -225,7 +225,7 @@ func (d *powerstore) HasVolume(vol Volume) (bool, error) {
 		return false, err
 	}
 
-	_, err = d.client().GetVolumeByName(volName)
+	_, err = d.client().GetVolume(volName)
 	if err != nil {
 		return false, err
 	}
@@ -289,12 +289,12 @@ func (d *powerstore) CreateVolume(vol Volume, filler *VolumeFiller, op *operatio
 
 	sizeBytes = d.roundVolumeBlockSizeBytes(vol, sizeBytes)
 
-	volID, err := client.CreateVolume(volName, sizeBytes)
+	err = client.CreateVolume(volName, sizeBytes)
 	if err != nil {
 		return err
 	}
 
-	revert.Add(func() { _ = client.DeleteVolume(volID) })
+	revert.Add(func() { _ = client.DeleteVolume(volName) })
 
 	if vol.contentType == ContentTypeFS {
 		devPath, cleanup, err := d.getMappedDevicePath(vol, true)
@@ -423,12 +423,12 @@ func (d *powerstore) DeleteVolume(vol Volume, op *operations.Operation) error {
 		return err
 	}
 
-	volID, err := client.GetVolumeID(volName)
-	if err != nil {
-		return err
-	}
+	// volID, err := client.GetVolumeID(volName)
+	// if err != nil {
+	// 	return err
+	// }
 
-	err = client.DeleteVolume(volID)
+	err = client.DeleteVolume(volName)
 	if err != nil {
 		return err
 	}
@@ -444,7 +444,7 @@ func (d *powerstore) DeleteVolume(vol Volume, op *operations.Operation) error {
 	} else {
 		// If the host exists, attempt to delete the volume mapping for the deleted volume.
 		// If the mapping doesn't exist, continue with the deletion as the volume is already deleted.
-		err = client.DetachVolumeFromHost(psHost.ID, volID)
+		err = client.DetachVolumeFromHost(volName, psHost.Name)
 		if err != nil {
 			return err
 		}
@@ -494,7 +494,7 @@ func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize b
 		return err
 	}
 
-	psVol, err := d.client().GetVolumeByName(volName)
+	psVol, err := d.client().GetVolume(volName)
 	if err != nil {
 		return err
 	}
@@ -536,7 +536,7 @@ func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize b
 		}
 
 		// Resize block device.
-		err = d.client().ResizeVolume(psVol.ID, sizeBytes)
+		err = d.client().ResizeVolume(volName, sizeBytes)
 		if err != nil {
 			return err
 		}
@@ -571,7 +571,7 @@ func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize b
 	}
 
 	// Resize block device.
-	err = d.client().ResizeVolume(psVol.ID, sizeBytes)
+	err = d.client().ResizeVolume(volName, sizeBytes)
 	if err != nil {
 		return err
 	}
@@ -696,10 +696,8 @@ func (d *powerstore) decodeVolumeName(name string) (volType VolumeType, volUUID 
 // ensureHost returns a name of the host that is configured with a given IQN. If such host
 // does not exist, a new one is created, where host's name equals to the server name with a
 // mode included.
-func (d *powerstore) ensureHost() (hostID string, cleanup revert.Hook, err error) {
+func (d *powerstore) ensureHost() (hostName string, cleanup revert.Hook, err error) {
 	d.logger.Warn("Ensuring host")
-
-	var hostname string
 
 	client := d.client()
 
@@ -733,27 +731,27 @@ func (d *powerstore) ensureHost() (hostID string, cleanup revert.Hook, err error
 
 		// Append the mode to the server name because storage array does not allow mixing
 		// NQNs, IQNs, and WWNs for a single host.
-		hostname = serverName + "-" + connector.Type()
+		hostName = serverName + "-" + connector.Type()
 
-		hostID, err = client.CreateHost(connector.Type(), hostname, qn)
+		err = client.CreateHost(hostName, connector.Type(), qn)
 		if err != nil {
-			return "", nil, fmt.Errorf("Failed creating host %q: %w", hostname, err)
+			return "", nil, fmt.Errorf("Failed creating host %q: %w", hostName, err)
 		}
 
 		revert.Add(func() {
-			err := client.DeleteHost(hostID)
+			err := client.DeleteHost(hostName)
 			if err != nil {
-				d.logger.Warn("Failed to cleanup created PowerStore host", logger.Ctx{"err": err, "hostname": hostname})
+				d.logger.Warn("Failed to cleanup created PowerStore host", logger.Ctx{"err": err, "hostname": hostName})
 			}
 		})
 	} else {
 		// Hostname already exists with the given qualified name.
-		hostID = host.ID
+		hostName = host.Name
 	}
 
 	cleanup = revert.Clone().Fail
 	revert.Success()
-	return hostID, cleanup, nil
+	return hostName, cleanup, nil
 }
 
 // getMappedDevicePath returns the local device path for the given volume.
@@ -783,7 +781,7 @@ func (d *powerstore) getMappedDevicePath(vol Volume, mapVolume bool) (string, re
 		return "", nil, err
 	}
 
-	psVol, err := d.client().GetVolumeByName(volName)
+	psVol, err := d.client().GetVolume(volName)
 	if err != nil {
 		return "", nil, err
 	}
@@ -836,10 +834,10 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 		return nil, err
 	}
 
-	volID, err := client.GetVolumeID(volName)
-	if err != nil {
-		return nil, err
-	}
+	// volID, err := client.GetVolumeID(volName)
+	// if err != nil {
+	// 	return nil, err
+	// }
 
 	unlock, err := remoteVolumeMapLock(connector.Type(), d.Info().Name)
 	if err != nil {
@@ -849,7 +847,7 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 	defer unlock()
 
 	// Ensure the host exists and is configured with the correct QN.
-	hostID, cleanup, err := d.ensureHost()
+	hostName, cleanup, err := d.ensureHost()
 	if err != nil {
 		return nil, err
 	}
@@ -857,13 +855,13 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 	reverter.Add(cleanup)
 
 	// Ensure the volume is connected to the host.
-	connCreated, err := client.AttachVolumeToHost(hostID, volID)
+	connCreated, err := client.AttachVolumeToHost(volName, hostName)
 	if err != nil {
 		return nil, err
 	}
 
 	if connCreated {
-		reverter.Add(func() { _ = client.DetachVolumeFromHost(hostID, volID) })
+		reverter.Add(func() { _ = client.DetachVolumeFromHost(volName, hostName) })
 	}
 
 	// Find the array's qualified name for the configured mode.
@@ -924,10 +922,10 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 		return err
 	}
 
-	volID, err := d.client().GetVolumeID(volName)
-	if err != nil {
-		return err
-	}
+	// volID, err := d.client().GetVolumeID(volName)
+	// if err != nil {
+	// 	return err
+	// }
 
 	unlock, err := remoteVolumeMapLock(connector.Type(), d.Info().Name)
 	if err != nil {
@@ -951,7 +949,7 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 	}
 
 	// Disconnect the volume from the host and ignore error if connection does not exist.
-	err = d.client().DetachVolumeFromHost(host.ID, volID)
+	err = d.client().DetachVolumeFromHost(volName, host.Name)
 	if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
 		return err
 	}
@@ -993,7 +991,7 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 		}
 
 		// Remove the host from PowerStore.
-		err = d.client().DeleteHost(host.ID)
+		err = d.client().DeleteHost(host.Name)
 		if err != nil {
 			return err
 		}
@@ -1127,8 +1125,6 @@ func (d *powerstore) discoveryLogRecordParser(filterTargetAddresses []string) (f
 
 // CreateVolumeSnapshot creates a snapshot of a volume.
 func (d *powerstore) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
-	client := d.client()
-
 	revert := revert.New()
 	defer revert.Fail()
 
@@ -1167,12 +1163,12 @@ func (d *powerstore) CreateVolumeSnapshot(snapVol Volume, op *operations.Operati
 		return err
 	}
 
-	volID, err := client.GetVolumeID(volName)
-	if err != nil {
-		return err
-	}
+	// volID, err := client.GetVolumeID(volName)
+	// if err != nil {
+	// 	return err
+	// }
 
-	_, err = d.client().CreateVolumeSnapshot(volID, snapVolName)
+	err = d.client().CreateVolumeSnapshot(volName, snapVolName)
 	if err != nil {
 		return err
 	}
@@ -1213,17 +1209,17 @@ func (d *powerstore) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operati
 		return err
 	}
 
-	volID, err := client.GetVolumeID(parentVolName)
-	if err != nil {
-		return err
-	}
+	// volID, err := client.GetVolumeID(parentVolName)
+	// if err != nil {
+	// 	return err
+	// }
 
-	snapID, err := client.GetVolumeSnapshotID(snapVolName)
-	if err != nil {
-		return err
-	}
+	// snapID, err := client.GetVolumeSnapshotID(snapVolName)
+	// if err != nil {
+	// 	return err
+	// }
 
-	err = client.DeleteVolumeSnapshot(volID, snapID)
+	err = client.DeleteVolumeSnapshot(parentVolName, snapVolName)
 	if err != nil {
 		return err
 	}
@@ -1270,12 +1266,12 @@ func (d *powerstore) VolumeSnapshots(vol Volume, op *operations.Operation) ([]st
 		return nil, err
 	}
 
-	volID, err := client.GetVolumeID(volName)
-	if err != nil {
-		return nil, err
-	}
+	// volID, err := client.GetVolumeID(volName)
+	// if err != nil {
+	// 	return nil, err
+	// }
 
-	snapshots, err := client.GetVolumeSnapshots(volID)
+	snapshots, err := client.GetVolumeSnapshots(volName)
 	if err != nil {
 		return nil, err
 	}
