@@ -187,7 +187,7 @@ func (PowerStoreHost) selector() string {
 type PowerStoreHostInitiator struct {
 	// ID       string                  `json:"id,omitempty"`
 	PortName string                  `json:"port_name,omitempty"`
-	Type     PowerStoreInitiatorType `json:"port_type,omitempty"`
+	PortType PowerStoreInitiatorType `json:"port_type,omitempty"`
 }
 
 // PowerStoreVolume describes a volume resource in PowerStore API.
@@ -570,72 +570,85 @@ func parsePaginationOffset(headers map[string]string) (newOffset uint64, hasMore
 	return newOffset, totalItems > newOffset, nil
 }
 
-func (c *PowerStoreClient) getHosts(queryFilters map[string]string, limit int) ([]PowerStoreHost, error) {
-	url := api.NewURL().Path("api", "rest", "host")
-	url = url.WithQuery("select", "id,name,description,initiators(id,port_name,port_type),os_type,host_connectivity,mapped_hosts(id,host_id,volume_id)")
+// func (c *PowerStoreClient) getHosts(queryFilters map[string]string, limit int) ([]PowerStoreHost, error) {
+// 	url := api.NewURL().Path("api", "rest", "host")
+// 	url = url.WithQuery("select", PowerStoreHost{}.selector())
 
-	for k, v := range queryFilters {
-		url = url.WithQuery(k, v)
-	}
+// 	for k, v := range queryFilters {
+// 		url = url.WithQuery(k, v)
+// 	}
 
-	var offset uint64
-	var hosts []PowerStoreHost
+// 	var offset uint64
+// 	var hosts []PowerStoreHost
 
-	for {
-		respBody := []PowerStoreHost{}
-		respHeaders := make(map[string]string)
+// 	for {
+// 		respBody := []PowerStoreHost{}
+// 		respHeaders := make(map[string]string)
 
-		pageURL := withPaginationQuery(url.URL, offset, limit)
-		err := c.requestAuthenticated(http.MethodGet, pageURL, nil, &respBody, respHeaders)
-		if err != nil {
-			return nil, fmt.Errorf("Failed retrieving PowerStore hosts: %w", err)
-		}
+// 		pageURL := withPaginationQuery(url.URL, offset, limit)
+// 		err := c.requestAuthenticated(http.MethodGet, pageURL, nil, &respBody, respHeaders)
+// 		if err != nil {
+// 			return nil, fmt.Errorf("Failed retrieving PowerStore hosts: %w", err)
+// 		}
 
-		nextOffset, hasMoreItems, err := parsePaginationOffset(respHeaders)
-		if err != nil {
-			return nil, fmt.Errorf("Failed retrieving PowerStore hosts: %w", err)
-		}
+// 		nextOffset, hasMoreItems, err := parsePaginationOffset(respHeaders)
+// 		if err != nil {
+// 			return nil, fmt.Errorf("Failed retrieving PowerStore hosts: %w", err)
+// 		}
 
-		hosts = append(hosts, respBody...)
-		offset = nextOffset
+// 		hosts = append(hosts, respBody...)
+// 		offset = nextOffset
 
-		if !hasMoreItems {
-			break
-		}
-	}
+// 		if !hasMoreItems {
+// 			break
+// 		}
+// 	}
 
-	return hosts, nil
-}
+// 	return hosts, nil
+// }
 
 // GetCurrentHost retrieves the HPE Alletra Storage host linked to the current LXD host.
 // The Alletra Storage host is considered a match if it includes the fully qualified
 // name of the LXD host that is determined by the configured mode.
 func (c *PowerStoreClient) GetCurrentHost(connectorType string, qn string) (*PowerStoreHost, error) {
 	c.logger.Warn("Getting current host", logger.Ctx{"connector_type": connectorType, "qn": qn})
-	filters := map[string]string{}
 
-	hosts, err := c.getHosts(filters, -1)
+	var portType PowerStoreInitiatorType
+	switch connectorType {
+	case connectors.TypeISCSI:
+		portType = InitiatorPortTypeEnumISCSI
+	case connectors.TypeNVME:
+		portType = InitiatorPortTypeEnumNVMe
+	default:
+		return nil, fmt.Errorf("Unsupported connector type: %q", connectorType)
+	}
+
+	var resp PowerStoreHost
+
+	url := api.NewURL().Path("api", "rest", "host")
+	url = url.WithQuery("port_type", string(portType))
+	url = url.WithQuery("port_name", qn)
+	url = url.WithQuery("select", resp.selector())
+
+	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &resp, nil)
 	if err != nil {
-		return nil, err
-	}
-
-	for _, host := range hosts {
-		for _, initiator := range host.Initiators {
-			if initiator.PortName == qn {
-				return &host, nil
-			}
+		psErr, ok := err.(*powerStoreError)
+		if ok && psErr.HTTPStatusCode() == http.StatusNotFound {
+			return nil, api.StatusErrorf(http.StatusNotFound, "Host with qualified name %q (%q) not found", qn, connectorType)
 		}
+
+		return nil, fmt.Errorf("Failed retrieving PowerStore hosts: %w", err)
 	}
 
-	return nil, api.StatusErrorf(http.StatusNotFound, "Host with qualified name %q (%q) not found", qn, connectorType)
+	return &resp, nil
 }
 
 // GetHost retrieves host using its name.
 func (c *PowerStoreClient) GetHost(hostName string) (*PowerStoreHost, error) {
+	c.logger.Warn("Retrieving host", logger.Ctx{"host_name": hostName})
 	var host PowerStoreHost
 
-	c.logger.Warn("Retrieving host", logger.Ctx{"host_name": hostName})
-	url := api.NewURL().Path("api", "rest", "host", hostName)
+	url := api.NewURL().Path("api", "rest", "host", "name:"+hostName)
 	url = url.WithQuery("select", host.selector())
 
 	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &host, nil)
@@ -685,10 +698,10 @@ func (c *PowerStoreClient) CreateHost(hostName string, connectorType string, qn 
 	return nil
 }
 
-// DeleteHost deletes host using its ID.
-func (c *PowerStoreClient) DeleteHost(hostID string) error {
-	c.logger.Warn("Deleting host", logger.Ctx{"host_id": hostID})
-	url := api.NewURL().Path("api", "rest", "host", hostID)
+// DeleteHost deletes host using its name.
+func (c *PowerStoreClient) DeleteHost(hostName string) error {
+	c.logger.Warn("Deleting host", logger.Ctx{"host_name": hostName})
+	url := api.NewURL().Path("api", "rest", "host", "name:"+hostName)
 
 	err := c.requestAuthenticated(http.MethodDelete, url.URL, nil, nil, nil)
 	if err != nil {
