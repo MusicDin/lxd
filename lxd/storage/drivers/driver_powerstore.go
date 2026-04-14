@@ -77,10 +77,6 @@ type powerstore struct {
 	// Use powerstore.connector() to retrieve the initialized connector.
 	storageConnector connectors.Connector
 
-	// Derived initiator resource associated with current host, mode and transport
-	// Use powerstore.initiator() to retrieve the initialized initiator resource.
-	initiatorResource *clients.PowerStoreHostInitiator
-
 	// List of discovered targets ant theirs QNs (qualified names)
 	// Use powerstore.targets() to retrieve the discovered PowerStore targets.
 	discoveredTargets []powerStoreTarget
@@ -90,22 +86,6 @@ type powerstore struct {
 type powerStoreTarget struct {
 	Address       string
 	QualifiedName string
-}
-
-// powerStoreGroupTargetsAddressesByQualifiedName combines target addresses
-// from targets with the same qualified names together into a single map key.
-func powerStoreGroupTargetsAddressesByQualifiedName(targets ...powerStoreTarget) map[string][]string {
-	grouped := map[string][]string{}
-	// Attempt to preserve order while grouping.
-	for _, target := range targets {
-		grouped[target.QualifiedName] = append(grouped[target.QualifiedName], target.Address)
-	}
-
-	for qn, addresses := range grouped {
-		grouped[qn] = shared.Unique(addresses)
-	}
-
-	return grouped
 }
 
 // load is used to run one-time action per-driver rather than per-pool.
@@ -167,7 +147,7 @@ func (d *powerstore) client() *clients.PowerStoreClient {
 func (d *powerstore) globalVolumeNamePrefix() string {
 	poolHash := sha256.Sum256([]byte(d.Name()))
 	poolName := base64.StdEncoding.EncodeToString(poolHash[:])
-	return powerStoreResourceNamePrefix + poolName + powerStorePoolAndVolSep
+	return powerStoreResourcePrefix + poolName + powerStorePoolAndVolSep
 }
 
 // isRemote returns true indicating this driver uses remote storage.

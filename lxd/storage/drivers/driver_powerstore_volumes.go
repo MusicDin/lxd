@@ -2,7 +2,6 @@ package drivers
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
@@ -28,8 +27,8 @@ import (
 	"github.com/canonical/lxd/shared/validate"
 )
 
-// powerStoreResourceNamePrefix common prefix for all resource names in PowerStore.
-const powerStoreResourceNamePrefix = "lxd-"
+// powerStoreResourcePrefix common prefix for all resource names in PowerStore.
+const powerStoreResourcePrefix = "lxd-"
 
 // powerStorePoolAndVolSep separates pool name and volume data in encoded volume names.
 const powerStorePoolAndVolSep = "-"
@@ -49,31 +48,21 @@ const (
 )
 
 // powerStoreVolTypePrefixes maps volume type to storage volume name prefix.
+// Use smallest possible prefixes since PowerStore volume names are limited to 63 characters.
 var powerStoreVolTypePrefixes = map[VolumeType]string{
-	VolumeTypeContainer: powerStoreContainerVolPrefix,
-	VolumeTypeVM:        powerStoreVMVolPrefix,
-	VolumeTypeImage:     powerStoreImageVolPrefix,
-	VolumeTypeCustom:    powerStoreCustomVolPrefix,
+	VolumeTypeContainer: "c",
+	VolumeTypeVM:        "v",
+	VolumeTypeImage:     "i",
+	VolumeTypeCustom:    "u",
 }
 
-// powerStoreVolTypePrefixesRev maps storage volume name prefix to volume type.
-var powerStoreVolTypePrefixesRev = map[string]VolumeType{
-	powerStoreContainerVolPrefix: VolumeTypeContainer,
-	powerStoreVMVolPrefix:        VolumeTypeVM,
-	powerStoreImageVolPrefix:     VolumeTypeImage,
-	powerStoreCustomVolPrefix:    VolumeTypeCustom,
-}
-
-// powerStoreVolContentTypeSuffixes maps volume content type to storage volume name suffix.
+// powerStoreVolContentTypeSuffixes maps volume's content type to storage volume name suffix.
 var powerStoreVolContentTypeSuffixes = map[ContentType]string{
-	ContentTypeBlock: powerStoreBlockVolSuffix,
-	ContentTypeISO:   powerStoreISOVolSuffix,
-}
+	// Suffix used for block content type volumes.
+	ContentTypeBlock: "b",
 
-// powerStoreVolContentTypeSuffixesRev maps storage volume name suffix to volume content type.
-var powerStoreVolContentTypeSuffixesRev = map[string]ContentType{
-	powerStoreBlockVolSuffix: ContentTypeBlock,
-	powerStoreISOVolSuffix:   ContentTypeISO,
+	// Suffix used for ISO content type volumes.
+	ContentTypeISO: "i",
 }
 
 // commonVolumeRules returns validation rules which are common for pool and
@@ -112,44 +101,6 @@ func (d *powerstore) commonVolumeRules() map[string]func(value string) error {
 			validate.IsMultipleOfUnit(powerStoreMinVolumeSizeAlignmentUnit),
 		),
 	}
-}
-
-// extractDataFromVolumeResourceName decodes the PowerStore volume resource
-// name and extracts the stored data.
-func (d *powerstore) extractDataFromVolumeResourceName(name string) (poolHash string, volType VolumeType, volUUID uuid.UUID, volContentType ContentType, err error) {
-	prefixLess, hasPrefix := strings.CutPrefix(name, powerStoreResourceNamePrefix)
-	if !hasPrefix {
-		return "", "", uuid.Nil, "", fmt.Errorf("Cannot decode volume name %q: invalid name format", name)
-	}
-
-	poolHash, volName, ok := strings.Cut(prefixLess, powerStorePoolAndVolSep)
-	if !ok || poolHash == "" || volName == "" {
-		return "", "", uuid.Nil, "", fmt.Errorf("Cannot decode volume name %q: invalid name format", name)
-	}
-
-	prefix, volNameWithoutPrefix, ok := strings.Cut(volName, powerStoreVolPrefixSep)
-	if ok {
-		volName = volNameWithoutPrefix
-		volType = powerStoreVolTypePrefixesRev[prefix]
-	}
-
-	volNameWithoutSuffix, suffix, ok := strings.Cut(volName, powerStoreVolSuffixSep)
-	if ok {
-		volName = volNameWithoutSuffix
-		volContentType = powerStoreVolContentTypeSuffixesRev[suffix]
-	}
-
-	binUUID, err := base64.StdEncoding.DecodeString(volName)
-	if err != nil {
-		return poolHash, volType, volUUID, volContentType, fmt.Errorf("Cannot decode volume name %q: %w", name, err)
-	}
-
-	volUUID, err = uuid.FromBytes(binUUID)
-	if err != nil {
-		return poolHash, volType, volUUID, volContentType, fmt.Errorf("Failed parsing UUID from decoded volume name: %w", err)
-	}
-
-	return poolHash, volType, volUUID, volContentType, nil
 }
 
 // // roundVolumeBlockSizeBytes rounds the given size (in bytes) up to the next
@@ -253,7 +204,7 @@ func (d *powerstore) GetVolumeUsage(vol Volume) (int64, error) {
 		return int64(stat.Blocks-stat.Bfree) * int64(stat.Bsize), nil
 	}
 
-	volName, err := d.getVolumeName(vol)
+	volName, err := d.encodeVolumeName(vol)
 	if err != nil {
 		return -1, err
 	}
@@ -269,7 +220,7 @@ func (d *powerstore) GetVolumeUsage(vol Volume) (int64, error) {
 // HasVolume indicates whether a specific volume exists on the storage pool.
 func (d *powerstore) HasVolume(vol Volume) (bool, error) {
 	d.logger.Warn("Checking if volume exists", logger.Ctx{"vol": vol.name})
-	volName, err := d.getVolumeName(vol)
+	volName, err := d.encodeVolumeName(vol)
 	if err != nil {
 		return false, err
 	}
@@ -287,14 +238,14 @@ func (d *powerstore) HasVolume(vol Volume) (bool, error) {
 // the name.
 func (d *powerstore) ListVolumes() ([]Volume, error) {
 	d.logger.Warn("Listing volumes")
-	volResources, err := d.client().GetVolumes()
+	psVols, err := d.client().GetVolumes()
 	if err != nil {
 		return nil, err
 	}
 
-	vols := make([]Volume, 0, len(volResources))
-	for _, volResource := range volResources {
-		_, volType, volUUID, volContentType, err := d.extractDataFromVolumeResourceName(volResource.Name)
+	vols := make([]Volume, 0, len(psVols))
+	for _, volResource := range psVols {
+		volType, volUUID, volContentType, err := d.decodeVolumeName(volResource.Name)
 		if err != nil {
 			d.logger.Debug("Ignoring unrecognized volume", logger.Ctx{"name": volResource.Name, "err": err.Error()})
 			continue
@@ -326,7 +277,7 @@ func (d *powerstore) CreateVolume(vol Volume, filler *VolumeFiller, op *operatio
 	revert := revert.New()
 	defer revert.Fail()
 
-	volName, err := d.getVolumeName(vol)
+	volName, err := d.encodeVolumeName(vol)
 	if err != nil {
 		return err
 	}
@@ -467,7 +418,7 @@ func (d *powerstore) DeleteVolume(vol Volume, op *operations.Operation) error {
 		return err
 	}
 
-	volName, err := d.getVolumeName(vol)
+	volName, err := d.encodeVolumeName(vol)
 	if err != nil {
 		return err
 	}
@@ -538,7 +489,7 @@ func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize b
 		return nil
 	}
 
-	volName, err := d.getVolumeName(vol)
+	volName, err := d.encodeVolumeName(vol)
 	if err != nil {
 		return err
 	}
@@ -673,9 +624,8 @@ func (d *powerstore) RenameVolume(vol Volume, newVolName string, op *operations.
 	return nil
 }
 
-// volumeResourceName derives the name of a volume resource in PowerStore from
-// the provided volume.
-func (d *powerstore) getVolumeName(vol Volume) (string, error) {
+// encodeVolumeName derives the name of a volume resource in PowerStore from the provided volume.
+func (d *powerstore) encodeVolumeName(vol Volume) (string, error) {
 	volUUID, err := uuid.Parse(vol.config["volatile.uuid"])
 	if err != nil {
 		return "", fmt.Errorf(`Failed parsing "volatile.uuid" from volume %q: %w`, vol.name, err)
@@ -698,6 +648,49 @@ func (d *powerstore) getVolumeName(vol Volume) (string, error) {
 	}
 
 	return d.globalVolumeNamePrefix() + volName, nil
+}
+
+// decodeVolumeName decodes the PowerStore volume resource name and extracts the stored data.
+func (d *powerstore) decodeVolumeName(name string) (volType VolumeType, volUUID uuid.UUID, volContentType ContentType, err error) {
+	poolAndVolName, ok := strings.CutPrefix(name, powerStoreResourcePrefix)
+	if !ok {
+		return "", uuid.Nil, "", fmt.Errorf("Failed decoding volume name %q: Missing LXD prefix", name)
+	}
+
+	// Remove poolName prefix.
+	poolName, volName, ok := strings.Cut(poolAndVolName, powerStorePoolAndVolSep)
+	if !ok || poolName == "" || volName == "" {
+		return "", uuid.Nil, "", fmt.Errorf("Failed decoding volume name %q: Invalid name format", name)
+	}
+
+	// Volume prefix represents volume type.
+	volPrefix, volNameWithoutPrefix, ok := strings.Cut(volName, powerStoreVolPrefixSep)
+	if ok {
+		volName = volNameWithoutPrefix
+		for k, v := range powerStoreVolTypePrefixes {
+			if v == volPrefix {
+				volType = k
+				break
+			}
+		}
+	}
+
+	volName, volSuffix, ok := strings.Cut(volName, powerStoreVolSuffixSep)
+	if ok {
+		for k, v := range powerStoreVolContentTypeSuffixes {
+			if v == volSuffix {
+				volContentType = k
+				break
+			}
+		}
+	}
+
+	volUUID, err = uuid.Parse(volName)
+	if err != nil {
+		return "", uuid.Nil, "", fmt.Errorf("Failed decoding volume name %q: %w", name, err)
+	}
+
+	return volType, volUUID, volContentType, nil
 }
 
 // ensureHost returns a name of the host that is configured with a given IQN. If such host
@@ -785,7 +778,7 @@ func (d *powerstore) getMappedDevicePath(vol Volume, mapVolume bool) (string, re
 		revert.Add(cleanup)
 	}
 
-	volName, err := d.getVolumeName(vol)
+	volName, err := d.encodeVolumeName(vol)
 	if err != nil {
 		return "", nil, err
 	}
@@ -838,7 +831,7 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 		return nil, err
 	}
 
-	volName, err := d.getVolumeName(vol)
+	volName, err := d.encodeVolumeName(vol)
 	if err != nil {
 		return nil, err
 	}
@@ -926,7 +919,7 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 		return err
 	}
 
-	volName, err := d.getVolumeName(vol)
+	volName, err := d.encodeVolumeName(vol)
 	if err != nil {
 		return err
 	}
@@ -1164,12 +1157,12 @@ func (d *powerstore) CreateVolumeSnapshot(snapVol Volume, op *operations.Operati
 		return err
 	}
 
-	volName, err := d.getVolumeName(snapVol.GetParent())
+	volName, err := d.encodeVolumeName(snapVol.GetParent())
 	if err != nil {
 		return err
 	}
 
-	snapVolName, err := d.getVolumeName(snapVol)
+	snapVolName, err := d.encodeVolumeName(snapVol)
 	if err != nil {
 		return err
 	}
@@ -1210,12 +1203,12 @@ func (d *powerstore) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operati
 	client := d.client()
 
 	parentVol := snapVol.GetParent()
-	parentVolName, err := d.getVolumeName(parentVol)
+	parentVolName, err := d.encodeVolumeName(parentVol)
 	if err != nil {
 		return err
 	}
 
-	snapVolName, err := d.getVolumeName(snapVol)
+	snapVolName, err := d.encodeVolumeName(snapVol)
 	if err != nil {
 		return err
 	}
@@ -1272,7 +1265,7 @@ func (d *powerstore) RenameVolumeSnapshot(snapVol Volume, newSnapshotName string
 func (d *powerstore) VolumeSnapshots(vol Volume, op *operations.Operation) ([]string, error) {
 	client := d.client()
 
-	volName, err := d.getVolumeName(vol)
+	volName, err := d.encodeVolumeName(vol)
 	if err != nil {
 		return nil, err
 	}
