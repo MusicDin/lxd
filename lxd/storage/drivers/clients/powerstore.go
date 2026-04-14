@@ -1,7 +1,6 @@
 package clients
 
 import (
-	"bytes"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -51,11 +50,14 @@ const (
 	InitiatorPortTypeEnumNVMe PowerStoreInitiatorType = "NVMe"
 )
 
+type powerStoreErrorMessage struct {
+	Message string `json:"message_l10n"`
+}
+
 // powerStoreError contains arbitrary error responses from PowerStore.
 type powerStoreError struct {
-	httpStatusCode int
-	details        errorResponseResource
-	decoderErr     error
+	StatusCode int                      `json:"-"`
+	Messages   []powerStoreErrorMessage `json:"messages,omitempty"`
 }
 
 func newPowerStoreError(resp *http.Response) error {
@@ -64,68 +66,61 @@ func newPowerStoreError(resp *http.Response) error {
 	}
 
 	psErr := &powerStoreError{
-		httpStatusCode: resp.StatusCode,
+		StatusCode: resp.StatusCode,
 	}
 
 	if resp.Header.Get("Content-Type") != "application/json" || resp.Header.Get("Content-Length") == "0" {
 		return psErr
 	}
 
-	err := json.NewDecoder(resp.Body).Decode(&psErr.details)
+	err := json.NewDecoder(resp.Body).Decode(&psErr)
 	if err != nil {
-		psErr.decoderErr = fmt.Errorf("Failed unmarshalling HTTP error response body: %w", err)
+		return fmt.Errorf("Failed unmarshalling HTTP error response body: %w", err)
 	}
 
 	return psErr
-}
-
-// HTTPStatusCode attempts to extract the HTTP status code value from
-// a PowerStore response. If the error is not associated with some HTTP error
-// code function returns zero.
-func (e *powerStoreError) HTTPStatusCode() int {
-	return e.httpStatusCode
-}
-
-// ErrorCode attempts to extract the PowerStore error code value. If the error
-// do not contains the PowerStore error code code function returns an empty
-// string.
-func (e *powerStoreError) ErrorCode() string {
-	for _, em := range e.details.Messages {
-		if em.Code != "" {
-			return em.Code
-		}
-	}
-	return ""
 }
 
 // Error attempts to return all kinds of errors from the PowerStore API in
 // a nicely formatted way.
 func (e *powerStoreError) Error() string {
 	msg := "PowerStore API error"
-	if e.httpStatusCode != 0 {
-		msg = fmt.Sprintf("%s %d response", msg, e.httpStatusCode)
+	if e.StatusCode != 0 {
+		msg += " " + strconv.Itoa(e.StatusCode)
 	}
 
-	details, err := json.Marshal(e.details)
-	if err == nil && len(details) > 0 && !bytes.Equal(details, []byte("{}")) && !bytes.Equal(details, []byte("null")) {
-		msg = fmt.Sprintf("%s; details: %s", msg, details)
-	}
-
-	if e.decoderErr != nil {
-		msg = fmt.Sprintf("%s; response decoding error: %s", msg, e.decoderErr.Error())
+	for _, em := range e.Messages {
+		if em.Message != "" {
+			msg += ": " + em.Message
+		}
 	}
 
 	return msg
 }
 
-type errorResponseResource struct {
-	Messages []errorMessageResource `json:"messages,omitempty"`
-}
+// isPowerStoreError checks if the error is of type powerStoreError and matches the status code.
+func isPowerStoreError(err error, statusCode int, substrings ...string) bool {
+	perr, ok := err.(*powerStoreError)
+	if !ok {
+		return false
+	}
 
-type errorMessageResource struct {
-	Severity    string `json:"severity"`
-	Code        string `json:"code"`
-	MessageL10n string `json:"message_l10n"`
+	if perr.StatusCode != statusCode {
+		return false
+	}
+
+	if len(substrings) == 0 {
+		return true
+	}
+
+	errMsg := strings.ToLower(perr.Error())
+	for _, substring := range substrings {
+		if strings.Contains(errMsg, strings.ToLower(substring)) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // powerStoreSession describes PowerStore login session.
@@ -632,8 +627,7 @@ func (c *PowerStoreClient) GetCurrentHost(connectorType string, qn string) (*Pow
 
 	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &resp, nil)
 	if err != nil {
-		psErr, ok := err.(*powerStoreError)
-		if ok && psErr.HTTPStatusCode() == http.StatusNotFound {
+		if isPowerStoreError(err, http.StatusNotFound) {
 			return nil, api.StatusErrorf(http.StatusNotFound, "Host with qualified name %q (%q) not found", qn, connectorType)
 		}
 
@@ -653,8 +647,7 @@ func (c *PowerStoreClient) GetHost(hostName string) (*PowerStoreHost, error) {
 
 	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &host, nil)
 	if err != nil {
-		psErr, ok := err.(*powerStoreError)
-		if ok && psErr.HTTPStatusCode() == http.StatusNotFound {
+		if isPowerStoreError(err, http.StatusNotFound) {
 			return nil, api.StatusErrorf(http.StatusNotFound, "Host with name %q not found", hostName)
 		}
 
@@ -829,8 +822,7 @@ func (c *PowerStoreClient) GetVolume(volumeName string) (*PowerStoreVolume, erro
 
 	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &resp, nil)
 	if err != nil {
-		psErr, ok := err.(*powerStoreError)
-		if ok && psErr.HTTPStatusCode() == http.StatusNotFound {
+		if isPowerStoreError(err, http.StatusNotFound) {
 			return nil, api.StatusErrorf(http.StatusNotFound, "Volume with name %q not found", volumeName)
 		}
 
@@ -978,8 +970,7 @@ func (c *PowerStoreClient) GetVolumeSnapshot(volumeName string, snapshotName str
 
 	err = c.requestAuthenticated(http.MethodGet, url.URL, nil, &resp, nil)
 	if err != nil {
-		psErr, ok := err.(*powerStoreError)
-		if ok && psErr.HTTPStatusCode() == http.StatusNotFound {
+		if isPowerStoreError(err, http.StatusNotFound) {
 			return nil, api.StatusErrorf(http.StatusNotFound, "Volume snapshot with name %q not found", snapshotName)
 		}
 
