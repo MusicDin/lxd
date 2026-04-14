@@ -396,7 +396,7 @@ func (d *powerstore) Delete(op *operations.Operation) error {
 
 // GetResources returns the pool resource usage information.
 func (d *powerstore) GetResources() (*api.ResourcesStoragePool, error) {
-	metrics, err := d.client().GetApplianceMetrics(d.state.ShutdownCtx)
+	metrics, err := d.client().GetApplianceMetrics()
 	if err != nil {
 		return nil, err
 	}
