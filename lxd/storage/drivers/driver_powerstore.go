@@ -196,59 +196,6 @@ func (d *powerstore) Info() Info {
 	}
 }
 
-// Create is called during pool creation and is effectively using an empty driver struct.
-// WARNING: The Create() function cannot rely on any of the struct attributes being set.
-func (d *powerstore) Create() error {
-	return nil
-}
-
-// Update applies any driver changes required from a configuration change.
-func (d *powerstore) Update(changedConfig map[string]string) error {
-	return nil
-}
-
-// Mount mounts the storage pool.
-func (d *powerstore) Mount() (bool, error) {
-	return true, nil
-}
-
-// Unmount unmounts the storage pool.
-func (d *powerstore) Unmount() (bool, error) {
-	return true, nil
-}
-
-// Delete removes the storage pool from the storage device.
-func (d *powerstore) Delete(op *operations.Operation) error {
-	return wipeDirectory(GetPoolMountPath(d.name))
-}
-
-// GetResources returns the pool resource usage information.
-func (d *powerstore) GetResources() (*api.ResourcesStoragePool, error) {
-	metrics, err := d.client().GetApplianceMetrics(d.state.ShutdownCtx)
-	if err != nil {
-		return nil, err
-	}
-
-	res := &api.ResourcesStoragePool{}
-
-	for _, m := range metrics {
-		res.Space.Total += uint64(m.LastPhysicalTotalSpace)
-		res.Space.Used += uint64(m.LastPhysicalUsedSpace)
-	}
-
-	return res, nil
-}
-
-// SourceIdentifier returns a combined string consisting of the gateway address and pool name.
-// func (d *powerstore) SourceIdentifier() (string, error) {
-// 	gateway := d.config["powerstore.gateway"]
-// 	if gateway == "" {
-// 		return "", errors.New("Cannot derive identifier from empty gateway address")
-// 	}
-
-// 	return fmt.Sprintf("%s-%s", gateway, d.Name()), nil
-// }
-
 // FillConfig populates the storage pool's configuration file with the default values.
 func (d *powerstore) FillConfig() error {
 	if d.config["powerstore.user.name"] == "" {
@@ -398,6 +345,20 @@ func (d *powerstore) Validate(config map[string]string) error {
 	return nil
 }
 
+// SourceIdentifier returns a combined string consisting of the gateway address and pool name.
+func (d *powerstore) SourceIdentifier() (string, error) {
+	gateway := d.config["powerstore.gateway"]
+	if gateway == "" {
+		return "", errors.New("Cannot derive identifier from empty gateway address")
+	}
+
+	if d.name == "" {
+		return "", errors.New("Cannot derive identifier from empty pool name")
+	}
+
+	return gateway + "-" + d.name, nil
+}
+
 // ValidateSource checks whether the required config keys are set to access the remote source.
 func (d *powerstore) ValidateSource() error {
 	if d.config["powerstore.gateway"] == "" {
@@ -405,4 +366,47 @@ func (d *powerstore) ValidateSource() error {
 	}
 
 	return nil
+}
+
+// Create is called during pool creation and is effectively using an empty driver struct.
+// WARNING: The Create() function cannot rely on any of the struct attributes being set.
+func (d *powerstore) Create() error {
+	return nil
+}
+
+// Update applies any driver changes required from a configuration change.
+func (d *powerstore) Update(changedConfig map[string]string) error {
+	return nil
+}
+
+// Mount mounts the storage pool.
+func (d *powerstore) Mount() (bool, error) {
+	return true, nil
+}
+
+// Unmount unmounts the storage pool.
+func (d *powerstore) Unmount() (bool, error) {
+	return true, nil
+}
+
+// Delete removes the storage pool from the storage device.
+func (d *powerstore) Delete(op *operations.Operation) error {
+	return wipeDirectory(GetPoolMountPath(d.name))
+}
+
+// GetResources returns the pool resource usage information.
+func (d *powerstore) GetResources() (*api.ResourcesStoragePool, error) {
+	metrics, err := d.client().GetApplianceMetrics(d.state.ShutdownCtx)
+	if err != nil {
+		return nil, err
+	}
+
+	res := &api.ResourcesStoragePool{}
+
+	for _, m := range metrics {
+		res.Space.Total += uint64(m.LastPhysicalTotalSpace)
+		res.Space.Used += uint64(m.LastPhysicalUsedSpace)
+	}
+
+	return res, nil
 }
