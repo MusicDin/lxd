@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
 
+	"github.com/canonical/lxd/lxd/backup"
 	"github.com/canonical/lxd/lxd/operations"
 	"github.com/canonical/lxd/lxd/storage/block"
 	"github.com/canonical/lxd/lxd/storage/connectors"
@@ -385,6 +387,16 @@ func (d *powerstore) CreateVolume(vol Volume, filler *VolumeFiller, op *operatio
 
 	revert.Success()
 	return nil
+}
+
+// CreateVolumeFromBackup re-creates a volume from its exported state.
+func (d *powerstore) CreateVolumeFromBackup(vol VolumeCopy, srcBackup backup.Info, srcData io.ReadSeeker, op *operations.Operation) (VolumePostHook, revert.Hook, error) {
+	return genericVFSBackupUnpack(d, d.state, vol, srcBackup.Snapshots, srcData, op)
+}
+
+// CreateVolumeFromImage creates a new volume from an image, unpacking it directly.
+func (d *powerstore) CreateVolumeFromImage(vol Volume, imgVol *Volume, filler *VolumeFiller, op *operations.Operation) error {
+	return d.CreateVolume(vol, filler, op)
 }
 
 // UpdateVolume applies config changes to the volume.
