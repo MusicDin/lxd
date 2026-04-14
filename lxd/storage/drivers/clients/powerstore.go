@@ -169,7 +169,7 @@ type PowerStoreInitiator struct {
 
 // PowerStoreHost describes a host resource in PowerStore API.
 type PowerStoreHost struct {
-	// ID               string                         `json:"id,omitempty"`
+	ID               string                         `json:"id,omitempty"`
 	Name             string                         `json:"name,omitempty"`
 	Description      string                         `json:"description,omitempty"`
 	Initiators       []*PowerStoreHostInitiator     `json:"initiators,omitempty"`
@@ -179,8 +179,7 @@ type PowerStoreHost struct {
 }
 
 func (PowerStoreHost) selector() string {
-	// return "id,name,description,initiators(id,port_name,port_type),os_type,host_connectivity,mapped_hosts(id,host_id,volume_id)"
-	return "name,description,initiators(id,port_name,port_type),os_type,host_connectivity,mapped_hosts(id,host_id,volume_id)"
+	return "id,name,description,initiators(id,port_name,port_type),os_type,host_connectivity,mapped_hosts(id,host_id,volume_id)"
 }
 
 // PowerStoreHostInitiator describes an initiator resource of some host in
@@ -193,7 +192,7 @@ type PowerStoreHostInitiator struct {
 
 // PowerStoreVolume describes a volume resource in PowerStore API.
 type PowerStoreVolume struct {
-	// ID            string                        `json:"id,omitempty"`
+	ID            string                        `json:"id,omitempty"`
 	Name          string                        `json:"name,omitempty"`
 	Description   string                        `json:"description,omitempty"`
 	Type          string                        `json:"type,omitempty"`
@@ -208,8 +207,7 @@ type PowerStoreVolume struct {
 }
 
 func (PowerStoreVolume) selector() string {
-	return "name,description,type,state,size,logical_used,wwn,app_type,app_type_other,volume_groups(id),mapped_volumes(id,host_id,volume_id)"
-	// return "id,name,description,type,state,size,logical_used,wwn,app_type,app_type_other,volume_groups(id),mapped_volumes(id,host_id,volume_id)"
+	return "id,name,description,type,state,size,logical_used,wwn,app_type,app_type_other,volume_groups(id),mapped_volumes(id,host_id,volume_id)"
 }
 
 // PowerStoreHostVolumeMapping describes a mapping between host and volume in
@@ -232,6 +230,10 @@ type PowerStoreApplianceMetrics struct {
 	LastLogicalUsedSpace   int64   `json:"last_logical_used_space,omitempty"`
 	LastPhysicalTotalSpace int64   `json:"last_physical_total_space,omitempty"`
 	LastPhysicalUsedSpace  int64   `json:"last_physical_used_space,omitempty"`
+}
+
+func (PowerStoreApplianceMetrics) selector() string {
+	return "id,name,avg_latency,total_iops,total_bandwidth,last_logical_total_space,last_logical_used_space,last_physical_total_space,last_physical_used_space"
 }
 
 // PowerStoreClient holds the PowerStore HTTP API client.
@@ -698,28 +700,33 @@ func (c *PowerStoreClient) DeleteHost(hostID string) error {
 
 // AttachVolumeToHost attaches (maps) volume to host, returning true if the volume was freshly
 // attached to the host, and false if the volume was already attached to the host.
-func (c *PowerStoreClient) AttachVolumeToHost(hostID string, volumeID string) (bool, error) {
+func (c *PowerStoreClient) AttachVolumeToHost(volumeName string, hostName string) (bool, error) {
+	c.logger.Warn("Attaching volume to host", logger.Ctx{"host_name": hostName, "volume_name": volumeName})
+
 	// Check if the volume is already attached to the host.
-	host, err := c.GetHost(hostID)
+	host, err := c.GetHost(hostName)
 	if err != nil {
-		return false, fmt.Errorf("Failed retrieving PowerStore host with ID %q: %w", hostID, err)
+		return false, err
+	}
+
+	vol, err := c.GetVolume(volumeName)
+	if err != nil {
+		return false, err
 	}
 
 	for _, mapping := range host.MappedVolumes {
-		if mapping.VolumeID == volumeID {
+		if mapping.VolumeID == vol.ID {
 			// The volume is already attached to the host.
 			return false, nil
 		}
 	}
 
 	// Attach the volume to the host.
-	url := api.NewURL().Path("api", "rest", "host", hostID, "attach")
+	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName, "attach")
 
 	req := map[string]any{
-		"volume_id": volumeID,
+		"host_id": "name:" + hostName,
 	}
-
-	c.logger.Warn("Attaching volume to host", logger.Ctx{"host_id": hostID, "volume_id": volumeID})
 
 	err = c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
 	if err != nil {
@@ -732,10 +739,10 @@ func (c *PowerStoreClient) AttachVolumeToHost(hostID string, volumeID string) (b
 // DetachVolumeFromHost detaches (unmaps) volume from host.
 func (c *PowerStoreClient) DetachVolumeFromHost(volumeName string, hostName string) error {
 	c.logger.Warn("Detaching volume from host", logger.Ctx{"host_name": hostName, "volume_name": volumeName})
-	url := api.NewURL().Path("api", "rest", "host", "name:"+hostName, "detach")
+	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName, "detach")
 
 	req := map[string]any{
-		"volume_id": "name:" + volumeName,
+		"host_id": "name:" + hostName,
 	}
 
 	err := c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
@@ -746,9 +753,9 @@ func (c *PowerStoreClient) DetachVolumeFromHost(volumeName string, hostName stri
 	return nil
 }
 
-func (c *PowerStoreClient) getVolumes(queryFilter map[string]string, limit int) ([]PowerStoreVolume, error) {
+func (c *PowerStoreClient) getVolumes(queryFilter map[string]string) ([]PowerStoreVolume, error) {
 	url := api.NewURL().Path("api", "rest", "volume")
-	url = url.WithQuery("select", "id,name,description,type,state,size,logical_used,wwn,app_type,app_type_other,volume_groups(id),mapped_volumes(id,host_id,volume_id)")
+	url = url.WithQuery("select", PowerStoreVolume{}.selector())
 
 	for k, v := range queryFilter {
 		url = url.WithQuery(k, v)
@@ -761,15 +768,10 @@ func (c *PowerStoreClient) getVolumes(queryFilter map[string]string, limit int) 
 		respBody := []PowerStoreVolume{}
 		respHeaders := make(map[string]string)
 
-		pageURL := withPaginationQuery(url.URL, offset, limit)
+		pageURL := withPaginationQuery(url.URL, offset, PowerStoreQueryResponseLimit)
 		err := c.requestAuthenticated(http.MethodGet, pageURL, nil, &respBody, respHeaders)
 		if err != nil {
 			return nil, err
-		}
-
-		volumes = append(volumes, respBody...)
-		if limit > 0 && len(volumes) >= limit {
-			break
 		}
 
 		nextOffset, hasMoreItems, err := parsePaginationOffset(respHeaders)
@@ -777,6 +779,7 @@ func (c *PowerStoreClient) getVolumes(queryFilter map[string]string, limit int) 
 			return nil, err
 		}
 
+		volumes = append(volumes, respBody...)
 		offset = nextOffset
 
 		if !hasMoreItems {
@@ -795,7 +798,7 @@ func (c *PowerStoreClient) GetVolumes() ([]PowerStoreVolume, error) {
 		"or":   "(type.eq.Primary,type.eq.Clone)",
 	}
 
-	vols, err := c.getVolumes(filter, -1)
+	vols, err := c.getVolumes(filter)
 	if err != nil {
 		return nil, fmt.Errorf("Failed retrieving PowerStore volumes: %w", err)
 	}
@@ -804,11 +807,11 @@ func (c *PowerStoreClient) GetVolumes() ([]PowerStoreVolume, error) {
 }
 
 // GetVolume retrieves volume using its name.
-// GetVolumeByID retrieves volume using its ID.
 func (c *PowerStoreClient) GetVolume(volumeName string) (*PowerStoreVolume, error) {
 	var resp PowerStoreVolume
 
 	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName)
+	url = url.WithQuery("or", "(type.eq.Primary,type.eq.Clone)")
 	url = url.WithQuery("select", resp.selector())
 
 	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &resp, nil)
@@ -873,9 +876,9 @@ func (c *PowerStoreClient) ResizeVolume(volumeName string, newSize int64) error 
 }
 
 // CloneVolume clones the volume or the volume snapshot with the provided name to a new volume.
-func (c *PowerStoreClient) CloneVolume(srcVolumeName string, dstVolumeName string) error {
-	c.logger.Warn("Cloning volume", logger.Ctx{"src_volume_name": srcVolumeName, "dst_volume_name": dstVolumeName})
-	url := api.NewURL().Path("api", "rest", "volume", "name:"+srcVolumeName, "clone")
+func (c *PowerStoreClient) CloneVolume(volumeName string, dstVolumeName string) error {
+	c.logger.Warn("Cloning volume", logger.Ctx{"src_volume_name": volumeName, "dst_volume_name": dstVolumeName})
+	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName, "clone")
 
 	req := map[string]any{
 		"name":        dstVolumeName,
@@ -891,12 +894,12 @@ func (c *PowerStoreClient) CloneVolume(srcVolumeName string, dstVolumeName strin
 }
 
 // RestoreVolume restores the volume form the volume snapshot.
-func (c *PowerStoreClient) RestoreVolume(srcVolumeSnapshotName string, dstVolumeName string) error {
-	c.logger.Warn("Restoring volume", logger.Ctx{"snapshot_name": srcVolumeSnapshotName, "volume_name": dstVolumeName})
-	url := api.NewURL().Path("api", "rest", "volume", "name:"+dstVolumeName, "restore")
+func (c *PowerStoreClient) RestoreVolume(volumeName string, snapshotName string) error {
+	c.logger.Warn("Restoring volume", logger.Ctx{"snapshot_name": snapshotName, "volume_name": volumeName})
+	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName, "restore")
 
 	req := map[string]any{
-		"from_snap_id": "name:" + srcVolumeSnapshotName,
+		"from_snap_id": "name:" + snapshotName,
 	}
 
 	err := c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
@@ -908,12 +911,12 @@ func (c *PowerStoreClient) RestoreVolume(srcVolumeSnapshotName string, dstVolume
 }
 
 // RefreshVolume refreshes the volume form the volume or the volume snapshot.
-func (c *PowerStoreClient) RefreshVolume(srcVolumeName string, dstVolumeName string) error {
-	c.logger.Warn("Refreshing volume", logger.Ctx{"src_volume_name": srcVolumeName, "dst_volume_name": dstVolumeName})
-	url := api.NewURL().Path("api", "rest", "volume", "name:"+dstVolumeName, "refresh")
+func (c *PowerStoreClient) RefreshVolume(volumeName string, srcVolumeOrSnapshotName string) error {
+	c.logger.Warn("Refreshing volume", logger.Ctx{"src_volume_name": srcVolumeOrSnapshotName, "dst_volume_name": volumeName})
+	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName, "refresh")
 
 	req := map[string]any{
-		"from_object_id": "name:" + srcVolumeName,
+		"from_object_id": "name:" + srcVolumeOrSnapshotName,
 	}
 
 	err := c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
@@ -924,16 +927,21 @@ func (c *PowerStoreClient) RefreshVolume(srcVolumeName string, dstVolumeName str
 	return nil
 }
 
-// GetVolumeSnapshots retrieves list of volume snapshots associated with the provided volume.
+// GetVolumeSnapshots retrieves list of snapshots associated with the provided volume.
 func (c *PowerStoreClient) GetVolumeSnapshots(volumeName string) ([]PowerStoreVolume, error) {
+	vol, err := c.GetVolume(volumeName)
+	if err != nil {
+		return nil, err
+	}
+
 	c.logger.Warn("Getting volume snapshots", logger.Ctx{"volume_name": volumeName})
 	filter := map[string]string{
 		"name":                        "ilike." + c.resourceNamePrefix + "*",
 		"type":                        "eq.Snapshot",
-		"protection_data->>parent_id": "eq." + "name:" + volumeName,
+		"protection_data->>parent_id": "eq." + vol.ID,
 	}
 
-	snapshots, err := c.getVolumes(filter, -1)
+	snapshots, err := c.getVolumes(filter)
 	if err != nil {
 		return nil, fmt.Errorf("Failed retrieving PowerStore snapshots for volume %q: %w", volumeName, err)
 	}
@@ -941,9 +949,31 @@ func (c *PowerStoreClient) GetVolumeSnapshots(volumeName string) ([]PowerStoreVo
 	return snapshots, nil
 }
 
-// GetVolumeSnapshot retrieves volume snapshot using its name.
-func (c *PowerStoreClient) GetVolumeSnapshot(snapshotName string) (*PowerStoreVolume, error) {
-	return c.GetVolume(snapshotName)
+// GetVolumeSnapshot retrieves a snapshot of a volume.
+func (c *PowerStoreClient) GetVolumeSnapshot(volumeName string, snapshotName string) (*PowerStoreVolume, error) {
+	var resp PowerStoreVolume
+
+	vol, err := c.GetVolume(volumeName)
+	if err != nil {
+		return nil, err
+	}
+
+	url := api.NewURL().Path("api", "rest", "volume", "name:"+snapshotName)
+	url = url.WithQuery("type", "eq.Snapshot")
+	url = url.WithQuery("protection_data->>parent_id", "eq."+vol.ID)
+	url = url.WithQuery("select", resp.selector())
+
+	err = c.requestAuthenticated(http.MethodGet, url.URL, nil, &resp, nil)
+	if err != nil {
+		psErr, ok := err.(*powerStoreError)
+		if ok && psErr.HTTPStatusCode() == http.StatusNotFound {
+			return nil, api.StatusErrorf(http.StatusNotFound, "Volume snapshot with name %q not found", snapshotName)
+		}
+
+		return nil, fmt.Errorf("Failed retrieving PowerStore volume snapshot with name %q: %w", snapshotName, err)
+	}
+
+	return &resp, nil
 }
 
 // CreateVolumeSnapshot creates a new snapshot of a volume.
