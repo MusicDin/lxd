@@ -223,13 +223,47 @@ func (d *powerstore) GetVolumeUsage(vol Volume) (int64, error) {
 // HasVolume indicates whether a specific volume exists on the storage pool.
 func (d *powerstore) HasVolume(vol Volume) (bool, error) {
 	d.logger.Warn("Checking if volume exists", logger.Ctx{"vol": vol.name})
+
+	client := d.client()
+
 	volName, err := d.encodeVolumeName(vol)
 	if err != nil {
 		return false, err
 	}
 
-	_, err = d.client().GetVolume(volName)
+	// If volume represents a snapshot, also retrieve (encoded) volume name of the parent,
+	// and check if the snapshot exists.
+	if vol.IsSnapshot() {
+		parentVol := vol.GetParent()
+		parentVolName, err := d.encodeVolumeName(parentVol)
+		if err != nil {
+			return false, err
+		}
+
+		parentVolID, err := client.GetVolumeID(parentVolName)
+		if err != nil {
+			return false, err
+		}
+
+		_, err = client.GetVolumeSnapshot(parentVolID, volName)
+		if err != nil {
+			if api.StatusErrorCheck(err, http.StatusNotFound) {
+				return false, nil
+			}
+
+			return false, err
+		}
+
+		return true, nil
+	}
+
+	// Otherwise, check if the volume exists.
+	_, err = client.GetVolume(volName)
 	if err != nil {
+		if api.StatusErrorCheck(err, http.StatusNotFound) {
+			return false, nil
+		}
+
 		return false, err
 	}
 
