@@ -778,6 +778,10 @@ func (c *PowerStoreClient) DetachVolumeFromHost(volumeID string, hostName string
 
 	err := c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
 	if err != nil {
+		if isPowerStoreError(err, http.StatusNotFound) {
+			return api.StatusErrorf(http.StatusNotFound, "Connection between host %q and volume %q not found", hostName, volumeID)
+		}
+
 		return fmt.Errorf("Failed detaching PowerStore volume from the host: %w", err)
 	}
 

@@ -657,11 +657,6 @@ func (d *powerstore) DeleteVolume(vol Volume, op *operations.Operation) error {
 		return fmt.Errorf("Failed to retrieve volume %q: %w", vol.name, err)
 	}
 
-	err = client.DeleteVolume(volID)
-	if err != nil {
-		return fmt.Errorf("Failed to delete volume %q: %w", vol.name, err)
-	}
-
 	psHost, err := client.GetCurrentHost(connector.Type(), qn)
 	if err != nil {
 		// If the host doesn't exist, continue with the deletion of
@@ -674,9 +669,14 @@ func (d *powerstore) DeleteVolume(vol Volume, op *operations.Operation) error {
 		// If the host exists, attempt to delete the volume mapping for the deleted volume.
 		// If the mapping doesn't exist, continue with the deletion as the volume is already deleted.
 		err = client.DetachVolumeFromHost(volID, psHost.Name)
-		if err != nil {
+		if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
 			return fmt.Errorf("Failed to detach volume %q from host %q: %w", vol.name, psHost.Name, err)
 		}
+	}
+
+	err = client.DeleteVolume(volID)
+	if err != nil {
+		return fmt.Errorf("Failed to delete volume %q: %w", vol.name, err)
 	}
 
 	if vol.IsVMBlock() {
