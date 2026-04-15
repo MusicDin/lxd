@@ -745,6 +745,61 @@ func (d *powerstore) DeleteVolume(vol Volume, op *operations.Operation) error {
 	return nil
 }
 
+// RestoreVolume restores a volume from a snapshot.
+func (d *powerstore) RestoreVolume(vol Volume, snapVol Volume, op *operations.Operation) error {
+	client := d.client()
+
+	ourUnmount, err := d.UnmountVolume(vol, false, op)
+	if err != nil {
+		return err
+	}
+
+	if ourUnmount {
+		defer func() { _ = d.MountVolume(vol, op) }()
+	}
+
+	volName, err := d.encodeVolumeName(vol)
+	if err != nil {
+		return err
+	}
+
+	volID, err := client.GetVolumeID(volName)
+	if err != nil {
+		return fmt.Errorf("Failed to retrieve volume %q: %w", vol.name, err)
+	}
+
+	snapVolName, err := d.encodeVolumeName(snapVol)
+	if err != nil {
+		return err
+	}
+
+	snapVolID, err := client.GetVolumeSnapshotID(volID, snapVolName)
+	if err != nil {
+		return fmt.Errorf("Failed to retrieve snapshot %q for volume %q: %w", snapVol.name, vol.name, err)
+	}
+
+	// Overwrite existing volume by copying the given snapshot content into it.
+	err = client.RestoreVolume(volID, snapVolID)
+	if err != nil {
+		return err
+	}
+
+	// For VMs, also restore the filesystem volume.
+	if vol.IsVMBlock() {
+		fsVol := vol.NewVMBlockFilesystemVolume()
+
+		snapFSVol := snapVol.NewVMBlockFilesystemVolume()
+		snapFSVol.SetParentUUID(snapVol.parentUUID)
+
+		err := d.RestoreVolume(fsVol, snapFSVol, op)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // SetVolumeQuota applies a size limit on volume.
 func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, op *operations.Operation) error {
 	d.logger.Warn("Setting volume quota", logger.Ctx{"vol": vol.name, "size": size})
