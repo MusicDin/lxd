@@ -147,7 +147,7 @@ func (d *powerstore) client() *clients.PowerStoreClient {
 func (d *powerstore) encodeStoragePoolName() string {
 	poolHash := sha256.Sum256([]byte(d.Name()))
 	poolName := base64.URLEncoding.EncodeToString(poolHash[:])
-	return powerStoreResourcePrefix + poolName + powerStorePoolAndVolSep
+	return powerStoreResourcePrefix + poolName + powerStoreVolNameSep
 }
 
 // isRemote returns true indicating this driver uses remote storage.

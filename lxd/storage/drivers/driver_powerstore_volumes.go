@@ -30,24 +30,11 @@ import (
 	"github.com/canonical/lxd/shared/validate"
 )
 
-// powerStoreResourcePrefix common prefix for all resource names in PowerStore.
-const powerStoreResourcePrefix = "lxd-"
-
-// powerStorePoolAndVolSep separates pool name and volume data in encoded volume names.
-const powerStorePoolAndVolSep = "-"
-
 const (
-	powerStoreVolPrefixSep = "_" // volume name prefix separator
-	powerStoreVolSuffixSep = "." // volume name suffix separator
-
-	powerStoreContainerVolPrefix = "c" // volume name prefix indicating container volume
-	powerStoreVMVolPrefix        = "v" // volume name prefix indicating virtual machine volume
-	powerStoreImageVolPrefix     = "i" // volume name prefix indicating image volume
-	powerStoreCustomVolPrefix    = "u" // volume name prefix indicating custom volume
-
-	powerStoreBlockVolSuffix = "b"     // volume name suffix used for block content type volumes
-	powerStoreISOVolSuffix   = "i"     // volume name suffix used for iso content type volumes
-	powerStoreVolSnapSuffix  = "-snap" // volume snapshot name suffix
+	powerStoreResourcePrefix = "lxd-" // common prefix for all resource names in PowerStore.
+	powerStoreVolNameSep     = "-"    // separates pool name and volume data in encoded volume names.
+	powerStoreVolPrefixSep   = "_"    // volume name prefix separator
+	powerStoreVolSuffixSep   = "."    // volume name suffix separator
 )
 
 // powerStoreVolTypePrefixes maps volume type to storage volume name prefix.
@@ -434,10 +421,6 @@ func (d *powerstore) CreateVolumeFromImage(vol Volume, imgVol *Volume, filler *V
 	return d.CreateVolume(vol, filler, op)
 }
 
-// TODO:
-// 1. Create empty volume (probably with same size as source?).
-// 2. Restore volume from snapshots
-// 3. Copy volume from source to destination.
 // CreateVolumeFromCopy provides same-pool volume copying functionality.
 func (d *powerstore) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, allowInconsistent bool, op *operations.Operation) error {
 	client := d.client()
@@ -745,6 +728,13 @@ func (d *powerstore) DeleteVolume(vol Volume, op *operations.Operation) error {
 	return nil
 }
 
+// RenameVolume renames a volume and its snapshots.
+func (d *powerstore) RenameVolume(vol Volume, newVolName string, op *operations.Operation) error {
+	d.logger.Warn("Renaming volume", logger.Ctx{"vol": vol.name, "new_name": newVolName})
+	// Renaming a volume in PowerStore will not change the name of the associated volume resource.
+	return nil
+}
+
 // RestoreVolume restores a volume from a snapshot.
 func (d *powerstore) RestoreVolume(vol Volume, snapVol Volume, op *operations.Operation) error {
 	client := d.client()
@@ -950,11 +940,185 @@ func (d *powerstore) UnmountVolume(vol Volume, keepBlockDev bool, op *operations
 	return unmountVolume(d, vol, keepBlockDev, d.getMappedDevicePath, d.unmapVolume, op)
 }
 
-// RenameVolume renames a volume and its snapshots.
-func (d *powerstore) RenameVolume(vol Volume, newVolName string, op *operations.Operation) error {
-	d.logger.Warn("Renaming volume", logger.Ctx{"vol": vol.name, "new_name": newVolName})
-	// Renaming a volume in PowerStore will not change the name of the associated volume resource.
+// CreateVolumeSnapshot creates a snapshot of a volume.
+func (d *powerstore) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
+	return d.createVolumeSnapshot(snapVol, true, op)
+}
+
+// createVolumeSnapshot creates a snapshot of a volume. If snapshotVMfilesystem is false, a VM's filesystem volume
+// is not copied.
+func (d *powerstore) createVolumeSnapshot(snapVol Volume, snapshotVMfilesystem bool, op *operations.Operation) error {
+	client := d.client()
+
+	revert := revert.New()
+	defer revert.Fail()
+
+	parentName, _, _ := api.GetParentAndSnapshotName(snapVol.name)
+	sourcePath := GetVolumeMountPath(d.name, snapVol.volType, parentName)
+
+	if filesystem.IsMountPoint(sourcePath) {
+		// Attempt to sync and freeze filesystem, but do not error if not able to freeze (as filesystem
+		// could still be busy), as we do not guarantee the consistency of a snapshot. This is costly but
+		// try to ensure that all cached data has been committed to disk. If we don't then the snapshot
+		// of the underlying filesystem can be inconsistent or, in the worst case, empty.
+		unfreezeFS, err := d.filesystemFreeze(sourcePath)
+		if err == nil {
+			defer func() { _ = unfreezeFS() }()
+		}
+	}
+
+	// Create the parent directory.
+	err := createParentSnapshotDirIfMissing(d.name, snapVol.volType, parentName)
+	if err != nil {
+		return err
+	}
+
+	err = snapVol.EnsureMountPath()
+	if err != nil {
+		return err
+	}
+
+	volName, err := d.encodeVolumeName(snapVol.GetParent())
+	if err != nil {
+		return err
+	}
+
+	volID, err := client.GetVolumeID(volName)
+	if err != nil {
+		return fmt.Errorf("Failed to retrieve volume %q: %w", snapVol.GetParent().name, err)
+	}
+
+	snapVolName, err := d.encodeVolumeName(snapVol)
+	if err != nil {
+		return err
+	}
+
+	err = client.CreateVolumeSnapshot(volID, snapVolName)
+	if err != nil {
+		return fmt.Errorf("Failed to create snapshot %q for volume %q: %w", snapVol.name, snapVol.GetParent().name, err)
+	}
+
+	revert.Add(func() { _ = d.DeleteVolumeSnapshot(snapVol, op) })
+
+	// For VMs, create a snapshot of the filesystem volume too.
+	// Skip if snapshotVMfilesystem is false to prevent overwriting separately copied volumes.
+	if snapVol.IsVMBlock() && snapshotVMfilesystem {
+		fsVol := snapVol.NewVMBlockFilesystemVolume()
+
+		// Set the parent volume's UUID.
+		fsVol.SetParentUUID(snapVol.parentUUID)
+
+		err := d.CreateVolumeSnapshot(fsVol, op)
+		if err != nil {
+			return fmt.Errorf("Failed to create snapshot %q for volume %q: %w", fsVol.name, fsVol.GetParent().name, err)
+		}
+
+		revert.Add(func() { _ = d.DeleteVolumeSnapshot(fsVol, op) })
+	}
+
+	revert.Success()
 	return nil
+}
+
+// DeleteVolumeSnapshot removes a snapshot from the storage device.
+func (d *powerstore) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
+	client := d.client()
+
+	parentVol := snapVol.GetParent()
+	parentVolName, err := d.encodeVolumeName(parentVol)
+	if err != nil {
+		return err
+	}
+
+	parentVolID, err := client.GetVolumeID(parentVolName)
+	if err != nil {
+		return err
+	}
+
+	snapVolName, err := d.encodeVolumeName(snapVol)
+	if err != nil {
+		return err
+	}
+
+	snapVolID, err := client.GetVolumeSnapshotID(parentVolID, snapVolName)
+	if err != nil {
+		return err
+	}
+
+	err = client.DeleteVolumeSnapshot(snapVolID)
+	if err != nil {
+		return err
+	}
+
+	if snapVol.contentType == ContentTypeFS {
+		mountPath := snapVol.MountPath()
+
+		err = wipeDirectory(mountPath)
+		if err != nil {
+			return err
+		}
+
+		err = os.Remove(mountPath)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("Failed removing %q: %w", mountPath, err)
+		}
+	}
+
+	// For VM images, delete the filesystem volume too.
+	if snapVol.IsVMBlock() {
+		fsVol := snapVol.NewVMBlockFilesystemVolume()
+		fsVol.SetParentUUID(snapVol.parentUUID)
+
+		err := d.DeleteVolumeSnapshot(fsVol, op)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// RenameVolumeSnapshot renames a volume snapshot.
+func (d *powerstore) RenameVolumeSnapshot(snapVol Volume, newSnapshotName string, op *operations.Operation) error {
+	return nil
+}
+
+// VolumeSnapshots returns a list of volume snapshot names for the given volume.
+func (d *powerstore) VolumeSnapshots(vol Volume, op *operations.Operation) ([]string, error) {
+	client := d.client()
+
+	volName, err := d.encodeVolumeName(vol)
+	if err != nil {
+		return nil, err
+	}
+
+	// volID, err := client.GetVolumeID(volName)
+	// if err != nil {
+	// 	return nil, err
+	// }
+
+	snapshots, err := client.GetVolumeSnapshots(volName)
+	if err != nil {
+		return nil, err
+	}
+
+	snapshotNames := make([]string, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		snapshotNames = append(snapshotNames, snapshot.Name)
+	}
+
+	return snapshotNames, nil
+}
+
+// MountVolumeSnapshot mounts a storage volume snapshot.
+func (d *powerstore) MountVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
+	return d.MountVolume(snapVol, op)
+}
+
+// UnmountVolumeSnapshot unmounts a storage volume snapshot, returns true if unmounted,
+// false if was not mounted.
+func (d *powerstore) UnmountVolumeSnapshot(snapVol Volume, op *operations.Operation) (bool, error) {
+	return d.UnmountVolume(snapVol, false, op)
 }
 
 // encodeVolumeName derives the name of a volume resource in PowerStore from the provided volume.
@@ -991,7 +1155,7 @@ func (d *powerstore) decodeVolumeName(name string) (volType VolumeType, volUUID 
 	}
 
 	// Remove poolName prefix.
-	poolName, volName, ok := strings.Cut(poolAndVolName, powerStorePoolAndVolSep)
+	poolName, volName, ok := strings.Cut(poolAndVolName, powerStoreVolNameSep)
 	if !ok || poolName == "" || volName == "" {
 		return "", uuid.Nil, "", fmt.Errorf("Failed decoding volume name %q: Invalid name format", name)
 	}
@@ -1456,185 +1620,4 @@ func (d *powerstore) discoveryLogRecordParser(filterTargetAddresses []string) (f
 	default:
 		return nil, fmt.Errorf("Unsupported PowerStore mode %q", mode)
 	}
-}
-
-// CreateVolumeSnapshot creates a snapshot of a volume.
-func (d *powerstore) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
-	return d.createVolumeSnapshot(snapVol, true, op)
-}
-
-// createVolumeSnapshot creates a snapshot of a volume. If snapshotVMfilesystem is false, a VM's filesystem volume
-// is not copied.
-func (d *powerstore) createVolumeSnapshot(snapVol Volume, snapshotVMfilesystem bool, op *operations.Operation) error {
-	client := d.client()
-
-	revert := revert.New()
-	defer revert.Fail()
-
-	parentName, _, _ := api.GetParentAndSnapshotName(snapVol.name)
-	sourcePath := GetVolumeMountPath(d.name, snapVol.volType, parentName)
-
-	if filesystem.IsMountPoint(sourcePath) {
-		// Attempt to sync and freeze filesystem, but do not error if not able to freeze (as filesystem
-		// could still be busy), as we do not guarantee the consistency of a snapshot. This is costly but
-		// try to ensure that all cached data has been committed to disk. If we don't then the snapshot
-		// of the underlying filesystem can be inconsistent or, in the worst case, empty.
-		unfreezeFS, err := d.filesystemFreeze(sourcePath)
-		if err == nil {
-			defer func() { _ = unfreezeFS() }()
-		}
-	}
-
-	// Create the parent directory.
-	err := createParentSnapshotDirIfMissing(d.name, snapVol.volType, parentName)
-	if err != nil {
-		return err
-	}
-
-	err = snapVol.EnsureMountPath()
-	if err != nil {
-		return err
-	}
-
-	volName, err := d.encodeVolumeName(snapVol.GetParent())
-	if err != nil {
-		return err
-	}
-
-	volID, err := client.GetVolumeID(volName)
-	if err != nil {
-		return fmt.Errorf("Failed to retrieve volume %q: %w", snapVol.GetParent().name, err)
-	}
-
-	snapVolName, err := d.encodeVolumeName(snapVol)
-	if err != nil {
-		return err
-	}
-
-	err = client.CreateVolumeSnapshot(volID, snapVolName)
-	if err != nil {
-		return fmt.Errorf("Failed to create snapshot %q for volume %q: %w", snapVol.name, snapVol.GetParent().name, err)
-	}
-
-	revert.Add(func() { _ = d.DeleteVolumeSnapshot(snapVol, op) })
-
-	// For VMs, create a snapshot of the filesystem volume too.
-	// Skip if snapshotVMfilesystem is false to prevent overwriting separately copied volumes.
-	if snapVol.IsVMBlock() && snapshotVMfilesystem {
-		fsVol := snapVol.NewVMBlockFilesystemVolume()
-
-		// Set the parent volume's UUID.
-		fsVol.SetParentUUID(snapVol.parentUUID)
-
-		err := d.CreateVolumeSnapshot(fsVol, op)
-		if err != nil {
-			return fmt.Errorf("Failed to create snapshot %q for volume %q: %w", fsVol.name, fsVol.GetParent().name, err)
-		}
-
-		revert.Add(func() { _ = d.DeleteVolumeSnapshot(fsVol, op) })
-	}
-
-	revert.Success()
-	return nil
-}
-
-// DeleteVolumeSnapshot removes a snapshot from the storage device.
-func (d *powerstore) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
-	client := d.client()
-
-	parentVol := snapVol.GetParent()
-	parentVolName, err := d.encodeVolumeName(parentVol)
-	if err != nil {
-		return err
-	}
-
-	parentVolID, err := client.GetVolumeID(parentVolName)
-	if err != nil {
-		return err
-	}
-
-	snapVolName, err := d.encodeVolumeName(snapVol)
-	if err != nil {
-		return err
-	}
-
-	snapVolID, err := client.GetVolumeSnapshotID(parentVolID, snapVolName)
-	if err != nil {
-		return err
-	}
-
-	err = client.DeleteVolumeSnapshot(snapVolID)
-	if err != nil {
-		return err
-	}
-
-	if snapVol.contentType == ContentTypeFS {
-		mountPath := snapVol.MountPath()
-
-		err = wipeDirectory(mountPath)
-		if err != nil {
-			return err
-		}
-
-		err = os.Remove(mountPath)
-		if err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("Failed removing %q: %w", mountPath, err)
-		}
-	}
-
-	// For VM images, delete the filesystem volume too.
-	if snapVol.IsVMBlock() {
-		fsVol := snapVol.NewVMBlockFilesystemVolume()
-		fsVol.SetParentUUID(snapVol.parentUUID)
-
-		err := d.DeleteVolumeSnapshot(fsVol, op)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// RenameVolumeSnapshot renames a volume snapshot.
-func (d *powerstore) RenameVolumeSnapshot(snapVol Volume, newSnapshotName string, op *operations.Operation) error {
-	return nil
-}
-
-// VolumeSnapshots returns a list of volume snapshot names for the given volume.
-func (d *powerstore) VolumeSnapshots(vol Volume, op *operations.Operation) ([]string, error) {
-	client := d.client()
-
-	volName, err := d.encodeVolumeName(vol)
-	if err != nil {
-		return nil, err
-	}
-
-	// volID, err := client.GetVolumeID(volName)
-	// if err != nil {
-	// 	return nil, err
-	// }
-
-	snapshots, err := client.GetVolumeSnapshots(volName)
-	if err != nil {
-		return nil, err
-	}
-
-	snapshotNames := make([]string, 0, len(snapshots))
-	for _, snapshot := range snapshots {
-		snapshotNames = append(snapshotNames, snapshot.Name)
-	}
-
-	return snapshotNames, nil
-}
-
-// MountVolumeSnapshot mounts a storage volume snapshot.
-func (d *powerstore) MountVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
-	return d.MountVolume(snapVol, op)
-}
-
-// UnmountVolumeSnapshot unmounts a storage volume snapshot, returns true if unmounted,
-// false if was not mounted.
-func (d *powerstore) UnmountVolumeSnapshot(snapVol Volume, op *operations.Operation) (bool, error) {
-	return d.UnmountVolume(snapVol, false, op)
 }
