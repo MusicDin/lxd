@@ -681,7 +681,7 @@ func (d *powerstore) DeleteVolume(vol Volume, op *operations.Operation) error {
 	} else {
 		// If the host exists, attempt to delete the volume mapping for the deleted volume.
 		// If the mapping doesn't exist, continue with the deletion as the volume is already deleted.
-		err = client.DetachVolumeFromHost(volName, psHost.Name)
+		err = client.DetachVolumeFromHost(volID, psHost.Name)
 		if err != nil {
 			return fmt.Errorf("Failed to detach volume %q from host %q: %w", vol.name, psHost.Name, err)
 		}
