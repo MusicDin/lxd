@@ -975,7 +975,7 @@ func (c *PowerStoreClient) RefreshVolume(srcVolumeOrSnapshotID string, dstVolume
 	return nil
 }
 
-// RestoreVolumeSnapshot restores the volume from its snapshot.
+// RestoreVolume restores the volume from its snapshot.
 func (c *PowerStoreClient) RestoreVolume(volumeID string, snapshotID string) error {
 	c.logger.Warn("Restoring volume", logger.Ctx{"snapshot_name": snapshotID, "volume_id": volumeID})
 

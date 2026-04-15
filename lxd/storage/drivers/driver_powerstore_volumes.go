@@ -483,9 +483,29 @@ func (d *powerstore) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, all
 		return err
 	}
 
-	srcVolID, err := client.GetVolumeID(srcVolName)
-	if err != nil {
-		return err
+	var srcVolID string
+	if srcVol.IsSnapshot() {
+		// For snapshots, get the parent volume ID first, then look up the snapshot.
+		srcParentVol := srcVol.Volume.GetParent()
+		srcParentVolName, err := d.encodeVolumeName(srcParentVol)
+		if err != nil {
+			return err
+		}
+
+		srcParentVolID, err := client.GetVolumeID(srcParentVolName)
+		if err != nil {
+			return err
+		}
+
+		srcVolID, err = client.GetVolumeSnapshotID(srcParentVolID, srcVolName)
+		if err != nil {
+			return err
+		}
+	} else {
+		srcVolID, err = client.GetVolumeID(srcVolName)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Since snapshots are first copied into destination volume from which a new snapshot is created,
