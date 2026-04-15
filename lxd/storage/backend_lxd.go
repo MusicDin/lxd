@@ -4028,6 +4028,10 @@ func (b *lxdBackend) RestoreInstanceSnapshot(inst instance.Instance, src instanc
 	snapshotStorageName := project.StorageVolume(src.Project().Name, dbSnapVol.Name)
 	snapVol := b.GetVolume(volType, contentType, snapshotStorageName, dbSnapVol.Config)
 
+	if b.driver.Info().PopulateParentVolumeUUID {
+		snapVol.SetParentUUID(dbVol.Config["volatile.uuid"])
+	}
+
 	err = b.driver.RestoreVolume(vol, snapVol, op)
 	if err != nil {
 		snapErr, ok := err.(drivers.ErrDeleteSnapshots)
