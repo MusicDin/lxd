@@ -1444,14 +1444,19 @@ func (d *powerstore) createVolumeSnapshot(snapVol Volume, snapshotVMfilesystem b
 		return err
 	}
 
+	volID, err := d.client().GetVolumeID(volName)
+	if err != nil {
+		return fmt.Errorf("Failed to retrieve volume %q: %w", snapVol.GetParent().name, err)
+	}
+
 	snapVolName, err := d.encodeVolumeName(snapVol)
 	if err != nil {
 		return err
 	}
 
-	err = d.client().CreateVolumeSnapshot(volName, snapVolName)
+	err = d.client().CreateVolumeSnapshot(volID, snapVolName)
 	if err != nil {
-		return err
+		return fmt.Errorf("Failed to create snapshot %q for volume %q: %w", snapVol.name, snapVol.GetParent().name, err)
 	}
 
 	revert.Add(func() { _ = d.DeleteVolumeSnapshot(snapVol, op) })
@@ -1466,7 +1471,7 @@ func (d *powerstore) createVolumeSnapshot(snapVol Volume, snapshotVMfilesystem b
 
 		err := d.CreateVolumeSnapshot(fsVol, op)
 		if err != nil {
-			return err
+			return fmt.Errorf("Failed to create snapshot %q for volume %q: %w", fsVol.name, fsVol.GetParent().name, err)
 		}
 
 		revert.Add(func() { _ = d.DeleteVolumeSnapshot(fsVol, op) })
