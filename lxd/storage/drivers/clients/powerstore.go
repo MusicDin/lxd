@@ -188,7 +188,6 @@ func (PowerStoreHost) selector() string {
 // PowerStoreHostInitiator describes an initiator resource of some host in
 // PowerStore API.
 type PowerStoreHostInitiator struct {
-	// ID       string                  `json:"id,omitempty"`
 	PortName string                  `json:"port_name,omitempty"`
 	PortType PowerStoreInitiatorType `json:"port_type,omitempty"`
 }
@@ -216,7 +215,6 @@ func (PowerStoreVolume) selector() string {
 // PowerStoreHostVolumeMapping describes a mapping between host and volume in
 // PowerStore API.
 type PowerStoreHostVolumeMapping struct {
-	// ID       string `json:"id,omitempty"`
 	HostID   string `json:"host_id,omitempty"`
 	VolumeID string `json:"volume_id,omitempty"`
 }
@@ -573,43 +571,6 @@ func parsePaginationOffset(headers map[string]string) (newOffset uint64, hasMore
 	return newOffset, totalItems > newOffset, nil
 }
 
-// func (c *PowerStoreClient) getHosts(queryFilters map[string]string, limit int) ([]PowerStoreHost, error) {
-// 	url := api.NewURL().Path("api", "rest", "host")
-// 	url = url.WithQuery("select", PowerStoreHost{}.selector())
-
-// 	for k, v := range queryFilters {
-// 		url = url.WithQuery(k, v)
-// 	}
-
-// 	var offset uint64
-// 	var hosts []PowerStoreHost
-
-// 	for {
-// 		respBody := []PowerStoreHost{}
-// 		respHeaders := make(map[string]string)
-
-// 		pageURL := withPaginationQuery(url.URL, offset, limit)
-// 		err := c.requestAuthenticated(http.MethodGet, pageURL, nil, &respBody, respHeaders)
-// 		if err != nil {
-// 			return nil, fmt.Errorf("Failed retrieving PowerStore hosts: %w", err)
-// 		}
-
-// 		nextOffset, hasMoreItems, err := parsePaginationOffset(respHeaders)
-// 		if err != nil {
-// 			return nil, fmt.Errorf("Failed retrieving PowerStore hosts: %w", err)
-// 		}
-
-// 		hosts = append(hosts, respBody...)
-// 		offset = nextOffset
-
-// 		if !hasMoreItems {
-// 			break
-// 		}
-// 	}
-
-// 	return hosts, nil
-// }
-
 // GetCurrentHost retrieves the PowerStore host linked to the current LXD host.
 // The PowerStore host is considered a match if it includes the fully qualified
 // name of the LXD host that is determined by the configured mode.
@@ -667,18 +628,18 @@ func (c *PowerStoreClient) GetCurrentHost(connectorType string, qn string) (*Pow
 	return &host, nil
 }
 
-// GetHost retrieves host using its name.
-func (c *PowerStoreClient) GetHost(hostName string) (*PowerStoreHost, error) {
-	c.logger.Warn("Retrieving host", logger.Ctx{"host_name": hostName})
+// GetHost retrieves host using its ID.
+func (c *PowerStoreClient) GetHost(hostID string) (*PowerStoreHost, error) {
+	c.logger.Warn("Retrieving host", logger.Ctx{"host_id": hostID})
 	var host PowerStoreHost
 
-	url := api.NewURL().Path("api", "rest", "host", "name:"+hostName)
+	url := api.NewURL().Path("api", "rest", "host", hostID)
 	url = url.WithQuery("select", host.selector())
 
 	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &host, nil)
 	if err != nil {
 		if isPowerStoreError(err, http.StatusNotFound) {
-			return nil, api.StatusErrorf(http.StatusNotFound, "Host with name %q not found", hostName)
+			return nil, api.StatusErrorf(http.StatusNotFound, "Host with ID %q not found", hostID)
 		}
 
 		return nil, fmt.Errorf("Failed retrieving PowerStore host: %w", err)
@@ -687,8 +648,8 @@ func (c *PowerStoreClient) GetHost(hostName string) (*PowerStoreHost, error) {
 	return &host, nil
 }
 
-// CreateHost creates new host.
-func (c *PowerStoreClient) CreateHost(hostName string, connectorType string, qn string) (err error) {
+// CreateHost creates new host and returns its ID.
+func (c *PowerStoreClient) CreateHost(hostName string, connectorType string, qn string) (string, error) {
 	c.logger.Warn("Creating host", logger.Ctx{"hostname": hostName, "connector_type": connectorType, "qn": qn})
 	url := api.NewURL().Path("api", "rest", "host")
 
@@ -699,7 +660,7 @@ func (c *PowerStoreClient) CreateHost(hostName string, connectorType string, qn 
 	case connectors.TypeNVME:
 		portType = InitiatorPortTypeEnumNVMe
 	default:
-		return fmt.Errorf("Unsupported connector type: %q", connectorType)
+		return "", fmt.Errorf("Unsupported connector type: %q", connectorType)
 	}
 
 	req := map[string]any{
@@ -713,21 +674,26 @@ func (c *PowerStoreClient) CreateHost(hostName string, connectorType string, qn 
 		},
 	}
 
-	err = c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
+	var resp PowerStoreResourceID
+	err := c.requestAuthenticated(http.MethodPost, url.URL, req, &resp, nil)
 	if err != nil {
-		return fmt.Errorf("Failed creating PowerStore host: %w", err)
+		return "", fmt.Errorf("Failed creating PowerStore host: %w", err)
 	}
 
-	return nil
+	return resp.ID, nil
 }
 
-// DeleteHost deletes host using its name.
-func (c *PowerStoreClient) DeleteHost(hostName string) error {
-	c.logger.Warn("Deleting host", logger.Ctx{"host_name": hostName})
+// DeleteHost deletes host using its ID.
+func (c *PowerStoreClient) DeleteHost(hostID string) error {
+	c.logger.Warn("Deleting host", logger.Ctx{"host_id": hostID})
 
-	url := api.NewURL().Path("api", "rest", "host", "name:"+hostName)
+	url := api.NewURL().Path("api", "rest", "host", hostID)
 	err := c.requestAuthenticated(http.MethodDelete, url.URL, nil, nil, nil)
 	if err != nil {
+		if isPowerStoreError(err, http.StatusNotFound) {
+			return api.StatusErrorf(http.StatusNotFound, "Host with ID %q not found", hostID)
+		}
+
 		return fmt.Errorf("Failed deleting PowerStore host: %w", err)
 	}
 
@@ -862,20 +828,20 @@ func (c *PowerStoreClient) GetVolumeID(volumeName string) (string, error) {
 }
 
 // GetVolume retrieves volume using its name.
-func (c *PowerStoreClient) GetVolume(volumeName string) (*PowerStoreVolume, error) {
+func (c *PowerStoreClient) GetVolume(volumeID string) (*PowerStoreVolume, error) {
 	var resp PowerStoreVolume
 
-	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName)
+	url := api.NewURL().Path("api", "rest", "volume", volumeID)
 	url = url.WithQuery("or", "(type.eq.Primary,type.eq.Clone)")
 	url = url.WithQuery("select", resp.selector())
 
 	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &resp, nil)
 	if err != nil {
 		if isPowerStoreError(err, http.StatusNotFound) {
-			return nil, api.StatusErrorf(http.StatusNotFound, "Volume with name %q not found", volumeName)
+			return nil, api.StatusErrorf(http.StatusNotFound, "Volume with ID %q not found", volumeID)
 		}
 
-		return nil, fmt.Errorf("Failed retrieving PowerStore volume with name %q: %w", volumeName, err)
+		return nil, fmt.Errorf("Failed retrieving PowerStore volume: %w", err)
 	}
 
 	return &resp, nil
@@ -904,8 +870,12 @@ func (c *PowerStoreClient) CreateVolume(volumeName string, sizeBytes int64) (vol
 func (c *PowerStoreClient) DeleteVolume(volumeID string) error {
 	c.logger.Warn("Deleting volume", logger.Ctx{"volume_id": volumeID})
 
+	req := map[string]any{
+		"immediate": true, // Do not move the snapshot to the "recyle bin".
+	}
+
 	url := api.NewURL().Path("api", "rest", "volume", volumeID)
-	err := c.requestAuthenticated(http.MethodDelete, url.URL, nil, nil, nil)
+	err := c.requestAuthenticated(http.MethodDelete, url.URL, req, nil, nil)
 	if err != nil && !isPowerStoreError(err, http.StatusNotFound) {
 		return fmt.Errorf("Failed deleting PowerStore volume: %w", err)
 	}
@@ -1032,25 +1002,25 @@ func (c *PowerStoreClient) GetVolumeSnapshotID(volumeID string, snapshotName str
 }
 
 // GetVolumeSnapshot retrieves a snapshot of a volume.
-func (c *PowerStoreClient) GetVolumeSnapshot(volumeID string, snapshotName string) (*PowerStoreVolume, error) {
-	var resp PowerStoreVolume
+// func (c *PowerStoreClient) GetVolumeSnapshot(volumeID string, snapshotID string) (*PowerStoreVolume, error) {
+// 	var resp PowerStoreVolume
 
-	url := api.NewURL().Path("api", "rest", "volume", "name:"+snapshotName)
-	url = url.WithQuery("type", "eq.Snapshot")
-	url = url.WithQuery("protection_data->>parent_id", "eq."+volumeID)
-	url = url.WithQuery("select", resp.selector())
+// 	url := api.NewURL().Path("api", "rest", "volume", snapshotID)
+// 	url = url.WithQuery("type", "eq.Snapshot")
+// 	url = url.WithQuery("protection_data->>parent_id", "eq."+volumeID)
+// 	url = url.WithQuery("select", resp.selector())
 
-	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &resp, nil)
-	if err != nil {
-		if isPowerStoreError(err, http.StatusNotFound) {
-			return nil, api.StatusErrorf(http.StatusNotFound, "Volume snapshot with name %q not found", snapshotName)
-		}
+// 	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &resp, nil)
+// 	if err != nil {
+// 		if isPowerStoreError(err, http.StatusNotFound) {
+// 			return nil, api.StatusErrorf(http.StatusNotFound, "Volume snapshot with name %q not found", snapshotName)
+// 		}
 
-		return nil, fmt.Errorf("Failed retrieving PowerStore volume snapshot: %w", err)
-	}
+// 		return nil, fmt.Errorf("Failed retrieving PowerStore volume snapshot: %w", err)
+// 	}
 
-	return &resp, nil
-}
+// 	return &resp, nil
+// }
 
 // CreateVolumeSnapshot creates a new snapshot of a volume.
 func (c *PowerStoreClient) CreateVolumeSnapshot(volumeID string, snapshotName string) (string, error) {
@@ -1074,9 +1044,12 @@ func (c *PowerStoreClient) CreateVolumeSnapshot(volumeID string, snapshotName st
 // DeleteVolumeSnapshot deletes a snapshot of a volume.
 func (c *PowerStoreClient) DeleteVolumeSnapshot(snapshotID string) error {
 	c.logger.Warn("Deleting volume snapshot", logger.Ctx{"snapshot_id": snapshotID})
+	req := map[string]any{
+		"immediate": true, // Do not move the snapshot to the "recyle bin".
+	}
 
 	url := api.NewURL().Path("api", "rest", "volume", snapshotID)
-	err := c.requestAuthenticated(http.MethodDelete, url.URL, nil, nil, nil)
+	err := c.requestAuthenticated(http.MethodDelete, url.URL, req, nil, nil)
 	if err != nil {
 		return fmt.Errorf("Failed deleting PowerStore volume snapshot: %w", err)
 	}
