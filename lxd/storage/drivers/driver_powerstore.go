@@ -171,7 +171,7 @@ func (d *powerstore) Info() Info {
 		DirectIO:                     true,
 		IOUring:                      true,
 		MountedRoot:                  false,
-		PopulateParentVolumeUUID:     false,
+		PopulateParentVolumeUUID:     true,
 		UUIDVolumeNames:              true,
 	}
 }
