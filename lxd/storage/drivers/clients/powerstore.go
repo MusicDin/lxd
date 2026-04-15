@@ -162,6 +162,10 @@ type PowerStoreInitiator struct {
 	PortType string `json:"port_type,omitempty"`
 }
 
+func (PowerStoreInitiator) selector() string {
+	return "host_id,port_name,port_type"
+}
+
 // PowerStoreHost describes a host resource in PowerStore API.
 type PowerStoreHost struct {
 	ID               string                         `json:"id,omitempty"`
@@ -602,8 +606,8 @@ func parsePaginationOffset(headers map[string]string) (newOffset uint64, hasMore
 // 	return hosts, nil
 // }
 
-// GetCurrentHost retrieves the HPE Alletra Storage host linked to the current LXD host.
-// The Alletra Storage host is considered a match if it includes the fully qualified
+// GetCurrentHost retrieves the PowerStore host linked to the current LXD host.
+// The PowerStore host is considered a match if it includes the fully qualified
 // name of the LXD host that is determined by the configured mode.
 func (c *PowerStoreClient) GetCurrentHost(connectorType string, qn string) (*PowerStoreHost, error) {
 	c.logger.Warn("Getting current host", logger.Ctx{"connector_type": connectorType, "qn": qn})
@@ -618,23 +622,45 @@ func (c *PowerStoreClient) GetCurrentHost(connectorType string, qn string) (*Pow
 		return nil, fmt.Errorf("Unsupported connector type: %q", connectorType)
 	}
 
-	var resp PowerStoreHost
+	// Find initiator with the provided port type (connector type) and name (qualified name),
+	// and retrieve the ID of the host it belongs to.
+	var initiator PowerStoreInitiator
 
-	url := api.NewURL().Path("api", "rest", "host")
-	url = url.WithQuery("port_type", string(portType))
-	url = url.WithQuery("port_name", qn)
-	url = url.WithQuery("select", resp.selector())
+	url := api.NewURL().Path("api", "rest", "initiator")
+	url = url.WithQuery("select", initiator.selector())
+	url = url.WithQuery("port_type", "eq."+string(portType))
+	url = url.WithQuery("port_name", "eq."+qn)
 
-	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &resp, nil)
+	var initiators []PowerStoreInitiator
+	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &initiators, nil)
 	if err != nil {
-		if isPowerStoreError(err, http.StatusNotFound) {
-			return nil, api.StatusErrorf(http.StatusNotFound, "Host with qualified name %q (%q) not found", qn, connectorType)
-		}
-
-		return nil, fmt.Errorf("Failed retrieving PowerStore hosts: %w", err)
+		return nil, fmt.Errorf("Failed retrieving PowerStore host initiator: %w", err)
 	}
 
-	return &resp, nil
+	switch len(initiators) {
+	case 0:
+		return nil, api.StatusErrorf(http.StatusNotFound, "Host initiator with port name %q and type %q not found", qn, portType)
+	case 1:
+		initiator = initiators[0]
+	default:
+		return nil, fmt.Errorf("Multiple host initiators found with port name %q and type %q", qn, portType)
+	}
+
+	// Retrieve the actual host.
+	var host PowerStoreHost
+	url = api.NewURL().Path("api", "rest", "host", initiator.HostID)
+	url = url.WithQuery("select", host.selector())
+
+	err = c.requestAuthenticated(http.MethodGet, url.URL, nil, &host, nil)
+	if err != nil {
+		if isPowerStoreError(err, http.StatusNotFound) {
+			return nil, api.StatusErrorf(http.StatusNotFound, "Host with initiator port name %q and type %q not found", qn, portType)
+		}
+
+		return nil, fmt.Errorf("Failed retrieving PowerStore host: %w", err)
+	}
+
+	return &host, nil
 }
 
 // GetHost retrieves host using its name.
@@ -1015,7 +1041,7 @@ func (c *PowerStoreClient) DeleteVolumeSnapshot(volumeName string, snapshotName 
 func (c *PowerStoreClient) GetApplianceMetrics() ([]PowerStoreApplianceMetrics, error) {
 	c.logger.Warn("Getting appliance metrics")
 	url := api.NewURL().Path("api", "rest", "appliance_list_cma_view")
-	url = url.WithQuery("select", "id,name,avg_latency,total_iops,total_bandwidth,last_logical_total_space,last_logical_used_space,last_physical_total_space,last_physical_used_space")
+	url = url.WithQuery("select", PowerStoreApplianceMetrics{}.selector())
 
 	var offset uint64
 	var metrics []PowerStoreApplianceMetrics
