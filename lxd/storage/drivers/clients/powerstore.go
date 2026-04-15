@@ -887,7 +887,7 @@ func (c *PowerStoreClient) DeleteVolume(volumeName string) error {
 
 	url := api.NewURL().Path("api", "rest", "volume", vol.ID)
 	err = c.requestAuthenticated(http.MethodDelete, url.URL, nil, nil, nil)
-	if err != nil {
+	if err != nil && !isPowerStoreError(err, http.StatusNotFound) {
 		return fmt.Errorf("Failed deleting PowerStore volume: %w", err)
 	}
 
