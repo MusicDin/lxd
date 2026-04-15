@@ -93,12 +93,6 @@ func (d *powerstore) commonVolumeRules() map[string]func(value string) error {
 	}
 }
 
-// // roundVolumeBlockSizeBytes rounds the given size (in bytes) up to the next
-// // multiple of 1 MiB, which is the minimum volume size on PowerStore.
-// func (d *powerstore) roundVolumeBlockSizeBytes(_ Volume, sizeBytes int64) int64 {
-// 	return roundAbove(powerStoreMinVolumeSizeBytes, sizeBytes)
-// }
-
 // FillVolumeConfig populate volume with default config.
 func (d *powerstore) FillVolumeConfig(vol Volume) error {
 	// Copy volume.* configuration options from pool.
@@ -498,25 +492,6 @@ func (d *powerstore) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, all
 	// we need to also remove the destination volume if an error occurs during copying of snapshots.
 	deleteVolCopy := true
 
-	// First clone the volume.
-	// If source volume has snapshots, this volume will be overwriten, and we will need to
-	// clone it again. The reason behind this is because PowerStore only allows refreshing
-	// volumes from "related" volumes or snapshots. To sequentially copy snapshots (using
-	// refresh and snapshot approach), we need to create this "relationship" by first cloning
-	// the source volume.
-	// if srcVol.IsSnapshot() {
-	// 	// Copy the source snapshot into destination volume.
-	// 	err = d.client().CloneVolume(srcVolName, volName)
-	// 	if err != nil {
-	// 		return err
-	// 	}
-	// } else {
-	// 	err = d.client().copyVolume(srcPoolName, srcVolName, poolName, volName, true)
-	// 	if err != nil {
-	// 		return err
-	// 	}
-	// }
-
 	// Copy volume snapshots.
 	// PowerStore does copy snapshots along with the volume. Therefore, we copy the snapshots
 	// sequentially once the volume was copied. Each snapshot is first copied into destination
@@ -790,6 +765,218 @@ func (d *powerstore) RestoreVolume(vol Volume, snapVol Volume, op *operations.Op
 	return nil
 }
 
+// RefreshVolume updates an existing volume to match the state of another.
+func (d *powerstore) RefreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots []string, allowInconsistent bool, op *operations.Operation) error {
+	revert := revert.New()
+	defer revert.Fail()
+
+	// For VMs, also copy the filesystem volume.
+	if vol.IsVMBlock() {
+		// Ensure that the volume's snapshots are also replaced with their filesystem counterpart.
+		fsVolSnapshots := make([]Volume, 0, len(vol.Snapshots))
+		for _, snapshot := range vol.Snapshots {
+			fsVolSnapshots = append(fsVolSnapshots, snapshot.NewVMBlockFilesystemVolume())
+		}
+
+		srcFsVolSnapshots := make([]Volume, 0, len(srcVol.Snapshots))
+		for _, snapshot := range srcVol.Snapshots {
+			srcFsVolSnapshots = append(srcFsVolSnapshots, snapshot.NewVMBlockFilesystemVolume())
+		}
+
+		fsVol := NewVolumeCopy(vol.NewVMBlockFilesystemVolume(), fsVolSnapshots...)
+		srcFSVol := NewVolumeCopy(srcVol.NewVMBlockFilesystemVolume(), srcFsVolSnapshots...)
+
+		cleanup, err := d.refreshVolume(fsVol, srcFSVol, refreshSnapshots, allowInconsistent, op)
+		if err != nil {
+			return err
+		}
+
+		revert.Add(cleanup)
+	}
+
+	cleanup, err := d.refreshVolume(vol, srcVol, refreshSnapshots, allowInconsistent, op)
+	if err != nil {
+		return err
+	}
+
+	revert.Add(cleanup)
+
+	revert.Success()
+	return nil
+}
+
+// refreshVolume updates an existing volume to match the state of another. For VMs, this function
+// refreshes either block or filesystem volume, depending on the volume type. Therefore, the caller
+// needs to ensure it is called twice - once for each volume type.
+func (d *powerstore) refreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots []string, allowInconsistent bool, op *operations.Operation) (revert.Hook, error) {
+	client := d.client()
+
+	revert := revert.New()
+	defer revert.Fail()
+
+	// Function to run once the volume is created, which will ensure appropriate permissions
+	// on the mount path inside the volume, and resize the volume to specified size.
+	postCreateTasks := func(v Volume) error {
+		if vol.contentType == ContentTypeFS {
+			// Mount the volume and ensure the permissions are set correctly inside the mounted volume.
+			err := v.MountTask(func(_ string, _ *operations.Operation) error {
+				return v.EnsureMountPath()
+			}, op)
+			if err != nil {
+				return err
+			}
+		}
+
+		// Resize volume to the size specified.
+		err := d.SetVolumeQuota(vol.Volume, vol.ConfigSize(), false, op)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	srcVolName, err := d.encodeVolumeName(srcVol.Volume)
+	if err != nil {
+		return nil, err
+	}
+
+	srcVolID, err := client.GetVolumeID(srcVolName)
+	if err != nil {
+		return nil, err
+	}
+
+	volName, err := d.encodeVolumeName(vol.Volume)
+	if err != nil {
+		return nil, err
+	}
+
+	volID, err := client.GetVolumeID(volName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create new reverter snapshot, which is used to revert the original volume in case of
+	// an error. Snapshots are also required to be first copied into destination volume,
+	// from which a new snapshot is created to effectively copy a snapshot. If any error
+	// occurs, the destination volume has been already modified and needs reverting.
+	reverterSnapshotName := "lxd-reverter-snapshot"
+
+	// Remove existing reverter snapshot.
+	reverterSnapshotID, err := client.GetVolumeSnapshotID(volID, reverterSnapshotName)
+	if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
+		return nil, err
+	}
+
+	if reverterSnapshotID != "" {
+		err = client.DeleteVolumeSnapshot(reverterSnapshotID)
+		if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
+			return nil, err
+		}
+	}
+
+	// Create new reverter snapshot.
+	reverterSnapshotID, err = client.CreateVolumeSnapshot(volID, reverterSnapshotName)
+	if err != nil {
+		return nil, err
+	}
+
+	revert.Add(func() {
+		// Restore destination volume from reverter snapshot and remove the snapshot afterwards.
+		_ = client.RestoreVolume(volID, reverterSnapshotID)
+		_ = client.DeleteVolumeSnapshot(reverterSnapshotID)
+	})
+
+	if !srcVol.IsSnapshot() && len(refreshSnapshots) > 0 {
+		var refreshedSnapshots []string
+
+		// Refresh volume snapshots.
+		// Pure Storage does not allow copying snapshots along with the volume. Therefore,
+		// we copy the missing snapshots sequentially. Each snapshot is first copied into
+		// destination volume from which a new snapshot is created. The process is repeted
+		// until all of the missing snapshots are copied.
+		for _, snapshot := range vol.Snapshots {
+			// Remove volume name prefix from the snapshot name, and check whether it
+			// has to be refreshed.
+			_, snapshotShortName, _ := api.GetParentAndSnapshotName(snapshot.name)
+			if !slices.Contains(refreshSnapshots, snapshotShortName) {
+				// Skip snapshot if it doesn't have to be refreshed.
+				continue
+			}
+
+			// Find the corresponding source snapshot.
+			var srcSnapshot *Volume
+			for _, srcSnap := range srcVol.Snapshots {
+				_, srcSnapshotShortName, _ := api.GetParentAndSnapshotName(srcSnap.name)
+				if snapshotShortName == srcSnapshotShortName {
+					srcSnapshot = &srcSnap
+					break
+				}
+			}
+
+			if srcSnapshot == nil {
+				return nil, fmt.Errorf("Failed refreshing snapshot %q: Source snapshot does not exist", snapshotShortName)
+			}
+
+			srcSnapshotName, err := d.encodeVolumeName(*srcSnapshot)
+			if err != nil {
+				return nil, err
+			}
+
+			srcSnapshotID, err := client.GetVolumeSnapshotID(srcVolID, srcSnapshotName)
+			if err != nil {
+				return nil, err
+			}
+
+			// Overwrite existing destination volume with snapshot.
+			err = client.RefreshVolume(srcSnapshotID, volID)
+			if err != nil {
+				return nil, err
+			}
+
+			// Set snapshot's parent UUID.
+			snapshot.SetParentUUID(vol.config["volatile.uuid"])
+
+			// Create snapshot of a new volume. Do not copy VM's filesystem volume snapshot,
+			// as FS volumes are already copied by this point.
+			err = d.createVolumeSnapshot(snapshot, false, op)
+			if err != nil {
+				return nil, err
+			}
+
+			revert.Add(func() { _ = d.DeleteVolumeSnapshot(snapshot, op) })
+
+			// Append snapshot to the list of successfully refreshed snapshots.
+			refreshedSnapshots = append(refreshedSnapshots, snapshotShortName)
+		}
+
+		// Ensure all snapshots were successfully refreshed.
+		missing := shared.RemoveElementsFromSlice(refreshSnapshots, refreshedSnapshots...)
+		if len(missing) > 0 {
+			return nil, fmt.Errorf("Failed refreshing snapshots %v", missing)
+		}
+	}
+
+	// Finally, copy the source volume (or snapshot) into destination volume snapshots.
+	err = client.RefreshVolume(srcVolID, volID)
+	if err != nil {
+		return nil, err
+	}
+
+	err = postCreateTasks(vol.Volume)
+	if err != nil {
+		return nil, err
+	}
+
+	cleanup := revert.Clone().Fail
+	revert.Success()
+
+	// Remove temporary reverter snapshot.
+	_ = client.DeleteVolumeSnapshot(reverterSnapshotID)
+
+	return cleanup, err
+}
+
 // SetVolumeQuota applies a size limit on volume.
 func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, op *operations.Operation) error {
 	d.logger.Warn("Setting volume quota", logger.Ctx{"vol": vol.name, "size": size})
@@ -993,7 +1180,7 @@ func (d *powerstore) createVolumeSnapshot(snapVol Volume, snapshotVMfilesystem b
 		return err
 	}
 
-	err = client.CreateVolumeSnapshot(volID, snapVolName)
+	_, err = client.CreateVolumeSnapshot(volID, snapVolName)
 	if err != nil {
 		return fmt.Errorf("Failed to create snapshot %q for volume %q: %w", snapVol.name, snapVol.GetParent().name, err)
 	}
@@ -1119,6 +1306,12 @@ func (d *powerstore) MountVolumeSnapshot(snapVol Volume, op *operations.Operatio
 // false if was not mounted.
 func (d *powerstore) UnmountVolumeSnapshot(snapVol Volume, op *operations.Operation) (bool, error) {
 	return d.UnmountVolume(snapVol, false, op)
+}
+
+// roundVolumeBlockSizeBytes rounds the given size (in bytes) up to the next
+// multiple of 1 MiB, which is the minimum volume size on PowerStore.
+func (d *powerstore) roundVolumeBlockSizeBytes(_ Volume, sizeBytes int64) int64 {
+	return roundAbove(powerStoreMinVolumeSizeBytes, sizeBytes)
 }
 
 // encodeVolumeName derives the name of a volume resource in PowerStore from the provided volume.

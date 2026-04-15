@@ -971,7 +971,7 @@ func (c *PowerStoreClient) RefreshVolume(srcVolumeOrSnapshotID string, dstVolume
 	return nil
 }
 
-// RestoreVolume restores the volume from its snapshot.
+// RestoreVolumeSnapshot restores the volume from its snapshot.
 func (c *PowerStoreClient) RestoreVolume(volumeID string, snapshotID string) error {
 	c.logger.Warn("Restoring volume", logger.Ctx{"snapshot_name": snapshotID, "volume_id": volumeID})
 
@@ -1049,7 +1049,7 @@ func (c *PowerStoreClient) GetVolumeSnapshot(volumeID string, snapshotName strin
 }
 
 // CreateVolumeSnapshot creates a new snapshot of a volume.
-func (c *PowerStoreClient) CreateVolumeSnapshot(volumeID string, snapshotName string) error {
+func (c *PowerStoreClient) CreateVolumeSnapshot(volumeID string, snapshotName string) (string, error) {
 	c.logger.Warn("Creating volume snapshot", logger.Ctx{"volume_id": volumeID, "snapshot_name": snapshotName})
 
 	req := map[string]any{
@@ -1057,13 +1057,14 @@ func (c *PowerStoreClient) CreateVolumeSnapshot(volumeID string, snapshotName st
 		"description": "LXD Volume Snapshot of " + snapshotName,
 	}
 
+	var resp PowerStoreResourceID
 	url := api.NewURL().Path("api", "rest", "volume", volumeID, "snapshot")
-	err := c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
+	err := c.requestAuthenticated(http.MethodPost, url.URL, req, &resp, nil)
 	if err != nil {
-		return fmt.Errorf("Failed creating PowerStore volume snapshot: %w", err)
+		return "", fmt.Errorf("Failed creating PowerStore volume snapshot: %w", err)
 	}
 
-	return nil
+	return resp.ID, nil
 }
 
 // DeleteVolumeSnapshot deletes a snapshot of a volume.
