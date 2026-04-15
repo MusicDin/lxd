@@ -882,6 +882,11 @@ func (c *PowerStoreClient) DeleteVolume(volumeName string) error {
 
 	vol, err := c.GetVolume(volumeName)
 	if err != nil {
+		if isPowerStoreError(err, http.StatusNotFound) {
+			// The volume is already deleted, consider the operation successful.
+			return nil
+		}
+
 		return err
 	}
 
