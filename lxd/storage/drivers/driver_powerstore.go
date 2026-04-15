@@ -135,18 +135,18 @@ func (d *powerstore) client() *clients.PowerStoreClient {
 			d.config["powerstore.user.name"],
 			d.config["powerstore.user.password"],
 			shared.IsFalse(d.config["powerstore.gateway.verify"]),
-			d.globalVolumeNamePrefix(),
+			d.encodeStoragePoolName(),
 		)
 	}
 
 	return d.httpClient
 }
 
-// globalVolumeNamePrefix returns the prefix used by all volumes. This prevents conflicts with other
+// encodeStoragePoolName returns the prefix used by all volumes. This prevents conflicts with other
 // volumes created on the root level.
-func (d *powerstore) globalVolumeNamePrefix() string {
+func (d *powerstore) encodeStoragePoolName() string {
 	poolHash := sha256.Sum256([]byte(d.Name()))
-	poolName := base64.StdEncoding.EncodeToString(poolHash[:])
+	poolName := base64.URLEncoding.EncodeToString(poolHash[:])
 	return powerStoreResourcePrefix + poolName + powerStorePoolAndVolSep
 }
 

@@ -659,7 +659,7 @@ func (d *powerstore) encodeVolumeName(vol Volume) (string, error) {
 		volName = volName + powerStoreVolSuffixSep + suffix
 	}
 
-	return d.globalVolumeNamePrefix() + volName, nil
+	return d.encodeStoragePoolName() + volName, nil
 }
 
 // decodeVolumeName decodes the PowerStore volume resource name and extracts the stored data.
