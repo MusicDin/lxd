@@ -1297,12 +1297,12 @@ func (d *powerstore) getVolumeID(vol Volume) (string, error) {
 
 		parentVolID, err := client.GetVolumeID(parentVolName)
 		if err != nil {
-			return "", fmt.Errorf("Failed to retrieve remote storage ID for snapshot parent volume %q: %w", parentVol.name, vol.name, err)
+			return "", fmt.Errorf("Failed to retrieve remote storage ID for snapshot parent volume %q: %w", parentVol.name, err)
 		}
 
 		snapshotID, err := client.GetVolumeSnapshotID(parentVolID, volName)
 		if err != nil {
-			return "", fmt.Errorf("Failed to retrieve remote storage ID for snapshot %q of parent volume %q: %w", vol.name, parentVol.name, err)
+			return "", fmt.Errorf("Failed to retrieve remote storage ID for snapshot %q: %w", vol.name, err)
 		}
 
 		return snapshotID, nil
