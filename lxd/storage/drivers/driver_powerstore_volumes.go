@@ -603,7 +603,7 @@ func (d *powerstore) DeleteVolume(vol Volume, op *operations.Operation) error {
 		return err
 	}
 
-	psHost, err := client.GetCurrentHost(connector.Type(), qn)
+	host, err := client.GetCurrentHost(connector.Type(), qn)
 	if err != nil {
 		// If the host doesn't exist, continue with the deletion of
 		// the volume and do not try to delete the volume mapping as
@@ -614,9 +614,9 @@ func (d *powerstore) DeleteVolume(vol Volume, op *operations.Operation) error {
 	} else {
 		// If the host exists, attempt to delete the volume mapping for the deleted volume.
 		// If the mapping doesn't exist, continue with the deletion as the volume is already deleted.
-		err = client.DetachVolumeFromHost(volID, psHost.Name)
+		err = client.DetachVolumeFromHost(volID, host.ID)
 		if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
-			return fmt.Errorf("Failed to detach volume %q from host %q: %w", vol.name, psHost.Name, err)
+			return fmt.Errorf("Failed to detach volume %q from host %q: %w", vol.name, host.Name, err)
 		}
 	}
 
@@ -1460,7 +1460,7 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 	defer unlock()
 
 	// Ensure the host exists and is configured with the correct QN.
-	hostName, cleanup, err := d.ensureHost()
+	hostID, cleanup, err := d.ensureHost()
 	if err != nil {
 		return nil, err
 	}
@@ -1468,13 +1468,13 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 	reverter.Add(cleanup)
 
 	// Ensure the volume is connected to the host.
-	connCreated, err := client.AttachVolumeToHost(volID, hostName)
+	connCreated, err := client.AttachVolumeToHost(volID, hostID)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to attach volume %q to host %q: %w", vol.name, hostName, err)
+		return nil, fmt.Errorf("Failed to attach volume %q to host: %w", vol.name, err)
 	}
 
 	if connCreated {
-		reverter.Add(func() { _ = client.DetachVolumeFromHost(volID, hostName) })
+		reverter.Add(func() { _ = client.DetachVolumeFromHost(volID, hostID) })
 	}
 
 	// Find the array's qualified name for the configured mode.
@@ -1559,7 +1559,7 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 	}
 
 	// Disconnect the volume from the host and ignore error if connection does not exist.
-	err = client.DetachVolumeFromHost(volID, host.Name)
+	err = client.DetachVolumeFromHost(volID, host.ID)
 	if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
 		return fmt.Errorf("Failed to detach volume %q from host %q: %w", vol.name, host.Name, err)
 	}

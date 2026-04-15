@@ -702,11 +702,11 @@ func (c *PowerStoreClient) DeleteHost(hostID string) error {
 
 // AttachVolumeToHost attaches (maps) volume to host, returning true if the volume was freshly
 // attached to the host, and false if the volume was already attached to the host.
-func (c *PowerStoreClient) AttachVolumeToHost(volumeID string, hostName string) (bool, error) {
-	c.logger.Warn("Attaching volume to host", logger.Ctx{"host_name": hostName, "volume_id": volumeID})
+func (c *PowerStoreClient) AttachVolumeToHost(volumeID string, hostID string) (bool, error) {
+	c.logger.Warn("Attaching volume to host", logger.Ctx{"host_id": hostID, "volume_id": volumeID})
 
 	// Check if the volume is already attached to the host.
-	host, err := c.GetHost(hostName)
+	host, err := c.GetHost(hostID)
 	if err != nil {
 		return false, err
 	}
@@ -722,7 +722,7 @@ func (c *PowerStoreClient) AttachVolumeToHost(volumeID string, hostName string) 
 	url := api.NewURL().Path("api", "rest", "volume", volumeID, "attach")
 
 	req := map[string]any{
-		"host_id": "name:" + hostName,
+		"host_id": hostID,
 	}
 
 	err = c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
@@ -734,18 +734,18 @@ func (c *PowerStoreClient) AttachVolumeToHost(volumeID string, hostName string) 
 }
 
 // DetachVolumeFromHost detaches (unmaps) volume from host.
-func (c *PowerStoreClient) DetachVolumeFromHost(volumeID string, hostName string) error {
-	c.logger.Warn("Detaching volume from host", logger.Ctx{"host_name": hostName, "volume_id": volumeID})
+func (c *PowerStoreClient) DetachVolumeFromHost(volumeID string, hostID string) error {
+	c.logger.Warn("Detaching volume from host", logger.Ctx{"host_id": hostID, "volume_id": volumeID})
 	url := api.NewURL().Path("api", "rest", "volume", volumeID, "detach")
 
 	req := map[string]any{
-		"host_id": "name:" + hostName,
+		"host_id": hostID,
 	}
 
 	err := c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
 	if err != nil {
 		if isPowerStoreError(err, http.StatusUnprocessableEntity, "Could not find any host volume mappings") {
-			return api.StatusErrorf(http.StatusNotFound, "Connection between host %q and volume %q not found", hostName, volumeID)
+			return api.StatusErrorf(http.StatusNotFound, "Connection between host %q and volume %q not found", hostID, volumeID)
 		}
 
 		return fmt.Errorf("Failed detaching PowerStore volume from the host: %w", err)
