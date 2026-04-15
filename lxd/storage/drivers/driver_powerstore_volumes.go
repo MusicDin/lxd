@@ -567,6 +567,16 @@ func (d *powerstore) CreateVolumeFromMigration(vol VolumeCopy, conn io.ReadWrite
 	return err
 }
 
+// MigrateVolume sends a volume for migration.
+func (d *powerstore) MigrateVolume(vol VolumeCopy, conn io.ReadWriteCloser, volSrcArgs *migration.VolumeSourceArgs, op *operations.Operation) error {
+	// When performing a cluster member move don't do anything on the source member.
+	if volSrcArgs.ClusterMove {
+		return nil
+	}
+
+	return genericVFSMigrateVolume(d, d.state, vol, conn, volSrcArgs, op)
+}
+
 // UpdateVolume applies config changes to the volume.
 func (d *powerstore) UpdateVolume(vol Volume, changedConfig map[string]string) error {
 	d.logger.Warn("Updating volume", logger.Ctx{"vol": vol.name})
