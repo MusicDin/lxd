@@ -608,12 +608,12 @@ func (d *powerstore) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, all
 		}
 	} else {
 		if volID == "" {
-			_, err = client.CloneVolume(srcVolName, volName)
+			_, err = client.CloneVolume(srcVolID, volName)
 			if err != nil {
 				return err
 			}
 		} else {
-			err = client.RefreshVolume(srcVolName, volName)
+			err = client.RefreshVolume(srcVolID, volID)
 			if err != nil {
 				return err
 			}
@@ -1411,6 +1411,8 @@ func (d *powerstore) CreateVolumeSnapshot(snapVol Volume, op *operations.Operati
 // createVolumeSnapshot creates a snapshot of a volume. If snapshotVMfilesystem is false, a VM's filesystem volume
 // is not copied.
 func (d *powerstore) createVolumeSnapshot(snapVol Volume, snapshotVMfilesystem bool, op *operations.Operation) error {
+	client := d.client()
+
 	revert := revert.New()
 	defer revert.Fail()
 
@@ -1444,7 +1446,7 @@ func (d *powerstore) createVolumeSnapshot(snapVol Volume, snapshotVMfilesystem b
 		return err
 	}
 
-	volID, err := d.client().GetVolumeID(volName)
+	volID, err := client.GetVolumeID(volName)
 	if err != nil {
 		return fmt.Errorf("Failed to retrieve volume %q: %w", snapVol.GetParent().name, err)
 	}
@@ -1454,7 +1456,7 @@ func (d *powerstore) createVolumeSnapshot(snapVol Volume, snapshotVMfilesystem b
 		return err
 	}
 
-	err = d.client().CreateVolumeSnapshot(volID, snapVolName)
+	err = client.CreateVolumeSnapshot(volID, snapVolName)
 	if err != nil {
 		return fmt.Errorf("Failed to create snapshot %q for volume %q: %w", snapVol.name, snapVol.GetParent().name, err)
 	}
