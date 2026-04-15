@@ -879,9 +879,14 @@ func (c *PowerStoreClient) CreateVolume(volumeName string, sizeBytes int64) erro
 // DeleteVolume deletes volume using its name.
 func (c *PowerStoreClient) DeleteVolume(volumeName string) error {
 	c.logger.Warn("Deleting volume", logger.Ctx{"volume_name": volumeName})
-	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName)
 
-	err := c.requestAuthenticated(http.MethodDelete, url.URL, nil, nil, nil)
+	vol, err := c.GetVolume(volumeName)
+	if err != nil {
+		return err
+	}
+
+	url := api.NewURL().Path("api", "rest", "volume", vol.ID)
+	err = c.requestAuthenticated(http.MethodDelete, url.URL, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("Failed deleting PowerStore volume: %w", err)
 	}
@@ -892,13 +897,18 @@ func (c *PowerStoreClient) DeleteVolume(volumeName string) error {
 // ResizeVolume creates a new volume.
 func (c *PowerStoreClient) ResizeVolume(volumeName string, newSize int64) error {
 	c.logger.Warn("Resizing volume", logger.Ctx{"volume_name": volumeName, "new_size": newSize})
-	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName)
+
+	vol, err := c.GetVolume(volumeName)
+	if err != nil {
+		return err
+	}
 
 	req := map[string]any{
 		"size": newSize,
 	}
 
-	err := c.requestAuthenticated(http.MethodPatch, url.URL, req, nil, nil)
+	url := api.NewURL().Path("api", "rest", "volume", vol.ID)
+	err = c.requestAuthenticated(http.MethodPatch, url.URL, req, nil, nil)
 	if err != nil {
 		return fmt.Errorf("Failed resizing PowerStore volume: %w", err)
 	}
@@ -907,16 +917,21 @@ func (c *PowerStoreClient) ResizeVolume(volumeName string, newSize int64) error 
 }
 
 // CloneVolume clones the volume or the volume snapshot with the provided name to a new volume.
-func (c *PowerStoreClient) CloneVolume(volumeName string, dstVolumeName string) error {
-	c.logger.Warn("Cloning volume", logger.Ctx{"src_volume_name": volumeName, "dst_volume_name": dstVolumeName})
-	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName, "clone")
+func (c *PowerStoreClient) CloneVolume(srcVolumeName string, dstVolumeName string) error {
+	c.logger.Warn("Cloning volume", logger.Ctx{"src_volume_name": srcVolumeName, "dst_volume_name": dstVolumeName})
 
-	req := map[string]any{
-		"name":        dstVolumeName,
-		"description": `LXD Volume Clone from "` + dstVolumeName + `"`,
+	vol, err := c.GetVolume(srcVolumeName)
+	if err != nil {
+		return err
 	}
 
-	err := c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
+	url := api.NewURL().Path("api", "rest", "volume", vol.ID, "clone")
+	req := map[string]any{
+		"name":        dstVolumeName,
+		"description": `LXD Volume Clone from "` + srcVolumeName + `"`,
+	}
+
+	err = c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
 	if err != nil {
 		return fmt.Errorf("Failed cloning PowerStore volume: %w", err)
 	}
@@ -924,35 +939,79 @@ func (c *PowerStoreClient) CloneVolume(volumeName string, dstVolumeName string) 
 	return nil
 }
 
-// RestoreVolume restores the volume form the volume snapshot.
-func (c *PowerStoreClient) RestoreVolume(volumeName string, snapshotName string) error {
-	c.logger.Warn("Restoring volume", logger.Ctx{"snapshot_name": snapshotName, "volume_name": volumeName})
-	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName, "restore")
+func (c *PowerStoreClient) refreshVolume(srcVolumeID string, dstVolumeID string) error {
+	url := api.NewURL().Path("api", "rest", "volume", dstVolumeID, "refresh")
 
 	req := map[string]any{
-		"from_snap_id": "name:" + snapshotName,
-	}
-
-	err := c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
-	if err != nil {
-		return fmt.Errorf("Failed restoring PowerStore volume from snapshot: %w", err)
-	}
-
-	return nil
-}
-
-// RefreshVolume refreshes the volume form the volume or the volume snapshot.
-func (c *PowerStoreClient) RefreshVolume(volumeName string, srcVolumeOrSnapshotName string) error {
-	c.logger.Warn("Refreshing volume", logger.Ctx{"src_volume_name": srcVolumeOrSnapshotName, "dst_volume_name": volumeName})
-	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName, "refresh")
-
-	req := map[string]any{
-		"from_object_id": "name:" + srcVolumeOrSnapshotName,
+		"from_object_id":     srcVolumeID,
+		"create_backup_snap": false,
 	}
 
 	err := c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
 	if err != nil {
 		return fmt.Errorf("Failed refreshing PowerStore volume: %w", err)
+	}
+
+	return nil
+}
+
+// RefreshVolume refreshes the volume from the volume or the volume snapshot.
+// NOTE: The source volume or snapshot must be within the same family, which
+// means the destination volume has previously been cloned from that volume or
+// snapshot from the same parent volume.
+func (c *PowerStoreClient) RefreshVolume(srcVolumeName string, dstVolumeName string) error {
+	c.logger.Warn("Refreshing volume", logger.Ctx{"src_volume_name": srcVolumeName, "dst_volume_name": dstVolumeName})
+
+	srcVol, err := c.GetVolume(srcVolumeName)
+	if err != nil {
+		return err
+	}
+
+	vol, err := c.GetVolume(dstVolumeName)
+	if err != nil {
+		return err
+	}
+
+	return c.refreshVolume(srcVol.ID, vol.ID)
+}
+
+// RefreshVolumeFromSnapshot refreshes the volume from the volume or the volume snapshot.
+// NOTE: The source volume or snapshot must be within the same family, which
+// means the destination volume has previously been cloned from that volume or
+// snapshot from the same parent volume.
+func (c *PowerStoreClient) RefreshVolumeFromSnapshot(srcVolumeName string, srcSnapshotName string, volumeName string) error {
+	c.logger.Warn("Refreshing volume", logger.Ctx{"src_volume_name": srcVolumeName, "src_snapshot_name": srcSnapshotName, "dst_volume_name": volumeName})
+
+	snap, err := c.GetVolumeSnapshot(srcVolumeName, srcSnapshotName)
+	if err != nil {
+		return err
+	}
+
+	vol, err := c.GetVolume(volumeName)
+	if err != nil {
+		return err
+	}
+
+	return c.refreshVolume(snap.ID, vol.ID)
+}
+
+// RestoreVolume restores the volume from its snapshot.
+func (c *PowerStoreClient) RestoreVolume(volumeName string, snapshotName string) error {
+	c.logger.Warn("Restoring volume", logger.Ctx{"snapshot_name": snapshotName, "volume_name": volumeName})
+	vol, err := c.GetVolume(volumeName)
+	if err != nil {
+		return err
+	}
+
+	req := map[string]any{
+		"from_snap_id":       "name:" + snapshotName,
+		"create_backup_snap": false,
+	}
+
+	url := api.NewURL().Path("api", "rest", "volume", vol.ID, "restore")
+	err = c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
+	if err != nil {
+		return fmt.Errorf("Failed restoring PowerStore volume from snapshot: %w", err)
 	}
 
 	return nil
@@ -967,7 +1026,6 @@ func (c *PowerStoreClient) GetVolumeSnapshots(volumeName string) ([]PowerStoreVo
 
 	c.logger.Warn("Getting volume snapshots", logger.Ctx{"volume_name": volumeName})
 	filter := map[string]string{
-		"name":                        "ilike." + c.resourceNamePrefix + "*",
 		"type":                        "eq.Snapshot",
 		"protection_data->>parent_id": "eq." + vol.ID,
 	}
@@ -1009,16 +1067,44 @@ func (c *PowerStoreClient) GetVolumeSnapshot(volumeName string, snapshotName str
 // CreateVolumeSnapshot creates a new snapshot of a volume.
 func (c *PowerStoreClient) CreateVolumeSnapshot(volumeName string, snapshotName string) error {
 	c.logger.Warn("Creating volume snapshot", logger.Ctx{"volume_name": volumeName, "snapshot_name": snapshotName})
-	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName, "snapshot")
+
+	vol, err := c.GetVolume(volumeName)
+	if err != nil {
+		return err
+	}
 
 	req := map[string]any{
 		"name":        snapshotName,
 		"description": "LXD Volume Snapshot of " + snapshotName,
 	}
 
-	err := c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
+	url := api.NewURL().Path("api", "rest", "volume", vol.ID, "snapshot")
+	err = c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
 	if err != nil {
 		return fmt.Errorf("Failed creating PowerStore volume snapshot with name %q: %w", snapshotName, err)
+	}
+
+	return nil
+}
+
+// CloneVolumeSnapshot clones the volume snapshot into a new volume.
+func (c *PowerStoreClient) CloneVolumeSnapshot(volumeName string, snapshotName string, dstVolumeName string) error {
+	c.logger.Warn("Cloning volume snapshot", logger.Ctx{"src_snapshot_name": snapshotName, "dst_volume_name": dstVolumeName})
+
+	snapshot, err := c.GetVolumeSnapshot(volumeName, snapshotName)
+	if err != nil {
+		return err
+	}
+
+	req := map[string]any{
+		"name":        dstVolumeName,
+		"description": `LXD Volume Clone from "` + volumeName + `"`,
+	}
+
+	url := api.NewURL().Path("api", "rest", "volume", snapshot.ID, "clone")
+	err = c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
+	if err != nil {
+		return fmt.Errorf("Failed cloning PowerStore volume: %w", err)
 	}
 
 	return nil
@@ -1027,9 +1113,14 @@ func (c *PowerStoreClient) CreateVolumeSnapshot(volumeName string, snapshotName 
 // DeleteVolumeSnapshot deletes a snapshot of a volume.
 func (c *PowerStoreClient) DeleteVolumeSnapshot(volumeName string, snapshotName string) error {
 	c.logger.Warn("Deleting volume snapshot", logger.Ctx{"volume_name": volumeName, "snapshot_name": snapshotName})
-	url := api.NewURL().Path("api", "rest", "volume", "name:"+volumeName, "snapshot", "name:"+snapshotName)
 
-	err := c.requestAuthenticated(http.MethodDelete, url.URL, nil, nil, nil)
+	snapshot, err := c.GetVolumeSnapshot(volumeName, snapshotName)
+	if err != nil {
+		return err
+	}
+
+	url := api.NewURL().Path("api", "rest", "volume", snapshot.ID)
+	err = c.requestAuthenticated(http.MethodDelete, url.URL, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("Failed deleting PowerStore volume snapshot with name %q: %w", snapshotName, err)
 	}

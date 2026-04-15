@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/canonical/lxd/lxd/backup"
+	"github.com/canonical/lxd/lxd/migration"
 	"github.com/canonical/lxd/lxd/operations"
 	"github.com/canonical/lxd/lxd/storage/block"
 	"github.com/canonical/lxd/lxd/storage/connectors"
@@ -399,6 +400,228 @@ func (d *powerstore) CreateVolumeFromImage(vol Volume, imgVol *Volume, filler *V
 	return d.CreateVolume(vol, filler, op)
 }
 
+// TODO:
+// 1. Create empty volume (probably with same size as source?).
+// 2. Restore volume from snapshots
+// 3. Copy volume from source to destination.
+// CreateVolumeFromCopy provides same-pool volume copying functionality.
+func (d *powerstore) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, allowInconsistent bool, op *operations.Operation) error {
+	client := d.client()
+
+	revert := revert.New()
+	defer revert.Fail()
+
+	// Function to run once the volume is created, which will ensure appropriate permissions
+	// on the mount path inside the volume, and resize the volume to specified size.
+	postCreateTasks := func(v Volume) error {
+		if vol.contentType == ContentTypeFS {
+			// Mount the volume and ensure the permissions are set correctly inside the mounted volume.
+			err := v.MountTask(func(_ string, _ *operations.Operation) error {
+				return v.EnsureMountPath()
+			}, op)
+			if err != nil {
+				return err
+			}
+		}
+
+		// Resize volume to the size specified.
+		err := d.SetVolumeQuota(v, vol.config["size"], false, op)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	// For VMs, also copy the filesystem volume.
+	if vol.IsVMBlock() {
+		// Ensure that the volume's snapshots are also replaced with their filesystem counterpart.
+		fsVolSnapshots := make([]Volume, 0, len(vol.Snapshots))
+		for _, snapshot := range vol.Snapshots {
+			fsVolSnapshots = append(fsVolSnapshots, snapshot.NewVMBlockFilesystemVolume())
+		}
+
+		srcFsVolSnapshots := make([]Volume, 0, len(srcVol.Snapshots))
+		for _, snapshot := range srcVol.Snapshots {
+			srcFsVolSnapshots = append(srcFsVolSnapshots, snapshot.NewVMBlockFilesystemVolume())
+		}
+
+		fsVol := NewVolumeCopy(vol.NewVMBlockFilesystemVolume(), fsVolSnapshots...)
+		srcFSVol := NewVolumeCopy(srcVol.NewVMBlockFilesystemVolume(), srcFsVolSnapshots...)
+
+		// Ensure parent UUID is retained for the filesystem volumes.
+		fsVol.SetParentUUID(vol.parentUUID)
+		srcFSVol.SetParentUUID(srcVol.parentUUID)
+
+		err := d.CreateVolumeFromCopy(fsVol, srcFSVol, false, op)
+		if err != nil {
+			return err
+		}
+
+		revert.Add(func() { _ = d.DeleteVolume(fsVol.Volume, op) })
+	}
+
+	volName, err := d.encodeVolumeName(vol.Volume)
+	if err != nil {
+		return err
+	}
+
+	srcVolName, err := d.encodeVolumeName(srcVol.Volume)
+	if err != nil {
+		return err
+	}
+
+	// First clone the volume.
+	// If source volume has snapshots, this volume will be overwriten, and we will need to
+	// clone it again. The reason behind this is because PowerStore only allows refreshing
+	// volumes from "related" volumes or snapshots. To sequentially copy snapshots (using
+	// refresh and snapshot approach), we need to create this "relationship" by first cloning
+	// the source volume.
+	// if srcVol.IsSnapshot() {
+	// 	// Copy the source snapshot into destination volume.
+	// 	err = d.client().CloneVolume(srcVolName, volName)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// } else {
+	// 	err = d.client().copyVolume(srcPoolName, srcVolName, poolName, volName, true)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// }
+
+	// Since snapshots are first copied into destination volume from which a new snapshot is created,
+	// we need to also remove the destination volume if an error occurs during copying of snapshots.
+	volCreated := false
+
+	// Copy volume snapshots.
+	// PowerStore does copy snapshots along with the volume. Therefore, we copy the snapshots
+	// sequentially once the volume was copied. Each snapshot is first copied into destination
+	// volume from which a new snapshot is created. The process is repeted until all snapshots
+	// are copied.
+	if !srcVol.IsSnapshot() {
+		for i, snapshot := range vol.Snapshots {
+			_, snapshotShortName, _ := api.GetParentAndSnapshotName(snapshot.name)
+
+			// Find the corresponding source snapshot.
+			var srcSnapshot *Volume
+			for _, srcSnap := range srcVol.Snapshots {
+				_, srcSnapshotShortName, _ := api.GetParentAndSnapshotName(srcSnap.name)
+				if snapshotShortName == srcSnapshotShortName {
+					srcSnapshot = &srcSnap
+					break
+				}
+			}
+
+			if srcSnapshot == nil {
+				return fmt.Errorf("Failed copying snapshot %q: Source snapshot does not exist", snapshotShortName)
+			}
+
+			srcSnapshotName, err := d.encodeVolumeName(*srcSnapshot)
+			if err != nil {
+				return err
+			}
+
+			// Copy the snapshot.
+			if i == 0 {
+				// If this is a first snapshot, we need to clone it as the
+				// destination volume does not exist yet.
+				err = client.CloneVolumeSnapshot(srcVolName, srcSnapshotName, volName)
+			} else {
+				// Otherwise, overwrite the destination volume.
+				err = client.RefreshVolumeFromSnapshot(srcVolName, srcSnapshotName, volName)
+			}
+
+			if err != nil {
+				return fmt.Errorf("Failed copying snapshot %q into volume %q: %w", snapshot.name, vol.name, err)
+			}
+
+			if volCreated {
+				// If at least one snapshot is copied into destination volume, we need to remove
+				// that volume as well in case of an error.
+				revert.Add(func() { _ = d.DeleteVolume(vol.Volume, op) })
+				volCreated = true
+			}
+
+			// Set snapshot's parent UUID and retain source snapshot UUID.
+			snapshot.SetParentUUID(vol.config["volatile.uuid"])
+
+			// Create snapshot from a new volume (that was created from the source snapshot).
+			// However, do not create VM's filesystem volume snapshot, as filesystem volume is
+			// copied before block volume.
+			err = d.createVolumeSnapshot(snapshot, false, op)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// Finally, copy the source volume (or snapshot) into destination volume snapshots.
+	if srcVol.IsSnapshot() {
+		// Get snapshot parent volume name.
+		srcParentVol := srcVol.GetParent()
+		srcParentVolName, err := d.encodeVolumeName(srcParentVol)
+		if err != nil {
+			return err
+		}
+
+		// Copy the source snapshot into destination volume.
+		err = client.CloneVolumeSnapshot(srcParentVolName, srcVolName, volName)
+		if err != nil {
+			return err
+		}
+	} else {
+		if !volCreated {
+			err = client.CloneVolume(srcVolName, volName)
+			if err != nil {
+				return err
+			}
+		} else {
+			err = client.RefreshVolume(srcVolName, volName)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// Add reverted to delete destination volume, if not already added.
+	if volCreated {
+		revert.Add(func() { _ = d.DeleteVolume(vol.Volume, op) })
+	}
+
+	err = postCreateTasks(vol.Volume)
+	if err != nil {
+		return err
+	}
+
+	revert.Success()
+	return nil
+}
+
+// CreateVolumeFromMigration creates a volume being sent via a migration.
+func (d *powerstore) CreateVolumeFromMigration(vol VolumeCopy, conn io.ReadWriteCloser, volTargetArgs migration.VolumeTargetArgs, preFiller *VolumeFiller, op *operations.Operation) error {
+	// When performing a cluster member move prepare the volumes on the target side.
+	if volTargetArgs.ClusterMoveSourceName != "" {
+		err := vol.EnsureMountPath()
+		if err != nil {
+			return err
+		}
+
+		if vol.IsVMBlock() {
+			fsVol := NewVolumeCopy(vol.NewVMBlockFilesystemVolume())
+			err := d.CreateVolumeFromMigration(fsVol, conn, volTargetArgs, preFiller, op)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
+
+	_, err := genericVFSCreateVolumeFromMigration(d, nil, vol, conn, volTargetArgs, preFiller, op)
+	return err
+}
+
 // UpdateVolume applies config changes to the volume.
 func (d *powerstore) UpdateVolume(vol Volume, changedConfig map[string]string) error {
 	d.logger.Warn("Updating volume", logger.Ctx{"vol": vol.name})
@@ -516,7 +739,7 @@ func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize b
 		return nil
 	}
 
-	// PowerStore supports increasing of size only.
+	// Only volume expansion is supported.
 	if sizeBytes < psVol.Size {
 		return errors.New("Volume capacity can only be increased")
 	}
@@ -535,6 +758,11 @@ func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize b
 
 	// Validate the alignment.
 	err = validate.IsMultipleOfUnit(powerStoreMinVolumeSizeAlignmentUnit)(size)
+	if err != nil {
+		return err
+	}
+
+	connector, err := d.connector()
 	if err != nil {
 		return err
 	}
@@ -560,7 +788,7 @@ func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize b
 		// the actual size of the device is reflected on the host. This is for
 		// example the case when creating a volume and the filler performs a resize
 		// in case the image exceeds the volume's size.
-		err = block.WaitDiskDeviceResize(d.state.ShutdownCtx, devPath, sizeBytes)
+		err = connector.WaitDiskDeviceResize(d.state.ShutdownCtx, devPath, sizeBytes)
 		if err != nil {
 			return fmt.Errorf("Failed waiting for volume %q to change its size: %w", vol.name, err)
 		}
@@ -595,7 +823,7 @@ func (d *powerstore) SetVolumeQuota(vol Volume, size string, allowUnsafeResize b
 
 	defer cleanup()
 
-	err = block.WaitDiskDeviceResize(d.state.ShutdownCtx, devPath, sizeBytes)
+	err = connector.WaitDiskDeviceResize(d.state.ShutdownCtx, devPath, sizeBytes)
 	if err != nil {
 		return fmt.Errorf("Failed waiting for volume %q to change its size: %w", vol.name, err)
 	}
@@ -1137,6 +1365,12 @@ func (d *powerstore) discoveryLogRecordParser(filterTargetAddresses []string) (f
 
 // CreateVolumeSnapshot creates a snapshot of a volume.
 func (d *powerstore) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
+	return d.createVolumeSnapshot(snapVol, true, op)
+}
+
+// createVolumeSnapshot creates a snapshot of a volume. If snapshotVMfilesystem is false, a VM's filesystem volume
+// is not copied.
+func (d *powerstore) createVolumeSnapshot(snapVol Volume, snapshotVMfilesystem bool, op *operations.Operation) error {
 	revert := revert.New()
 	defer revert.Fail()
 
@@ -1175,11 +1409,6 @@ func (d *powerstore) CreateVolumeSnapshot(snapVol Volume, op *operations.Operati
 		return err
 	}
 
-	// volID, err := client.GetVolumeID(volName)
-	// if err != nil {
-	// 	return err
-	// }
-
 	err = d.client().CreateVolumeSnapshot(volName, snapVolName)
 	if err != nil {
 		return err
@@ -1188,7 +1417,8 @@ func (d *powerstore) CreateVolumeSnapshot(snapVol Volume, op *operations.Operati
 	revert.Add(func() { _ = d.DeleteVolumeSnapshot(snapVol, op) })
 
 	// For VMs, create a snapshot of the filesystem volume too.
-	if snapVol.IsVMBlock() {
+	// Skip if snapshotVMfilesystem is false to prevent overwriting separately copied volumes.
+	if snapVol.IsVMBlock() && snapshotVMfilesystem {
 		fsVol := snapVol.NewVMBlockFilesystemVolume()
 
 		// Set the parent volume's UUID.
