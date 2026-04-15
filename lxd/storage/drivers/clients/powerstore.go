@@ -778,7 +778,7 @@ func (c *PowerStoreClient) DetachVolumeFromHost(volumeID string, hostName string
 
 	err := c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
 	if err != nil {
-		if isPowerStoreError(err, http.StatusNotFound) {
+		if isPowerStoreError(err, http.StatusUnprocessableEntity, "Could not find any host volume mappings") {
 			return api.StatusErrorf(http.StatusNotFound, "Connection between host %q and volume %q not found", hostName, volumeID)
 		}
 
