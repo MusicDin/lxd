@@ -1220,15 +1220,16 @@ func (d *powerstore) newMountableSnapshotVolume(snapVol Volume) (Volume, error) 
 	}
 
 	// UUID v5: deterministic, derived from the snapshot UUID as namespace.
-	cloneUUID := uuid.NewSHA1(snapUUID, []byte("mount-clone"))
+	cloneUUID := uuid.NewSHA1(snapUUID, []byte("snapshot-mount-clone"))
 
 	cloneConfig := make(map[string]string, len(snapVol.config))
 	maps.Copy(cloneConfig, snapVol.config)
 	cloneConfig["volatile.uuid"] = cloneUUID.String()
 
-	// Use the parent volume name so the clone is treated as a top-level volume (IsSnapshot=false).
-	parentName, _, _ := api.GetParentAndSnapshotName(snapVol.name)
-	return NewVolume(d, d.name, snapVol.volType, snapVol.contentType, parentName, cloneConfig, d.config), nil
+	// Use the clone UUID as the name to avoid colliding with the parent volume's mount
+	// ref-count. Name encoding uses volatile.uuid anyway, so the name only affects local
+	// state.
+	return NewVolume(d, d.name, snapVol.volType, snapVol.contentType, cloneUUID.String(), cloneConfig, d.config), nil
 }
 
 // MountVolumeSnapshot creates a temporary clone of the snapshot to allow mounting it.
