@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -569,6 +570,41 @@ func parsePaginationOffset(headers map[string]string) (newOffset uint64, hasMore
 
 	newOffset = lastOffset + 1
 	return newOffset, totalItems > newOffset, nil
+}
+
+// GetTargetAddresses retrieves list of target addresses for the provided connector type.
+func (c *PowerStoreClient) GetTargetAddresses(connectorType string) ([]string, error) {
+	var purpose string
+	switch connectorType {
+	case connectors.TypeISCSI:
+		purpose = "Storage_Iscsi_Target"
+	case connectors.TypeNVME:
+		purpose = "Storage_Cluster_Floating"
+	default:
+		return nil, fmt.Errorf("Unsupported connector type: %q", connectorType)
+	}
+
+	var resp = []struct {
+		Address  string   `json:"address,omitempty"`
+		Purposes []string `json:"purposes,omitempty"`
+	}{}
+
+	url := api.NewURL().Path("api", "rest", "ip_pool_address")
+	url = url.WithQuery("select", "address,purposes")
+
+	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &resp, nil)
+	if err != nil {
+		return nil, fmt.Errorf("Failed retrieving configured PowerStore IP addresses: %w", err)
+	}
+
+	var addresses []string
+	for _, ip := range resp {
+		if slices.Contains(ip.Purposes, purpose) {
+			addresses = append(addresses, ip.Address)
+		}
+	}
+
+	return addresses, nil
 }
 
 // GetCurrentHost retrieves the PowerStore host linked to the current LXD host.
