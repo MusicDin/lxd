@@ -1210,8 +1210,9 @@ func (d *powerstore) VolumeSnapshots(vol Volume, op *operations.Operation) ([]st
 }
 
 // newMountableSnapshotVolume returns a non-snapshot Volume representing the temporary clone
-// of snapVol. The clone UUID is derived deterministically from the snapshot UUID so
-// that UnmountVolumeSnapshot can reconstruct it without extra state.
+// of snapVol which is used when snapshot needs to be mounted (mounting snapshot directly is not
+// supported by PowerStore). The cloned volume UUID is derived deterministically from the snapshot
+// UUID so that UnmountVolumeSnapshot can reconstruct it without extra state.
 func (d *powerstore) newMountableSnapshotVolume(snapVol Volume) (Volume, error) {
 	snapUUID, err := uuid.Parse(snapVol.config["volatile.uuid"])
 	if err != nil {
@@ -1231,9 +1232,7 @@ func (d *powerstore) newMountableSnapshotVolume(snapVol Volume) (Volume, error) 
 }
 
 // MountVolumeSnapshot creates a temporary clone of the snapshot to allow mounting it.
-// PowerStore snapshots (type=Snapshot) cannot be attached to hosts directly. The clone
-// is represented by a non-snapshot Volume with a UUID derived from the snapshot UUID,
-// so mapVolume/unmapVolume handle it as a plain volume with no special-casing.
+// PowerStore snapshots cannot be attached to hosts directly.
 func (d *powerstore) MountVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
 	revert := revert.New()
 	defer revert.Fail()
