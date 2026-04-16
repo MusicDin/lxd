@@ -568,16 +568,6 @@ func (d *powerstore) CreateVolumeFromMigration(vol VolumeCopy, conn io.ReadWrite
 	return err
 }
 
-// MigrateVolume sends a volume for migration.
-func (d *powerstore) MigrateVolume(vol VolumeCopy, conn io.ReadWriteCloser, volSrcArgs *migration.VolumeSourceArgs, op *operations.Operation) error {
-	// When performing a cluster member move don't do anything on the source member.
-	if volSrcArgs.ClusterMove {
-		return nil
-	}
-
-	return genericVFSMigrateVolume(d, d.state, vol, conn, volSrcArgs, op)
-}
-
 // UpdateVolume applies config changes to the volume.
 func (d *powerstore) UpdateVolume(vol Volume, changedConfig map[string]string) error {
 	d.logger.Warn("Updating volume", logger.Ctx{"vol": vol.name})
@@ -670,6 +660,16 @@ func (d *powerstore) RenameVolume(vol Volume, newVolName string, op *operations.
 // BackupVolume creates an exported version of a volume.
 func (d *powerstore) BackupVolume(vol VolumeCopy, projectName string, tarWriter *instancewriter.InstanceTarWriter, optimized bool, snapshots []string, op *operations.Operation) error {
 	return genericVFSBackupVolume(d, vol, tarWriter, snapshots, op)
+}
+
+// MigrateVolume sends a volume for migration.
+func (d *powerstore) MigrateVolume(vol VolumeCopy, conn io.ReadWriteCloser, volSrcArgs *migration.VolumeSourceArgs, op *operations.Operation) error {
+	// When performing a cluster member move don't do anything on the source member.
+	if volSrcArgs.ClusterMove {
+		return nil
+	}
+
+	return genericVFSMigrateVolume(d, d.state, vol, conn, volSrcArgs, op)
 }
 
 // RestoreVolume restores a volume from a snapshot.
