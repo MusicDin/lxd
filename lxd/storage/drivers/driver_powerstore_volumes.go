@@ -168,6 +168,18 @@ func (d *powerstore) ValidateVolume(vol Volume, removeUnknownKeys bool) error {
 // GetVolumeDiskPath returns the location of a root disk block device.
 func (d *powerstore) GetVolumeDiskPath(vol Volume) (string, error) {
 	d.logger.Warn("Getting volume disk path", logger.Ctx{"vol": vol.name})
+
+	if vol.IsSnapshot() {
+		// Snapshots cannot be attached directly. The [MountVolumeSnapshot] maps a
+		// temporary clone, therefore, search for the device path of a snapshot clone.
+		cloneVol, err := d.newMountableSnapshotVolume(vol)
+		if err != nil {
+			return "", err
+		}
+
+		vol = cloneVol
+	}
+
 	if vol.IsVMBlock() || (vol.volType == VolumeTypeCustom && IsContentBlock(vol.contentType)) {
 		devPath, _, err := d.getMappedDevicePath(vol, false)
 		return devPath, err
@@ -1240,17 +1252,12 @@ func (d *powerstore) MountVolumeSnapshot(snapVol Volume, op *operations.Operatio
 
 	client := d.client()
 
+	snapVolID, err := d.getVolumeID(snapVol)
+	if err != nil {
+		return err
+	}
+
 	cloneVol, err := d.newMountableSnapshotVolume(snapVol)
-	if err != nil {
-		return err
-	}
-
-	cloneVolName, err := d.encodeVolumeName(cloneVol)
-	if err != nil {
-		return err
-	}
-
-	snapID, err := d.getVolumeID(snapVol)
 	if err != nil {
 		return err
 	}
@@ -1258,7 +1265,12 @@ func (d *powerstore) MountVolumeSnapshot(snapVol Volume, op *operations.Operatio
 	// Reuse an existing clone in case a previous unmount failed to clean up.
 	_, err = d.getVolumeID(cloneVol)
 	if api.StatusErrorCheck(err, http.StatusNotFound) {
-		_, err = client.CloneVolume(snapID, cloneVolName)
+		cloneVolName, err := d.encodeVolumeName(cloneVol)
+		if err != nil {
+			return err
+		}
+
+		_, err = client.CloneVolume(snapVolID, cloneVolName)
 		if err != nil {
 			return fmt.Errorf("Failed creating temporary clone for snapshot %q: %w", snapVol.name, err)
 		}
