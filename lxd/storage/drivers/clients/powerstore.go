@@ -574,16 +574,6 @@ func parsePaginationOffset(headers map[string]string) (newOffset uint64, hasMore
 
 // GetTargetAddresses retrieves list of target addresses for the provided connector type.
 func (c *PowerStoreClient) GetTargetAddresses(connectorType string) ([]string, error) {
-	var purpose string
-	switch connectorType {
-	case connectors.TypeISCSI:
-		purpose = "Storage_Iscsi_Target"
-	case connectors.TypeNVME:
-		purpose = "Storage_Cluster_Floating"
-	default:
-		return nil, fmt.Errorf("Unsupported connector type: %q", connectorType)
-	}
-
 	var resp = []struct {
 		Address  string   `json:"address,omitempty"`
 		Purposes []string `json:"purposes,omitempty"`
@@ -597,9 +587,28 @@ func (c *PowerStoreClient) GetTargetAddresses(connectorType string) ([]string, e
 		return nil, fmt.Errorf("Failed retrieving configured PowerStore IP addresses: %w", err)
 	}
 
+	// Filter IP addresses based on their purpose, which should match the connector type.
+	var purpose string
+	switch connectorType {
+	case connectors.TypeISCSI:
+		purpose = "Storage_Iscsi_Target"
+	case connectors.TypeNVME:
+		purpose = "Storage_NVMe_TCP_Port"
+	default:
+		return nil, fmt.Errorf("Unsupported connector type: %q", connectorType)
+	}
+
+	// Additionally, PowerStore might have floating IP address that can be used for
+	// NVMe/iSCSI discovery.
+	genericIPPurpose := "Storage_Cluster_Floating"
+
 	var addresses []string
 	for _, ip := range resp {
-		if slices.Contains(ip.Purposes, purpose) {
+		if slices.Contains(addresses, ip.Address) {
+			continue
+		}
+
+		if slices.Contains(ip.Purposes, purpose) || slices.Contains(ip.Purposes, genericIPPurpose) {
 			addresses = append(addresses, ip.Address)
 		}
 	}

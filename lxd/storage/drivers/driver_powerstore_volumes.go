@@ -1801,13 +1801,16 @@ func (d *powerstore) getTargets() ([]powerStoreTarget, error) {
 		return nil, err
 	}
 
-	discoveryAddresses := shared.SplitNTrimSpace(d.config["powerstore.discovery"], ",", -1, true)
+	targetAddresses, err := d.client().GetTargetAddresses(connector.Type())
+	if err != nil {
+		return nil, err
+	}
 
 	var discoveryLogRecords []any
-	for _, addr := range discoveryAddresses {
+	for _, addr := range targetAddresses {
 		discovered, err := connector.Discover(d.state.ShutdownCtx, addr)
 		if err != nil {
-			// Underlying connector should log a waring.
+			// Underlying connector already logs a warning.
 			continue
 		}
 
@@ -1818,94 +1821,67 @@ func (d *powerstore) getTargets() ([]powerStoreTarget, error) {
 		return nil, errors.New("Failed fetching discovery log records for all PowerStore target addresses")
 	}
 
-	userForcedTargetAddresses := shared.SplitNTrimSpace(d.config["powerstore.target"], ",", -1, true)
-	parser, err := d.discoveryLogRecordParser(userForcedTargetAddresses)
-	if err != nil {
-		return nil, err
+	// Parse user-specified list of addresses to connect to.
+	// If not specified, all discovered addresses will be used.
+	filterAddresses := shared.SplitNTrimSpace(d.config["powerstore.target"], ",", -1, true)
+	if len(filterAddresses) > 0 {
+		// Make sure target addresses have port configured.
+		var defaultPort string
+		mode := connector.Type()
+		switch mode {
+		case powerStoreModeISCSI:
+			defaultPort = connectors.ISCSIDefaultPort
+		case powerStoreModeNVME:
+			defaultPort = connectors.NVMeDefaultDiscoveryPort
+		default:
+			return nil, fmt.Errorf("Unsupported PowerStore mode %q", mode)
+		}
+
+		for i := range filterAddresses {
+			filterAddresses[i] = shared.EnsurePort(filterAddresses[i], defaultPort)
+		}
 	}
 
+	// Helper function to extract address and qualified name from a discovery log record,
+	// which differs based on the connector type.
+	parseLogEntry := func(record any) (address string, qn string, err error) {
+		switch r := record.(type) {
+		case connectors.ISCSIDiscoveryLogRecord:
+			address = r.Address
+			qn = r.IQN
+		case connectors.NVMeDiscoveryLogRecord:
+			address = net.JoinHostPort(r.TransportAddress, r.TransportServiceIdentifier)
+			qn = r.SubNQN
+		default:
+			return "", "", fmt.Errorf("Unknown discovery log record entry type %T", record)
+		}
+
+		return address, qn, nil
+	}
+
+	// Parse discovered targets and filter them by user-specified addresses if needed.
 	discoveredTargets := []powerStoreTarget{}
 	for _, record := range discoveryLogRecords {
-		target, includeTarget, err := parser(record)
+		address, qn, err := parseLogEntry(record)
 		if err != nil {
 			return nil, err
 		}
 
-		if !includeTarget {
+		if len(filterAddresses) > 0 && !slices.Contains(filterAddresses, address) {
 			continue
 		}
 
-		discoveredTargets = append(discoveredTargets, *target)
+		discoveredTargets = append(discoveredTargets, powerStoreTarget{
+			Address:       address,
+			QualifiedName: qn,
+		})
 	}
-
-	discoveredTargets = shared.Unique(discoveredTargets)
 
 	if len(discoveredTargets) == 0 {
 		return nil, errors.New("Failed fetching a discovery log record from any of the discovery addresses")
 	}
 
-	d.discoveredTargets = discoveredTargets
+	// Cache discovered targets for future use and return them.
+	d.discoveredTargets = shared.Unique(discoveredTargets)
 	return d.discoveredTargets, nil
-}
-
-// discoveryLogRecordParser returns a parsing function that converts single
-// discovery log entry to target.
-func (d *powerstore) discoveryLogRecordParser(filterTargetAddresses []string) (func(any) (*powerStoreTarget, bool, error), error) {
-	transport := d.config["powerstore.transport"]
-	if transport != powerStoreTransportTCP {
-		return nil, fmt.Errorf("Unsupported transport %q in PowerStore configuration", transport)
-	}
-
-	mode := d.config["powerstore.mode"]
-	switch mode {
-	case powerStoreModeISCSI:
-		filterTargetAddresses = slices.Clone(filterTargetAddresses)
-		for i := range filterTargetAddresses {
-			filterTargetAddresses[i] = shared.EnsurePort(filterTargetAddresses[i], connectors.ISCSIDefaultPort)
-		}
-
-		return func(record any) (*powerStoreTarget, bool, error) {
-			r, ok := record.(connectors.ISCSIDiscoveryLogRecord)
-			if !ok {
-				return nil, false, fmt.Errorf("Invalid discovery log record entry type %T", record)
-			}
-
-			target := powerStoreTarget{
-				Address:       r.Address,
-				QualifiedName: r.IQN,
-			}
-
-			if len(filterTargetAddresses) > 0 && !slices.Contains(filterTargetAddresses, target.Address) {
-				return nil, false, nil
-			}
-
-			return &target, true, nil
-		}, nil
-
-	case powerStoreModeNVME:
-		filterTargetAddresses = slices.Clone(filterTargetAddresses)
-		for i := range filterTargetAddresses {
-			filterTargetAddresses[i] = shared.EnsurePort(filterTargetAddresses[i], connectors.NVMeDefaultTransportPort)
-		}
-
-		return func(record any) (*powerStoreTarget, bool, error) {
-			r, ok := record.(connectors.NVMeDiscoveryLogRecord)
-			if !ok {
-				return nil, false, fmt.Errorf("Invalid discovery log record entry type %T", record)
-			}
-
-			target := powerStoreTarget{
-				Address:       net.JoinHostPort(r.TransportAddress, r.TransportServiceIdentifier),
-				QualifiedName: r.SubNQN,
-			}
-
-			if len(filterTargetAddresses) > 0 && !slices.Contains(filterTargetAddresses, target.Address) {
-				return nil, false, nil
-			}
-
-			return &target, true, nil
-		}, nil
-	default:
-		return nil, fmt.Errorf("Unsupported PowerStore mode %q", mode)
-	}
 }

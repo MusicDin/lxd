@@ -26,10 +26,6 @@ const powerStoreMinVolumeSizeBytes = 1 * 1024 * 1024 // 1MiB
 // expressed as unit string.
 const powerStoreMinVolumeSizeUnit = "1MiB"
 
-// powerStoreMaxVolumeSizeBytes represents the maximum PowerStore volume size
-// in bytes.
-const powerStoreMaxVolumeSizeBytes = 256 * 1024 * 1024 * 1024 * 1024 // 256TiB
-
 // powerStoreMaxVolumeSizeUnit represents the maximum PowerStore volume size
 // expressed as unit string.
 const powerStoreMaxVolumeSizeUnit = "256TiB"
@@ -66,26 +62,26 @@ var powerStoreSupportedModesAndTransports = driverModesAndTransports{
 var powerStoreLoaded bool
 var powerStoreVersion string
 
-type powerstore struct {
-	common
-
-	// Holds the low level client for the PowerStore API.
-	// Use powerstore.client() to retrieve the initialized client struct.
-	httpClient *clients.PowerStoreClient
-
-	// Holds the low level connector for the PowerStore driver.
-	// Use powerstore.connector() to retrieve the initialized connector.
-	storageConnector connectors.Connector
-
-	// List of discovered targets ant theirs QNs (qualified names)
-	// Use powerstore.targets() to retrieve the discovered PowerStore targets.
-	discoveredTargets []powerStoreTarget
-}
-
 // powerStoreTarget represent a PowerStore connection target.
 type powerStoreTarget struct {
 	Address       string
 	QualifiedName string
+}
+
+type powerstore struct {
+	common
+
+	// Holds the low level client for the PowerStore API.
+	// Use [powerstore.client] to retrieve the initialized client struct.
+	httpClient *clients.PowerStoreClient
+
+	// Holds the low level connector for the PowerStore driver.
+	// Use [powerstore.connector] to retrieve the initialized connector.
+	storageConnector connectors.Connector
+
+	// List of discovered targets and their QNs (qualified names)
+	// Use [powerstore.getTargets] to retrieve the discovered PowerStore targets.
+	discoveredTargets []powerStoreTarget
 }
 
 // load is used to run one-time action per-driver rather than per-pool.
