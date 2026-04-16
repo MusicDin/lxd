@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/canonical/lxd/lxd/backup"
+	"github.com/canonical/lxd/lxd/instancewriter"
 	"github.com/canonical/lxd/lxd/migration"
 	"github.com/canonical/lxd/lxd/operations"
 	"github.com/canonical/lxd/lxd/storage/block"
@@ -664,6 +665,11 @@ func (d *powerstore) RenameVolume(vol Volume, newVolName string, op *operations.
 	d.logger.Warn("Renaming volume", logger.Ctx{"vol": vol.name, "new_name": newVolName})
 	// Renaming a volume in PowerStore will not change the name of the associated volume resource.
 	return nil
+}
+
+// BackupVolume creates an exported version of a volume.
+func (d *powerstore) BackupVolume(vol VolumeCopy, projectName string, tarWriter *instancewriter.InstanceTarWriter, optimized bool, snapshots []string, op *operations.Operation) error {
+	return genericVFSBackupVolume(d, vol, tarWriter, snapshots, op)
 }
 
 // RestoreVolume restores a volume from a snapshot.
