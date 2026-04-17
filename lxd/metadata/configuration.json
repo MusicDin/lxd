@@ -7129,14 +7129,6 @@
 			"pool-conf": {
 				"keys": [
 					{
-						"powerstore.discovery": {
-							"defaultdesc": "the list of discovery addresses",
-							"longdesc": "A comma-separated list of NVMe or iSCSI discovery addresses.",
-							"shortdesc": "List of discovery addresses.",
-							"type": "string"
-						}
-					},
-					{
 						"powerstore.gateway": {
 							"longdesc": "",
 							"scope": "global",
@@ -7165,7 +7157,7 @@
 					{
 						"powerstore.target": {
 							"defaultdesc": "the list of target addresses",
-							"longdesc": "A comma-separated list of NVMe or iSCSI target addresses. When empty targets are discovered via discovery endpoints.",
+							"longdesc": "A comma-separated list of NVMe or iSCSI target addresses. When empty, targets are discovered via discovery endpoints.",
 							"shortdesc": "List of target addresses.",
 							"type": "string"
 						}

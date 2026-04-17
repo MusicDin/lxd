@@ -6460,13 +6460,6 @@ Specify either a cron expression (`<minute> <hour> <dom> <month> <dow>`), a comm
 
 <!-- config group storage-powerflex-volume-conf end -->
 <!-- config group storage-powerstore-pool-conf start -->
-```{config:option} powerstore.discovery storage-powerstore-pool-conf
-:defaultdesc: "the list of discovery addresses"
-:shortdesc: "List of discovery addresses."
-:type: "string"
-A comma-separated list of NVMe or iSCSI discovery addresses.
-```
-
 ```{config:option} powerstore.gateway storage-powerstore-pool-conf
 :scope: "global"
 :shortdesc: "Address of the PowerStore Gateway"
@@ -6495,7 +6488,7 @@ Supported values are `iscsi` and `nvme`.
 :defaultdesc: "the list of target addresses"
 :shortdesc: "List of target addresses."
 :type: "string"
-A comma-separated list of NVMe or iSCSI target addresses. When empty targets are discovered via discovery endpoints.
+A comma-separated list of NVMe or iSCSI target addresses. When empty, targets are discovered via discovery endpoints.
 ```
 
 ```{config:option} powerstore.transport storage-powerstore-pool-conf
