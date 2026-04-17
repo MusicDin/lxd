@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -1234,7 +1235,31 @@ func mountVolume(d Driver, vol Volume, getDevicePath getVolumePathFunc, progress
 			mountFlags, mountOptions := filesystem.ResolveMountOptions(strings.Split(vol.ConfigBlockMountOptions(), ","))
 			err = TryMount(context.TODO(), volDevPath, mountPath, fsType, mountFlags, mountOptions)
 			if err != nil {
-				return err
+				// EUCLEAN ("structure needs cleaning") is returned by the kernel when the
+				// ext4 journal is dirty and cannot be replayed automatically. This can happen
+				// after an unclean unmap (e.g. following a previous timeout or crash). Run
+				// e2fsck to repair the filesystem and retry the mount once.
+				if errors.Is(err, unix.EUCLEAN) && fsType == "ext4" {
+					d.Logger().Warn("Filesystem requires repair before mounting, running e2fsck", logger.Ctx{"volName": vol.name, "dev": volDevPath})
+					output, fsckErr := shared.RunCommand(context.TODO(), "e2fsck", "-f", "-y", volDevPath)
+					if fsckErr != nil {
+						runErr, ok := fsckErr.(shared.RunError)
+						if ok {
+							// The e2fsck exit code 0 means "no errors" and 1 means "errors were corrected" (not a fatal error).
+							exitError, ok := runErr.Unwrap().(*exec.ExitError)
+							exitCode := exitError.ExitCode()
+							if !ok || (exitCode != 0 && exitCode != 1) {
+								return fmt.Errorf("%s: %w", strings.TrimSpace(output), fsckErr)
+							}
+						}
+					}
+
+					err = TryMount(context.TODO(), volDevPath, mountPath, fsType, mountFlags, mountOptions)
+				}
+
+				if err != nil {
+					return err
+				}
 			}
 
 			d.Logger().Debug("Mounted volume", logger.Ctx{"volName": vol.name, "dev": volDevPath, "path": mountPath, "options": mountOptions})

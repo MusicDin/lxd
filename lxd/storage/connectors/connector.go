@@ -12,14 +12,20 @@ const (
 	// TypeUnknown represents an unknown storage connector.
 	TypeUnknown string = "unknown"
 
-	// TypeNVME represents an NVMe/TCP storage connector.
+	// TypeNVME represents an NVMe over TCP storage connector.
 	TypeNVME string = "nvme"
+
+	// TypeNVMEFC represents an NVMe over FC storage connector.
+	TypeNVMEFC string = "nvme-fc"
 
 	// TypeSDC represents Dell SDC storage connector.
 	TypeSDC string = "sdc"
 
-	// TypeISCSI represents an iSCSI storage connector.
+	// TypeISCSI represents a SCSI over TCP (iSCSI) storage connector.
 	TypeISCSI string = "iscsi"
+
+	// TypeISCSIFC represents a SCSI over fiber channel storage connector.
+	TypeISCSIFC string = "scsi-fc"
 )
 
 // session represents a connector session that is established with a target.
@@ -51,45 +57,39 @@ type Connector interface {
 	findSession(targetQN string) (*session, error)
 }
 
-// NewConnector instantiates a new connector of the given type.
-// The caller needs to ensure connector type is validated before calling this
-// function, as common (empty) connector is returned for unknown type.
+// NewConnector instantiates a new connector for the given protocol type and transport.
+// For TypeISCSI and TypeNVME an empty transport defaults to TransportTCP.
+// Transport is not applicable for TypeSDC.
 func NewConnector(connectorType string, serverUUID string) (Connector, error) {
-	common := common{
-		serverUUID: serverUUID,
-	}
+	common := common{serverUUID: serverUUID}
 
 	switch connectorType {
 	case TypeNVME:
-		return &connectorNVMe{
-			common: common,
-		}, nil
+		return &connectorNVMe{common: common}, nil
 
-	case TypeSDC:
-		return &connectorSDC{
-			common: common,
-		}, nil
+	case TypeNVMEFC:
+		return &connectorNVMeFC{common: common}, nil
 
 	case TypeISCSI:
-		return &connectorISCSI{
-			common: common,
-		}, nil
+		return &connectorISCSI{common: common}, nil
+
+	case TypeISCSIFC:
+		return &connectorISCSIFC{common: common}, nil
+
+	case TypeSDC:
+		return &connectorSDC{common: common}, nil
 
 	default:
-		// Return common connector if the type is unknown. This removes
-		// the need to check for nil or handle the error in the caller.
 		return nil, fmt.Errorf("Unknown storage connector type %q", connectorType)
 	}
 }
 
-// GetSupportedVersions returns the versions for the given connector types
+// GetSupportedVersions returns the versions for the given connector types,
 // ignoring those that produce an error when version is being retrieved
-// (e.g. due to a missing required tools).
+// (e.g. due to missing required tools).
 func GetSupportedVersions(connectorTypes []string) []string {
 	versions := make([]string, 0, len(connectorTypes))
 
-	// Iterate over the provided connector types, and extract
-	// their versions.
 	for _, connectorType := range connectorTypes {
 		connector, err := NewConnector(connectorType, "")
 		if err != nil {

@@ -675,16 +675,6 @@ func (d *powerstore) MigrateVolume(vol VolumeCopy, conn io.ReadWriteCloser, volS
 	return genericVFSMigrateVolume(d, d.state, vol, conn, volSrcArgs, progressReporter)
 }
 
-// MigrateVolume sends a volume for migration.
-func (d *powerstore) MigrateVolume(vol VolumeCopy, conn io.ReadWriteCloser, volSrcArgs *migration.VolumeSourceArgs, op *operations.Operation) error {
-	// When performing a cluster member move don't do anything on the source member.
-	if volSrcArgs.ClusterMove {
-		return nil
-	}
-
-	return genericVFSMigrateVolume(d, d.state, vol, conn, volSrcArgs, op)
-}
-
 // RestoreVolume restores a volume from a snapshot.
 func (d *powerstore) RestoreVolume(vol Volume, snapVol Volume, progressReporter ioprogress.ProgressReporter) error {
 	client := d.client()
@@ -1596,9 +1586,21 @@ func (d *powerstore) getMappedDevicePath(vol Volume, mapVolume bool) (string, re
 		return "", nil, fmt.Errorf("Failed parsing WWN for volume %q: Invalid format %q", vol.name, psVol.WWN)
 	}
 
-	// Filters devices by matching the device path with the WWN.
+	wwnLower := strings.ToLower(wwn)
+
+	d.logger.Warn("DEBUG: WWN lookup", logger.Ctx{"vol": vol.name, "raw_wwn": psVol.WWN, "wwn_filter": wwnLower})
+
+	// Filters devices by matching the device path with the WWN (case-insensitive: PowerStore
+	// returns uppercase WWNs but kernel device names are lowercase).
+	filterCallCount := 0
 	devicePathFilter := func(path string) bool {
-		return strings.Contains(path, wwn)
+		matched := strings.Contains(strings.ToLower(path), wwnLower)
+		filterCallCount++
+		if filterCallCount <= 3 || matched {
+			d.logger.Warn("DEBUG: filter check", logger.Ctx{"path": path, "wwn": wwnLower, "matched": matched, "call": filterCallCount})
+		}
+
+		return matched
 	}
 
 	var devicePath string
@@ -1611,6 +1613,7 @@ func (d *powerstore) getMappedDevicePath(vol Volume, mapVolume bool) (string, re
 	}
 
 	if err != nil {
+		d.logger.Warn("DEBUG: device lookup failed", logger.Ctx{"vol": vol.name, "wwn": wwnLower, "filter_calls": filterCallCount, "err": err})
 		return "", nil, fmt.Errorf("Failed locating device for volume %q: %w", vol.name, err)
 	}
 

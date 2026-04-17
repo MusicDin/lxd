@@ -26,6 +26,7 @@ var powerStoreVersion string
 // powerStoreSupportedConnectors represents a list of storage connectors that can be used with PowerStore.
 var powerStoreSupportedConnectors = []string{
 	connectors.TypeISCSI,
+	connectors.TypeISCSIFC,
 }
 
 // powerStoreDefaultUser represents the default PowerStore user name.
@@ -325,6 +326,8 @@ func (d *powerstore) targets() (map[string][]string, error) {
 
 		mode := connector.Type()
 		switch mode {
+		case connectors.TypeNVMEFC, connectors.TypeISCSIFC:
+			// No port.
 		case connectors.TypeISCSI:
 			defaultPort = connectors.ISCSIDefaultPort
 		case connectors.TypeNVME:
@@ -348,6 +351,10 @@ func (d *powerstore) targets() (map[string][]string, error) {
 		case connectors.NVMeDiscoveryLogRecord:
 			address = net.JoinHostPort(r.TransportAddress, r.TransportServiceIdentifier)
 			qn = r.SubNQN
+		case connectors.FCDiscoveryRecord:
+			// For FC, the WWPN serves as both the address and the qualified name.
+			address = r.PortName
+			qn = r.PortName
 		default:
 			return "", "", fmt.Errorf("Unknown discovery log record entry type %T", record)
 		}
