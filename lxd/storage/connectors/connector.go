@@ -15,11 +15,17 @@ const (
 	// TypeNVME represents an NVMe/TCP storage connector.
 	TypeNVME string = "nvme"
 
+	// TypeNVMEFC represents an NVMe/FC storage connector.
+	TypeNVMEFC string = "nvme-fc"
+
 	// TypeSDC represents Dell SDC storage connector.
 	TypeSDC string = "sdc"
 
 	// TypeISCSI represents an iSCSI storage connector.
 	TypeISCSI string = "iscsi"
+
+	// TypeISCSIFC represents an iSCSI/FC (SCSI over Fibre Channel) storage connector.
+	TypeISCSIFC string = "iscsi-fc"
 )
 
 // session represents a connector session that is established with a target.
@@ -65,6 +71,11 @@ func NewConnector(connectorType string, serverUUID string) (Connector, error) {
 			common: common,
 		}, nil
 
+	case TypeNVMEFC:
+		return &connectorNVMeFC{
+			common: common,
+		}, nil
+
 	case TypeSDC:
 		return &connectorSDC{
 			common: common,
@@ -72,6 +83,11 @@ func NewConnector(connectorType string, serverUUID string) (Connector, error) {
 
 	case TypeISCSI:
 		return &connectorISCSI{
+			common: common,
+		}, nil
+
+	case TypeISCSIFC:
+		return &connectorISCSIFC{
 			common: common,
 		}, nil
 
