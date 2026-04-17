@@ -473,33 +473,34 @@ func (c *connectorISCSI) RemoveDiskDevice(ctx context.Context, devicePath string
 		slavesPath := filepath.Join("/sys/block", deviceName, "slaves")
 		slaves, _ := os.ReadDir(slavesPath)
 
-		// Remove the multipath map.
-		//
-		// This may fail transiently with "map in use" if the device is still
-		// briefly open (for example by udev), so retry a few times before giving up.
-		var err error
-		for range 10 {
-			ctxErr := ctx.Err()
-			if ctxErr != nil {
-				// Preserve the command error if we already have one.
-				// Otherwise return the generic context error.
-				if err == nil {
-					err = ctxErr
+		// removeMultipathDevice removes the multipath map, retrying on transient
+		// "map in use" failures (e.g. udev briefly holds the device open).
+		removeMultipathDevice := func() error {
+			var err error
+			for range 10 {
+				if ctx.Err() != nil {
+					if err == nil {
+						err = ctx.Err()
+					}
+
+					break
 				}
 
-				break
+				_, err = shared.RunCommand(ctx, "multipath", "-f", devicePath)
+				if err == nil {
+					return nil
+				}
+
+				time.Sleep(500 * time.Millisecond)
 			}
 
-			_, err = shared.RunCommand(ctx, "multipath", "-f", devicePath)
-			if err == nil {
-				break
-			}
-
-			time.Sleep(500 * time.Millisecond)
+			return fmt.Errorf("Failed removing multipath device %q: %w", devicePath, err)
 		}
 
+		// Flush the multipath map first.
+		err := removeMultipathDevice()
 		if err != nil {
-			return fmt.Errorf("Failed removing multipath device %q: %w", devicePath, err)
+			return err
 		}
 
 		// Remove the underlying SCSI devices that were part of the multipath map.
@@ -509,6 +510,16 @@ func (c *connectorISCSI) RemoveDiskDevice(ctx context.Context, devicePath string
 			err := removeDevice(slave.Name())
 			if err != nil {
 				return fmt.Errorf("Failed removing multipath slave device %q: %w", slave.Name(), err)
+			}
+		}
+
+		// multipathd may recreate the device if it notices the paths before they are
+		// fully gone. Flush again if the device reappeared to ensure "WaitDiskDeviceGone"
+		// works correctly.
+		if shared.PathExists(devicePath) {
+			err := removeMultipathDevice()
+			if err != nil {
+				return err
 			}
 		}
 	} else {
