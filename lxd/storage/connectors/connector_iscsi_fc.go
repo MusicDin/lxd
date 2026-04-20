@@ -86,25 +86,7 @@ func (c *connectorISCSIFC) Connect(ctx context.Context, targetQN string, targetA
 	defer logger.Warn("iSCSI/FC target connected", logger.Ctx{"target_qn": targetQN})
 
 	connectFunc := func(ctx context.Context, s *session, targetAddr string) error {
-		fcHostPath := "/sys/class/fc_host"
-
-		hosts, err := os.ReadDir(fcHostPath)
-		if err != nil {
-			return fmt.Errorf("Failed reading FC hosts: %w", err)
-		}
-
-		for _, host := range hosts {
-			// FC host names correspond 1:1 with SCSI host names (host0, host1, …).
-			hostNum := strings.TrimPrefix(host.Name(), "host")
-			scanPath := filepath.Join("/sys/class/scsi_host", "host"+hostNum, "scan")
-
-			// "- - -" means scan all channels, targets, and LUNs.
-			err := os.WriteFile(scanPath, []byte("- - -"), 0200)
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				logger.Warn("Failed scanning FC host", logger.Ctx{"host": host.Name(), "err": err})
-			}
-		}
-
+		c.rescanSCSIBus()
 		return nil
 	}
 
@@ -229,7 +211,33 @@ func (c *connectorISCSIFC) Discover(ctx context.Context, targetAddresses ...stri
 	return result, nil
 }
 
+// rescanSCSIBus triggers a SCSI bus rescan on all FC host adapters.
+// This causes the kernel to discover any newly mapped LUNs.
+func (c *connectorISCSIFC) rescanSCSIBus() {
+	fcHostPath := "/sys/class/fc_host"
+
+	hosts, err := os.ReadDir(fcHostPath)
+	if err != nil {
+		return
+	}
+
+	for _, host := range hosts {
+		hostNum := strings.TrimPrefix(host.Name(), "host")
+		scanPath := filepath.Join("/sys/class/scsi_host", "host"+hostNum, "scan")
+
+		err := os.WriteFile(scanPath, []byte("- - -"), 0200)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			logger.Warn("Failed scanning FC host", logger.Ctx{"host": host.Name(), "err": err})
+		}
+	}
+}
+
 // WaitDiskDevicePath waits for the mapped FC device to appear.
+// Unlike iSCSI where the initiator continuously handles LUN discovery, FC requires
+// explicit SCSI bus rescans to discover newly mapped LUNs. This function periodically
+// re-triggers SCSI rescans while polling for the device to handle propagation delays
+// between the storage array confirming a LUN mapping and the LUN being visible on the
+// FC fabric.
 // If the device is not a multipath device, multipath is forced and the device path is looked up again.
 // An error is returned if no multipath device is found after that.
 func (c *connectorISCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc) (string, error) {
@@ -240,6 +248,28 @@ func (c *connectorISCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilte
 		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 	}
+
+	// Periodically re-trigger SCSI bus rescans while waiting for the device.
+	// The initial rescan in Connect may have run before the storage array fully
+	// propagated the LUN mapping to its FC target ports.
+	rescanCtx, rescanCancel := context.WithCancel(ctx)
+	defer rescanCancel()
+
+	go func() {
+		rescanInterval := 5 * time.Second
+		timer := time.NewTimer(rescanInterval)
+		defer timer.Stop()
+
+		for {
+			select {
+			case <-rescanCtx.Done():
+				return
+			case <-timer.C:
+				c.rescanSCSIBus()
+				timer.Reset(rescanInterval)
+			}
+		}
+	}()
 
 	devicePath, err := block.WaitDiskDevicePath(ctx, iscsiDiskDevicePrefix, diskPathFilter)
 	if err != nil {

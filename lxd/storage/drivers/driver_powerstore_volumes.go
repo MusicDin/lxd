@@ -1592,9 +1592,12 @@ func (d *powerstore) getMappedDevicePath(vol Volume, mapVolume bool) (string, re
 		return "", nil, fmt.Errorf("Failed parsing WWN for volume %q: Invalid format %q", vol.name, psVol.WWN)
 	}
 
-	// Filters devices by matching the device path with the WWN.
+	wwnLower := strings.ToLower(wwn)
+
+	// Filters devices by matching the device path with the WWN (case-insensitive: PowerStore
+	// returns uppercase WWNs but kernel device names are lowercase).
 	devicePathFilter := func(path string) bool {
-		return strings.Contains(path, wwn)
+		return strings.Contains(strings.ToLower(path), wwnLower)
 	}
 
 	var devicePath string
