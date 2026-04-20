@@ -273,6 +273,36 @@ func (c *connectorISCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilte
 				return
 			case <-timer.C:
 				rescanDevice()
+
+				// Log devices after rescan to see if new ones appear.
+				if disks, err := os.ReadDir(block.DevDiskByID); err == nil {
+					var scsiDevs []string
+					for _, d := range disks {
+						if strings.HasPrefix(d.Name(), iscsiDiskDevicePrefix) {
+							scsiDevs = append(scsiDevs, d.Name())
+						}
+					}
+
+					logger.Warn("DEBUG: post-rescan /dev/disk/by-id scsi devices", logger.Ctx{"count": len(scsiDevs), "devices": scsiDevs})
+				}
+
+				// Log SCSI devices from sysfs to see if kernel discovered the LUN.
+				if sysDevs, err := os.ReadDir("/sys/class/scsi_device"); err == nil {
+					var devInfos []string
+					for _, dev := range sysDevs {
+						vendorBytes, _ := os.ReadFile(filepath.Join("/sys/class/scsi_device", dev.Name(), "device", "vendor"))
+						modelBytes, _ := os.ReadFile(filepath.Join("/sys/class/scsi_device", dev.Name(), "device", "model"))
+						vendor := strings.TrimSpace(string(vendorBytes))
+						model := strings.TrimSpace(string(modelBytes))
+						if vendor == "DellEMC" {
+							devInfos = append(devInfos, dev.Name())
+							_ = model
+						}
+					}
+
+					logger.Warn("DEBUG: post-rescan PowerStore SCSI LUNs", logger.Ctx{"count": len(devInfos), "devices": devInfos})
+				}
+
 				timer.Reset(rescanInterval)
 			}
 		}
