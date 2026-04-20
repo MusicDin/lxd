@@ -77,23 +77,14 @@ func (c *connectorISCSIFC) QualifiedName() (string, error) {
 	return "", errors.New("No FC host initiators found")
 }
 
-// Connect triggers an FC rescan to discover LUNs mapped to the target.
-// For FCP, fabric login is handled automatically by the HBA driver; this function
-// ensures newly mapped LUNs are visible to the OS by issuing a SCSI bus rescan.
-// Each entry in targetAddresses is the target WWPN.
+// Connect is a no-op for FC. The HBA driver handles login automatically.
+// The SCSI bus rescans are triggered when waiting for disk device path, which is everything
+// that has to be done to make the device visible.
 func (c *connectorISCSIFC) Connect(ctx context.Context, targetQN string, targetAddresses ...string) (revert.Hook, error) {
-	logger.Warn("Connecting to iSCSI/FC target", logger.Ctx{"target_qn": targetQN, "target_addresses": targetAddresses})
-	defer logger.Warn("iSCSI/FC target connected", logger.Ctx{"target_qn": targetQN})
-
-	connectFunc := func(ctx context.Context, s *session, targetAddr string) error {
-		c.rescanSCSIBus()
-		return nil
-	}
-
-	return connect(ctx, c, targetQN, targetAddresses, connectFunc)
+	return nil, nil
 }
 
-// Disconnect is a no-op for iSCSI/FC; the HBA driver manages fabric connectivity automatically.
+// Disconnect is a no-op for FC. The HBA driver manages fabric connectivity automatically.
 // Callers must remove disk devices via RemoveDiskDevice before unmapping volumes on the array.
 func (c *connectorISCSIFC) Disconnect(targetQN string) error {
 	return nil
@@ -211,27 +202,6 @@ func (c *connectorISCSIFC) Discover(ctx context.Context, targetAddresses ...stri
 	return result, nil
 }
 
-// rescanSCSIBus triggers a SCSI bus rescan on all FC host adapters.
-// This causes the kernel to discover any newly mapped LUNs.
-func (c *connectorISCSIFC) rescanSCSIBus() {
-	fcHostPath := "/sys/class/fc_host"
-
-	hosts, err := os.ReadDir(fcHostPath)
-	if err != nil {
-		return
-	}
-
-	for _, host := range hosts {
-		hostNum := strings.TrimPrefix(host.Name(), "host")
-		scanPath := filepath.Join("/sys/class/scsi_host", "host"+hostNum, "scan")
-
-		err := os.WriteFile(scanPath, []byte("- - -"), 0200)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			logger.Warn("Failed scanning FC host", logger.Ctx{"host": host.Name(), "err": err})
-		}
-	}
-}
-
 // WaitDiskDevicePath waits for the mapped FC device to appear.
 // Unlike iSCSI where the initiator continuously handles LUN discovery, FC requires
 // explicit SCSI bus rescans to discover newly mapped LUNs. This function periodically
@@ -249,9 +219,28 @@ func (c *connectorISCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilte
 		defer cancel()
 	}
 
+	rescanDevice := func() {
+		fcHostPath := "/sys/class/fc_host"
+
+		hosts, err := os.ReadDir(fcHostPath)
+		if err != nil {
+			return
+		}
+
+		for _, host := range hosts {
+			hostNum := strings.TrimPrefix(host.Name(), "host")
+			scanPath := filepath.Join("/sys/class/scsi_host", "host"+hostNum, "scan")
+
+			// Writing "- - -" to the scan file triggers a rescan of the SCSI bus
+			// for that host, which is necessary for discovering new FC LUNs.
+			err := os.WriteFile(scanPath, []byte("- - -"), 0200)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				logger.Warn("Failed scanning FC host", logger.Ctx{"host": host.Name(), "err": err})
+			}
+		}
+	}
+
 	// Periodically re-trigger SCSI bus rescans while waiting for the device.
-	// The initial rescan in Connect may have run before the storage array fully
-	// propagated the LUN mapping to its FC target ports.
 	rescanCtx, rescanCancel := context.WithCancel(ctx)
 	defer rescanCancel()
 
@@ -265,7 +254,7 @@ func (c *connectorISCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilte
 			case <-rescanCtx.Done():
 				return
 			case <-timer.C:
-				c.rescanSCSIBus()
+				rescanDevice()
 				timer.Reset(rescanInterval)
 			}
 		}
