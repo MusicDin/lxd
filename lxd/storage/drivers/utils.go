@@ -1001,9 +1001,8 @@ type driverModesAndTransports []driverModeAndTransport
 
 // driverModeAndTransport describes given mode and transport of a storage driver.
 type driverModeAndTransport struct {
-	Mode          string
-	Transport     string
-	ConnectorType string
+	Mode      string
+	Transport string
 }
 
 // discoverModeAndTransport attempts to discover operation mode and transport
@@ -1018,7 +1017,7 @@ func discoverModeAndTransport(supportedModesAndTransports driverModesAndTranspor
 			continue
 		}
 
-		connector, err := connectors.NewConnector(toCheck.ConnectorType, "")
+		connector, err := connectors.NewConnector(toCheck.Mode, toCheck.Transport, "")
 		if err != nil {
 			return driverModeAndTransport{}, err
 		}
@@ -1047,14 +1046,10 @@ func (list driverModesAndTransports) Find(mode, transport string) (driverModeAnd
 	return driverModeAndTransport{}, fmt.Errorf("Unsupported mode %q with transport %q", mode, transport)
 }
 
-// ConnectorTypes returns all unique connector types from the list.
-func (list driverModesAndTransports) ConnectorTypes() (res []string) {
+// Specs returns the list of connector specs for all entries.
+func (list driverModesAndTransports) Specs() (res []connectors.Spec) {
 	for _, mt := range list {
-		if slices.Contains(res, mt.ConnectorType) {
-			continue
-		}
-
-		res = append(res, mt.ConnectorType)
+		res = append(res, connectors.Spec{Type: mt.Mode, Transport: mt.Transport})
 	}
 
 	return res

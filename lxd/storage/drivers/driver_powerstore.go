@@ -35,28 +35,11 @@ const powerStoreMaxVolumeSizeUnit = "256TiB"
 // this value).
 const powerStoreMinVolumeSizeAlignmentUnit = "1MiB"
 
-const (
-	powerStoreModeNVME  string = "nvme"
-	powerStoreModeISCSI string = "iscsi"
-)
-
-const (
-	powerStoreTransportTCP string = "tcp"
-)
-
-// powerStoreSupportedConnectorTypes list all connector types supported by
-// the PowerStore driver.
+// powerStoreSupportedModesAndTransports lists all protocol/transport combinations
+// supported by the PowerStore driver.
 var powerStoreSupportedModesAndTransports = driverModesAndTransports{
-	{
-		Mode:          powerStoreModeNVME,
-		Transport:     powerStoreTransportTCP,
-		ConnectorType: connectors.TypeNVME,
-	},
-	{
-		Mode:          powerStoreModeISCSI,
-		Transport:     powerStoreTransportTCP,
-		ConnectorType: connectors.TypeISCSI,
-	},
+	{Mode: connectors.TypeNVME, Transport: connectors.TransportTCP},
+	{Mode: connectors.TypeISCSI, Transport: connectors.TransportTCP},
 }
 
 var powerStoreLoaded bool
@@ -91,7 +74,7 @@ func (d *powerstore) load() error {
 		return nil
 	}
 
-	versions := connectors.GetSupportedVersions(powerStoreSupportedModesAndTransports.ConnectorTypes())
+	versions := connectors.GetSupportedVersions(powerStoreSupportedModesAndTransports.Specs())
 	powerStoreVersion = strings.Join(versions, " / ")
 	powerStoreLoaded = true
 
@@ -110,7 +93,7 @@ func (d *powerstore) load() error {
 // PowerStore mode. The connector is cached in the driver struct.
 func (d *powerstore) connector() (connectors.Connector, error) {
 	if d.storageConnector == nil {
-		connector, err := connectors.NewConnector(d.config["powerstore.mode"], d.state.OS.ServerUUID)
+		connector, err := connectors.NewConnector(d.config["powerstore.mode"], d.config["powerstore.transport"], d.state.OS.ServerUUID)
 		if err != nil {
 			return nil, err
 		}
@@ -300,7 +283,7 @@ func (d *powerstore) Validate(config map[string]string) error {
 			return err
 		}
 
-		connector, err := connectors.NewConnector(mt.ConnectorType, "")
+		connector, err := connectors.NewConnector(mt.Mode, mt.Transport, "")
 		if err != nil {
 			return fmt.Errorf("PowerStore mode %q with transport %q is not supported: %w", newMode, newTransport, err)
 		}

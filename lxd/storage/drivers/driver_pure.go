@@ -22,10 +22,13 @@ var pureLoaded = false
 // pureVersion indicates Pure Storage version.
 var pureVersion = ""
 
-// pureSupportedConnectors represents a list of storage connectors that can be used with Pure Storage.
-var pureSupportedConnectors = []string{
-	connectors.TypeISCSI,
-	connectors.TypeNVME,
+// pureSupportedModes lists the protocol types supported by Pure Storage (all use TCP transport).
+var pureSupportedModes = []string{connectors.TypeISCSI, connectors.TypeNVME}
+
+// pureSupportedSpecs are the connector specs used for version detection.
+var pureSupportedSpecs = []connectors.Spec{
+	{Type: connectors.TypeISCSI, Transport: connectors.TransportTCP},
+	{Type: connectors.TypeNVME, Transport: connectors.TransportTCP},
 }
 
 // pureMinVolumeSizeBytes defines the minimum size of a Pure Storage volume, which is 1MiB.
@@ -53,7 +56,7 @@ func (d *pure) load() error {
 		return nil
 	}
 
-	versions := connectors.GetSupportedVersions(pureSupportedConnectors)
+	versions := connectors.GetSupportedVersions(pureSupportedSpecs)
 	pureVersion = strings.Join(versions, " / ")
 	pureLoaded = true
 
@@ -72,7 +75,7 @@ func (d *pure) load() error {
 // Pure Storage mode. The connector is cached in the driver struct.
 func (d *pure) connector() (connectors.Connector, error) {
 	if d.storageConnector == nil {
-		connector, err := connectors.NewConnector(d.config["pure.mode"], d.state.OS.ServerUUID)
+		connector, err := connectors.NewConnector(d.config["pure.mode"], connectors.TransportTCP, d.state.OS.ServerUUID)
 		if err != nil {
 			return nil, err
 		}
@@ -165,7 +168,7 @@ func (d *pure) Validate(config map[string]string) error {
 		//  type: string
 		//  defaultdesc: the discovered mode
 		//  shortdesc: How volumes are mapped to the local server
-		"pure.mode": validate.Optional(validate.IsOneOf(pureSupportedConnectors...)),
+		"pure.mode": validate.Optional(validate.IsOneOf(pureSupportedModes...)),
 		// lxdmeta:generate(entities=storage-pure; group=pool-conf; key=volume.size)
 		// Default Pure Storage volume size rounded to 512B. The minimum size is 1MiB.
 		// ---
@@ -196,7 +199,7 @@ func (d *pure) Validate(config map[string]string) error {
 	// gets executed on every cluster member when receiving the cluster
 	// notification to finally create the pool.
 	if newMode != "" {
-		connector, err := connectors.NewConnector(newMode, "")
+		connector, err := connectors.NewConnector(newMode, connectors.TransportTCP, "")
 		if err != nil {
 			return fmt.Errorf("Pure Storage mode %q is not supported: %w", newMode, err)
 		}

@@ -23,9 +23,11 @@ const powerFlexDefaultSize = "8GiB"
 // This translates to 8 GiB.
 const powerFlexMinVolumeSizeBytes = 8589934592
 
-var powerflexSupportedConnectors = []string{
-	connectors.TypeNVME,
-	connectors.TypeSDC,
+// powerflexSupportedSpecs are the connector specs used for version detection.
+// PowerFlex uses NVMe/TCP or the proprietary SDC; SDC has no network transport.
+var powerflexSupportedSpecs = []connectors.Spec{
+	{Type: connectors.TypeNVME, Transport: connectors.TransportTCP},
+	{Type: connectors.TypeSDC},
 }
 
 var powerFlexLoaded bool
@@ -57,7 +59,7 @@ func (d *powerflex) load() error {
 		return nil
 	}
 
-	versions := connectors.GetSupportedVersions(powerflexSupportedConnectors)
+	versions := connectors.GetSupportedVersions(powerflexSupportedSpecs)
 	powerFlexVersion = strings.Join(versions, " / ")
 	powerFlexLoaded = true
 
@@ -77,7 +79,7 @@ func (d *powerflex) load() error {
 // PowerFlex mode. The connector is cached in the driver struct.
 func (d *powerflex) connector() (connectors.Connector, error) {
 	if d.storageConnector == nil {
-		connector, err := connectors.NewConnector(d.config["powerflex.mode"], d.state.OS.ServerUUID)
+		connector, err := connectors.NewConnector(d.config["powerflex.mode"], connectors.TransportTCP, d.state.OS.ServerUUID)
 		if err != nil {
 			return nil, err
 		}
@@ -125,13 +127,13 @@ func (d *powerflex) FillConfig() error {
 	// Second try if the SDC kernel module is setup.
 	if d.config["powerflex.mode"] == "" {
 		// Create temporary connector to check if NVMe/TCP kernel modules can be loaded.
-		nvmeConnector, err := connectors.NewConnector(connectors.TypeNVME, "")
+		nvmeConnector, err := connectors.NewConnector(connectors.TypeNVME, connectors.TransportTCP, "")
 		if err != nil {
 			return err
 		}
 
 		// Create temporary connector to check if SDC kernel module is loaded.
-		sdcConnector, err := connectors.NewConnector(connectors.TypeSDC, "")
+		sdcConnector, err := connectors.NewConnector(connectors.TypeSDC, "", "")
 		if err != nil {
 			return err
 		}
@@ -318,7 +320,7 @@ func (d *powerflex) Validate(config map[string]string) error {
 	// gets executed on every cluster member when receiving the cluster
 	// notification to finally create the pool.
 	if newMode != "" {
-		connector, err := connectors.NewConnector(newMode, "")
+		connector, err := connectors.NewConnector(newMode, connectors.TransportTCP, "")
 		if err != nil {
 			return fmt.Errorf("PowerFlex mode %q is not supported: %w", newMode, err)
 		}

@@ -19,10 +19,13 @@ var alletraLoaded = false
 // alletraVersion indicates storage driver version.
 var alletraVersion = ""
 
-// alletraSupportedConnectors represents a list of storage connectors that can be used.
-var alletraSupportedConnectors = []string{
-	connectors.TypeNVME,
-	connectors.TypeISCSI,
+// alletraSupportedModes lists the protocol types supported by Alletra (all use TCP transport).
+var alletraSupportedModes = []string{connectors.TypeNVME, connectors.TypeISCSI}
+
+// alletraSupportedSpecs are the connector specs used for version detection.
+var alletraSupportedSpecs = []connectors.Spec{
+	{Type: connectors.TypeNVME, Transport: connectors.TransportTCP},
+	{Type: connectors.TypeISCSI, Transport: connectors.TransportTCP},
 }
 
 type alletra struct {
@@ -47,7 +50,7 @@ func (d *alletra) load() error {
 		return nil
 	}
 
-	versions := connectors.GetSupportedVersions(alletraSupportedConnectors)
+	versions := connectors.GetSupportedVersions(alletraSupportedSpecs)
 	alletraVersion = strings.Join(versions, " / ")
 	alletraLoaded = true
 
@@ -66,7 +69,7 @@ func (d *alletra) load() error {
 // storage driver mode (iSCSI, NVMe/TCP). The connector is cached in the driver struct.
 func (d *alletra) connector() (connectors.Connector, error) {
 	if d.storageConnector == nil {
-		connector, err := connectors.NewConnector(d.config["alletra.mode"], d.state.OS.ServerUUID)
+		connector, err := connectors.NewConnector(d.config["alletra.mode"], connectors.TransportTCP, d.state.OS.ServerUUID)
 		if err != nil {
 			return nil, err
 		}
@@ -174,7 +177,7 @@ func (d *alletra) Validate(config map[string]string) error {
 		//  type: string
 		//  defaultdesc: the discovered mode
 		//  shortdesc: How volumes are mapped to the local server
-		"alletra.mode": validate.Optional(validate.IsOneOf(alletraSupportedConnectors...)),
+		"alletra.mode": validate.Optional(validate.IsOneOf(alletraSupportedModes...)),
 		// lxdmeta:generate(entities=storage-alletra; group=pool-conf; key=volume.size)
 		// Default storage volume size rounded to 256MiB. The minimum size is 256MiB.
 		// ---
@@ -205,7 +208,7 @@ func (d *alletra) Validate(config map[string]string) error {
 	// gets executed on every cluster member when receiving the cluster
 	// notification to finally create the pool.
 	if newMode != "" {
-		connector, err := connectors.NewConnector(newMode, "")
+		connector, err := connectors.NewConnector(newMode, connectors.TransportTCP, "")
 		if err != nil {
 			return fmt.Errorf("Alletra Storage mode %q is not supported: %w", newMode, err)
 		}

@@ -34,7 +34,7 @@ type connectorNVMeFC struct {
 
 // Type returns the type of the connector.
 func (c *connectorNVMeFC) Type() string {
-	return TypeNVMEFC
+	return TypeNVME
 }
 
 // Version returns the version of the NVMe CLI.

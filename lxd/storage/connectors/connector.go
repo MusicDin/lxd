@@ -12,21 +12,29 @@ const (
 	// TypeUnknown represents an unknown storage connector.
 	TypeUnknown string = "unknown"
 
-	// TypeNVME represents an NVMe/TCP storage connector.
+	// TypeNVME represents an NVMe storage connector.
 	TypeNVME string = "nvme"
-
-	// TypeNVMEFC represents an NVMe/FC storage connector.
-	TypeNVMEFC string = "nvme-fc"
 
 	// TypeSDC represents Dell SDC storage connector.
 	TypeSDC string = "sdc"
 
 	// TypeISCSI represents an iSCSI storage connector.
 	TypeISCSI string = "iscsi"
-
-	// TypeISCSIFC represents an iSCSI/FC (SCSI over Fibre Channel) storage connector.
-	TypeISCSIFC string = "iscsi-fc"
 )
+
+const (
+	// TransportTCP represents the TCP/IP transport layer.
+	TransportTCP string = "tcp"
+
+	// TransportFC represents the Fibre Channel transport layer.
+	TransportFC string = "fc"
+)
+
+// Spec identifies a connector by its protocol type and transport layer.
+type Spec struct {
+	Type      string
+	Transport string
+}
 
 // session represents a connector session that is established with a target.
 type session struct {
@@ -44,6 +52,7 @@ type session struct {
 // appropriate storage subsystem.
 type Connector interface {
 	Type() string
+	Transport() string
 	Version() (string, error)
 	QualifiedName() (string, error)
 	LoadModules() error
@@ -57,57 +66,47 @@ type Connector interface {
 	findSession(targetQN string) (*session, error)
 }
 
-// NewConnector instantiates a new connector of the given type.
-// The caller needs to ensure connector type is validated before calling this
-// function, as common (empty) connector is returned for unknown type.
-func NewConnector(connectorType string, serverUUID string) (Connector, error) {
-	common := common{
-		serverUUID: serverUUID,
+// NewConnector instantiates a new connector for the given protocol type and transport.
+// For TypeISCSI and TypeNVME an empty transport defaults to TransportTCP.
+// Transport is not applicable for TypeSDC.
+func NewConnector(connectorType string, transport string, serverUUID string) (Connector, error) {
+	if transport == "" {
+		transport = TransportTCP
 	}
 
 	switch connectorType {
 	case TypeNVME:
-		return &connectorNVMe{
-			common: common,
-		}, nil
+		c := common{serverUUID: serverUUID, transport: transport}
+		if transport == TransportFC {
+			return &connectorNVMeFC{common: c}, nil
+		}
 
-	case TypeNVMEFC:
-		return &connectorNVMeFC{
-			common: common,
-		}, nil
-
-	case TypeSDC:
-		return &connectorSDC{
-			common: common,
-		}, nil
+		return &connectorNVMe{common: c}, nil
 
 	case TypeISCSI:
-		return &connectorISCSI{
-			common: common,
-		}, nil
+		c := common{serverUUID: serverUUID, transport: transport}
+		if transport == TransportFC {
+			return &connectorISCSIFC{common: c}, nil
+		}
 
-	case TypeISCSIFC:
-		return &connectorISCSIFC{
-			common: common,
-		}, nil
+		return &connectorISCSI{common: c}, nil
+
+	case TypeSDC:
+		return &connectorSDC{common: common{serverUUID: serverUUID}}, nil
 
 	default:
-		// Return common connector if the type is unknown. This removes
-		// the need to check for nil or handle the error in the caller.
 		return nil, fmt.Errorf("Unknown storage connector type %q", connectorType)
 	}
 }
 
-// GetSupportedVersions returns the versions for the given connector types
+// GetSupportedVersions returns the versions for the given connector specs,
 // ignoring those that produce an error when version is being retrieved
-// (e.g. due to a missing required tools).
-func GetSupportedVersions(connectorTypes []string) []string {
-	versions := make([]string, 0, len(connectorTypes))
+// (e.g. due to missing required tools).
+func GetSupportedVersions(specs []Spec) []string {
+	versions := make([]string, 0, len(specs))
 
-	// Iterate over the provided connector types, and extract
-	// their versions.
-	for _, connectorType := range connectorTypes {
-		connector, err := NewConnector(connectorType, "")
+	for _, spec := range specs {
+		connector, err := NewConnector(spec.Type, spec.Transport, "")
 		if err != nil {
 			continue
 		}

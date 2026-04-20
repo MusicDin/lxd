@@ -37,7 +37,7 @@ type FCDiscoveryRecord struct {
 
 // Type returns the type of the connector.
 func (c *connectorISCSIFC) Type() string {
-	return TypeISCSIFC
+	return TypeISCSI
 }
 
 // Version returns "fc" if FC host adapters are present on the system, error otherwise.
