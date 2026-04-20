@@ -1869,7 +1869,6 @@ func (d *powerstore) getTargets() ([]powerStoreTarget, error) {
 			address = net.JoinHostPort(r.TransportAddress, r.TransportServiceIdentifier)
 			qn = r.SubNQN
 		case connectors.FCDiscoveryRecord:
-			// For FC, the WWPN serves as both the address and the qualified name.
 			address = r.PortName
 			qn = r.PortName
 		default:

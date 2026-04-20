@@ -17,7 +17,6 @@ import (
 	"github.com/canonical/lxd/shared/revert"
 )
 
-
 var _ Connector = &connectorISCSIFC{}
 
 type connectorISCSIFC struct {
@@ -87,35 +86,29 @@ func (c *connectorISCSIFC) Connect(ctx context.Context, targetQN string, targetA
 	defer logger.Warn("iSCSI/FC target connected", logger.Ctx{"target_qn": targetQN})
 
 	connectFunc := func(ctx context.Context, s *session, targetAddr string) error {
-		return c.scanFCHosts(ctx)
+		fcHostPath := "/sys/class/fc_host"
+
+		hosts, err := os.ReadDir(fcHostPath)
+		if err != nil {
+			return fmt.Errorf("Failed reading FC hosts: %w", err)
+		}
+
+		for _, host := range hosts {
+			// FC host names correspond 1:1 with SCSI host names (host0, host1, …).
+			hostNum := strings.TrimPrefix(host.Name(), "host")
+			scanPath := filepath.Join("/sys/class/scsi_host", "host"+hostNum, "scan")
+
+			// "- - -" means scan all channels, targets, and LUNs.
+			err := os.WriteFile(scanPath, []byte("- - -"), 0200)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				logger.Warn("Failed scanning FC host", logger.Ctx{"host": host.Name(), "err": err})
+			}
+		}
+
+		return nil
 	}
 
 	return connect(ctx, c, targetQN, targetAddresses, connectFunc)
-}
-
-// scanFCHosts triggers a rescan on all SCSI hosts backed by FC adapters so that
-// newly mapped LUNs are discovered by the OS.
-func (c *connectorISCSIFC) scanFCHosts(ctx context.Context) error {
-	fcHostPath := "/sys/class/fc_host"
-
-	hosts, err := os.ReadDir(fcHostPath)
-	if err != nil {
-		return fmt.Errorf("Failed reading FC hosts: %w", err)
-	}
-
-	for _, host := range hosts {
-		// FC host names correspond 1:1 with SCSI host names (host0, host1, …).
-		hostNum := strings.TrimPrefix(host.Name(), "host")
-		scanPath := filepath.Join("/sys/class/scsi_host", "host"+hostNum, "scan")
-
-		// "- - -" means scan all channels, targets, and LUNs.
-		err := os.WriteFile(scanPath, []byte("- - -"), 0200)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			logger.Warn("Failed scanning FC host", logger.Ctx{"host": host.Name(), "err": err})
-		}
-	}
-
-	return nil
 }
 
 // Disconnect is a no-op for iSCSI/FC; the HBA driver manages fabric connectivity automatically.
