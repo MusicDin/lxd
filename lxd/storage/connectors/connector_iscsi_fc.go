@@ -81,7 +81,7 @@ func (c *connectorISCSIFC) QualifiedName() (string, error) {
 // The SCSI bus rescans are triggered when waiting for disk device path, which is everything
 // that has to be done to make the device visible.
 func (c *connectorISCSIFC) Connect(ctx context.Context, targetQN string, targetAddresses ...string) (revert.Hook, error) {
-	return nil, nil
+	return revert.New().Fail, nil
 }
 
 // Disconnect is a no-op for FC. The HBA driver manages fabric connectivity automatically.
