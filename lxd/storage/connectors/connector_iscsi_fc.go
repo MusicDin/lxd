@@ -224,6 +224,7 @@ func (c *connectorISCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilte
 
 		hosts, err := os.ReadDir(fcHostPath)
 		if err != nil {
+			logger.Warn("DEBUG: FC rescan failed reading fc_host", logger.Ctx{"err": err})
 			return
 		}
 
@@ -231,17 +232,34 @@ func (c *connectorISCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilte
 			hostNum := strings.TrimPrefix(host.Name(), "host")
 			scanPath := filepath.Join("/sys/class/scsi_host", "host"+hostNum, "scan")
 
+			logger.Warn("DEBUG: FC rescan writing", logger.Ctx{"scan_path": scanPath})
+
 			// Writing "- - -" to the scan file triggers a rescan of the SCSI bus
 			// for that host, which is necessary for discovering new FC LUNs.
 			err := os.WriteFile(scanPath, []byte("- - -"), 0200)
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				logger.Warn("Failed scanning FC host", logger.Ctx{"host": host.Name(), "err": err})
+			if err != nil {
+				logger.Warn("DEBUG: FC rescan write failed", logger.Ctx{"scan_path": scanPath, "err": err})
+			} else {
+				logger.Warn("DEBUG: FC rescan write OK", logger.Ctx{"scan_path": scanPath})
 			}
 		}
 	}
 
 	// Trigger an immediate rescan before polling begins.
+	logger.Warn("DEBUG: triggering initial FC rescan")
 	rescanDevice()
+
+	// Log /dev/disk/by-id scsi devices.
+	if disks, err := os.ReadDir(block.DevDiskByID); err == nil {
+		var scsiDevs []string
+		for _, d := range disks {
+			if strings.HasPrefix(d.Name(), iscsiDiskDevicePrefix) {
+				scsiDevs = append(scsiDevs, d.Name())
+			}
+		}
+
+		logger.Warn("DEBUG: /dev/disk/by-id scsi devices", logger.Ctx{"count": len(scsiDevs), "devices": scsiDevs})
+	}
 
 	// Periodically re-trigger SCSI bus rescans while waiting for the device.
 	go func() {

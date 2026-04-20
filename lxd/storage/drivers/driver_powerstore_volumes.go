@@ -1594,6 +1594,8 @@ func (d *powerstore) getMappedDevicePath(vol Volume, mapVolume bool) (string, re
 
 	wwnLower := strings.ToLower(wwn)
 
+	d.logger.Warn("DEBUG: WWN lookup", logger.Ctx{"vol": vol.name, "raw_wwn": psVol.WWN, "wwn_filter": wwnLower})
+
 	// Filters devices by matching the device path with the WWN (case-insensitive: PowerStore
 	// returns uppercase WWNs but kernel device names are lowercase).
 	devicePathFilter := func(path string) bool {
