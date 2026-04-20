@@ -617,7 +617,7 @@ func (d *powerstore) DeleteVolume(vol Volume, op *operations.Operation) error {
 		return err
 	}
 
-	host, err := client.GetCurrentHost(connector.Type(), qn)
+	host, err := client.GetCurrentHost(connector.Type(), connector.Transport(), qn)
 	if err != nil {
 		// If the host doesn't exist, continue with the deletion of
 		// the volume and do not try to delete the volume mapping as
@@ -1516,7 +1516,7 @@ func (d *powerstore) ensureHost() (hostID string, cleanup revert.Hook, err error
 	}
 
 	// Fetch an existing host entry on a storage array.
-	host, err := client.GetCurrentHost(connector.Type(), qn)
+	host, err := client.GetCurrentHost(connector.Type(), connector.Transport(), qn)
 	if err != nil {
 		if !api.StatusErrorCheck(err, http.StatusNotFound) {
 			return "", nil, err
@@ -1529,11 +1529,17 @@ func (d *powerstore) ensureHost() (hostID string, cleanup revert.Hook, err error
 			return "", nil, err
 		}
 
-		// Append the mode to the server name because storage array does not allow mixing
-		// NQNs, IQNs, and WWNs for a single host.
-		hostname := serverName + "-" + connector.Type()
+		// Append the mode/transport to the server name because the storage array does not
+		// allow mixing NQNs, IQNs, and WWNs for a single host. FC gets its own suffix since
+		// its initiator port type differs from iSCSI/TCP.
+		hostnameSuffix := connector.Type()
+		if connector.Transport() == connectors.TransportFC {
+			hostnameSuffix = "fc"
+		}
 
-		hostID, err = client.CreateHost(hostname, connector.Type(), qn)
+		hostname := serverName + "-" + hostnameSuffix
+
+		hostID, err = client.CreateHost(hostname, connector.Type(), connector.Transport(), qn)
 		if err != nil {
 			return "", nil, fmt.Errorf("Failed creating host %q: %w", hostname, err)
 		}
@@ -1721,7 +1727,7 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 
 	defer unlock()
 
-	host, err := client.GetCurrentHost(connector.Type(), qn)
+	host, err := client.GetCurrentHost(connector.Type(), connector.Transport(), qn)
 	if err != nil {
 		return err
 	}
@@ -1801,40 +1807,50 @@ func (d *powerstore) getTargets() ([]powerStoreTarget, error) {
 		return nil, err
 	}
 
-	targetAddresses, err := d.client().GetTargetAddresses(connector.Type())
-	if err != nil {
-		return nil, err
-	}
-
 	var discoveryLogRecords []any
-	for _, addr := range targetAddresses {
-		discovered, err := connector.Discover(d.state.ShutdownCtx, addr)
+
+	if connector.Transport() == connectors.TransportFC {
+		// FC targets are visible through the HBA/fabric — query the kernel directly.
+		discovered, err := connector.Discover(d.state.ShutdownCtx)
 		if err != nil {
-			// Underlying connector already logs a warning.
-			continue
+			return nil, fmt.Errorf("Failed discovering FC targets on fabric: %w", err)
 		}
 
 		discoveryLogRecords = append(discoveryLogRecords, discovered...)
-	}
+	} else {
+		targetAddresses, err := d.client().GetTargetAddresses(connector.Type())
+		if err != nil {
+			return nil, err
+		}
 
-	if len(discoveryLogRecords) == 0 {
-		return nil, errors.New("Failed fetching discovery log records for all PowerStore target addresses")
+		for _, addr := range targetAddresses {
+			discovered, err := connector.Discover(d.state.ShutdownCtx, addr)
+			if err != nil {
+				// Underlying connector already logs a warning.
+				continue
+			}
+
+			discoveryLogRecords = append(discoveryLogRecords, discovered...)
+		}
+
+		if len(discoveryLogRecords) == 0 {
+			return nil, errors.New("Failed fetching discovery log records for all PowerStore target addresses")
+		}
 	}
 
 	// Parse user-specified list of addresses to connect to.
 	// If not specified, all discovered addresses will be used.
 	filterAddresses := shared.SplitNTrimSpace(d.config["powerstore.target"], ",", -1, true)
-	if len(filterAddresses) > 0 {
-		// Make sure target addresses have port configured.
+	if len(filterAddresses) > 0 && connector.Transport() != connectors.TransportFC {
+		// Make sure target addresses have port configured (not applicable for FC).
 		var defaultPort string
-		mode := connector.Type()
-		switch mode {
+		switch connector.Type() {
 		case connectors.TypeISCSI:
 			defaultPort = connectors.ISCSIDefaultPort
 		case connectors.TypeNVME:
 			defaultPort = connectors.NVMeDefaultDiscoveryPort
 		default:
-			return nil, fmt.Errorf("Unsupported PowerStore mode %q", mode)
+			return nil, fmt.Errorf("Unsupported PowerStore mode %q", connector.Type())
 		}
 
 		for i := range filterAddresses {
@@ -1852,6 +1868,10 @@ func (d *powerstore) getTargets() ([]powerStoreTarget, error) {
 		case connectors.NVMeDiscoveryLogRecord:
 			address = net.JoinHostPort(r.TransportAddress, r.TransportServiceIdentifier)
 			qn = r.SubNQN
+		case connectors.FCDiscoveryRecord:
+			// For FC, the WWPN serves as both the address and the qualified name.
+			address = r.PortName
+			qn = r.PortName
 		default:
 			return "", "", fmt.Errorf("Unknown discovery log record entry type %T", record)
 		}

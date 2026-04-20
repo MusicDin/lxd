@@ -40,6 +40,7 @@ const powerStoreMinVolumeSizeAlignmentUnit = "1MiB"
 var powerStoreSupportedModesAndTransports = driverModesAndTransports{
 	{Mode: connectors.TypeNVME, Transport: connectors.TransportTCP},
 	{Mode: connectors.TypeISCSI, Transport: connectors.TransportTCP},
+	{Mode: connectors.TypeISCSI, Transport: connectors.TransportFC},
 }
 
 var powerStoreLoaded bool

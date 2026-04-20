@@ -616,20 +616,32 @@ func (c *PowerStoreClient) GetTargetAddresses(connectorType string) ([]string, e
 	return addresses, nil
 }
 
+// initiatorPortType maps a connector type and transport to the corresponding
+// PowerStore initiator port type. iSCSI over FC fabric uses the FC port type.
+func initiatorPortType(connectorType string, transport string) (PowerStoreInitiatorType, error) {
+	switch connectorType {
+	case connectors.TypeISCSI:
+		if transport == connectors.TransportFC {
+			return InitiatorPortTypeEnumFC, nil
+		}
+
+		return InitiatorPortTypeEnumISCSI, nil
+	case connectors.TypeNVME:
+		return InitiatorPortTypeEnumNVMe, nil
+	default:
+		return "", fmt.Errorf("Unsupported connector type: %q", connectorType)
+	}
+}
+
 // GetCurrentHost retrieves the PowerStore host linked to the current LXD host.
 // The PowerStore host is considered a match if it includes the fully qualified
 // name of the LXD host that is determined by the configured mode.
-func (c *PowerStoreClient) GetCurrentHost(connectorType string, qn string) (*PowerStoreHost, error) {
-	c.logger.Warn("Getting current host", logger.Ctx{"connector_type": connectorType, "qn": qn})
+func (c *PowerStoreClient) GetCurrentHost(connectorType string, transport string, qn string) (*PowerStoreHost, error) {
+	c.logger.Warn("Getting current host", logger.Ctx{"connector_type": connectorType, "transport": transport, "qn": qn})
 
-	var portType PowerStoreInitiatorType
-	switch connectorType {
-	case connectors.TypeISCSI:
-		portType = InitiatorPortTypeEnumISCSI
-	case connectors.TypeNVME:
-		portType = InitiatorPortTypeEnumNVMe
-	default:
-		return nil, fmt.Errorf("Unsupported connector type: %q", connectorType)
+	portType, err := initiatorPortType(connectorType, transport)
+	if err != nil {
+		return nil, err
 	}
 
 	// Find initiator with the provided port type (connector type) and name (qualified name),
@@ -642,7 +654,7 @@ func (c *PowerStoreClient) GetCurrentHost(connectorType string, qn string) (*Pow
 	url = url.WithQuery("port_name", "eq."+qn)
 
 	var initiators []PowerStoreInitiator
-	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &initiators, nil)
+	err = c.requestAuthenticated(http.MethodGet, url.URL, nil, &initiators, nil)
 	if err != nil {
 		return nil, fmt.Errorf("Failed retrieving PowerStore host initiator: %w", err)
 	}
@@ -694,18 +706,13 @@ func (c *PowerStoreClient) GetHost(hostID string) (*PowerStoreHost, error) {
 }
 
 // CreateHost creates new host and returns its ID.
-func (c *PowerStoreClient) CreateHost(hostName string, connectorType string, qn string) (string, error) {
-	c.logger.Warn("Creating host", logger.Ctx{"hostname": hostName, "connector_type": connectorType, "qn": qn})
+func (c *PowerStoreClient) CreateHost(hostName string, connectorType, transport string, qn string) (string, error) {
+	c.logger.Warn("Creating host", logger.Ctx{"hostname": hostName, "connector_type": connectorType, "transport": transport, "qn": qn})
 	url := api.NewURL().Path("api", "rest", "host")
 
-	var portType PowerStoreInitiatorType
-	switch connectorType {
-	case connectors.TypeISCSI:
-		portType = InitiatorPortTypeEnumISCSI
-	case connectors.TypeNVME:
-		portType = InitiatorPortTypeEnumNVMe
-	default:
-		return "", fmt.Errorf("Unsupported connector type: %q", connectorType)
+	portType, err := initiatorPortType(connectorType, transport)
+	if err != nil {
+		return "", err
 	}
 
 	req := map[string]any{
@@ -720,7 +727,7 @@ func (c *PowerStoreClient) CreateHost(hostName string, connectorType string, qn 
 	}
 
 	var resp PowerStoreResourceID
-	err := c.requestAuthenticated(http.MethodPost, url.URL, req, &resp, nil)
+	err = c.requestAuthenticated(http.MethodPost, url.URL, req, &resp, nil)
 	if err != nil {
 		return "", fmt.Errorf("Failed creating PowerStore host: %w", err)
 	}
