@@ -240,10 +240,10 @@ func (c *connectorISCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilte
 		}
 	}
 
-	// Periodically re-trigger SCSI bus rescans while waiting for the device.
-	rescanCtx, rescanCancel := context.WithCancel(ctx)
-	defer rescanCancel()
+	// Trigger an immediate rescan before polling begins.
+	rescanDevice()
 
+	// Periodically re-trigger SCSI bus rescans while waiting for the device.
 	go func() {
 		rescanInterval := 5 * time.Second
 		timer := time.NewTimer(rescanInterval)
@@ -251,7 +251,7 @@ func (c *connectorISCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilte
 
 		for {
 			select {
-			case <-rescanCtx.Done():
+			case <-ctx.Done():
 				return
 			case <-timer.C:
 				rescanDevice()
