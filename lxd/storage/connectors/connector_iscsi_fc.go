@@ -17,8 +17,6 @@ import (
 	"github.com/canonical/lxd/shared/revert"
 )
 
-// fcDiskDevicePrefix is the prefix of the FC disk device name in /dev/disk/by-id/.
-const fcDiskDevicePrefix = "wwn-"
 
 var _ Connector = &connectorISCSIFC{}
 
@@ -238,8 +236,9 @@ func (c *connectorISCSIFC) Discover(ctx context.Context, targetAddresses ...stri
 	return result, nil
 }
 
-// WaitDiskDevicePath waits for the mapped iSCSI/FC device to appear.
-// If the device is not a multipath device, multipath is forced and the device is waited for again.
+// WaitDiskDevicePath waits for the mapped FC device to appear.
+// If the device is not a multipath device, multipath is forced and the device path is looked up again.
+// An error is returned if no multipath device is found after that.
 func (c *connectorISCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc) (string, error) {
 	logger.Warn("Waiting for iSCSI/FC disk device path")
 	_, ok := ctx.Deadline()
@@ -249,7 +248,7 @@ func (c *connectorISCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilte
 		defer cancel()
 	}
 
-	devicePath, err := block.WaitDiskDevicePath(ctx, fcDiskDevicePrefix, diskPathFilter)
+	devicePath, err := block.WaitDiskDevicePath(ctx, iscsiDiskDevicePrefix, diskPathFilter)
 	if err != nil {
 		return "", err
 	}
@@ -258,14 +257,14 @@ func (c *connectorISCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilte
 		return devicePath, nil
 	}
 
-	// Device is not yet a multipath device — create one explicitly.
+	// Device is not a multipath device.
+	// Create multipath device from a found device path.
 	_, err = shared.RunCommand(ctx, "multipath", devicePath)
 	if err != nil {
 		return "", fmt.Errorf("Failed configuring multipath for iSCSI/FC device %q: %w", devicePath, err)
 	}
 
-	// udev updates /dev/disk/by-id symlinks asynchronously after multipath creates
-	// the device-mapper node, so wait for the multipath-backed symlink to appear.
+	// Filter that makes sure the found device resolves to a multipath device.
 	multipathDeviceFilter := func(devicePath string) bool {
 		if !diskPathFilter(devicePath) {
 			return false
@@ -279,12 +278,14 @@ func (c *connectorISCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilte
 		return isMultipathDevice(path)
 	}
 
-	return block.WaitDiskDevicePath(ctx, fcDiskDevicePrefix, multipathDeviceFilter)
+	// The multipath command is synchronous, but udev updates the /dev/disk/by-id
+	// symlinks asynchronously. Wait for the multipath-backed device path to appear.
+	return block.WaitDiskDevicePath(ctx, iscsiDiskDevicePrefix, multipathDeviceFilter)
 }
 
 // GetDiskDevicePath returns the path of the mapped iSCSI/FC device if it already exists.
 func (c *connectorISCSIFC) GetDiskDevicePath(diskPathFilter block.DevicePathFilterFunc) (string, error) {
-	return block.GetDiskDevicePath(fcDiskDevicePrefix, diskPathFilter)
+	return block.GetDiskDevicePath(iscsiDiskDevicePrefix, diskPathFilter)
 }
 
 // RemoveDiskDevice removes the iSCSI/FC disk device from the system.
