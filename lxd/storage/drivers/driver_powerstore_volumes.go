@@ -1619,6 +1619,7 @@ func (d *powerstore) getMappedDevicePath(vol Volume, mapVolume bool) (string, re
 	}
 
 	if err != nil {
+		d.logger.Warn("DEBUG: device lookup failed", logger.Ctx{"vol": vol.name, "wwn": wwnLower, "filter_calls": filterCallCount, "err": err})
 		return "", nil, fmt.Errorf("Failed locating device for volume %q: %w", vol.name, err)
 	}
 

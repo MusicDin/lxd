@@ -274,16 +274,24 @@ func (c *connectorISCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilte
 			case <-timer.C:
 				rescanDevice()
 
-				// Log devices after rescan to see if new ones appear.
+				// Log ALL /dev/disk/by-id entries (not just scsi-) to catch any device name format.
 				if disks, err := os.ReadDir(block.DevDiskByID); err == nil {
-					var scsiDevs []string
+					var allDevs []string
 					for _, d := range disks {
-						if strings.HasPrefix(d.Name(), iscsiDiskDevicePrefix) {
-							scsiDevs = append(scsiDevs, d.Name())
-						}
+						allDevs = append(allDevs, d.Name())
 					}
 
-					logger.Warn("DEBUG: post-rescan /dev/disk/by-id scsi devices", logger.Ctx{"count": len(scsiDevs), "devices": scsiDevs})
+					logger.Warn("DEBUG: post-rescan ALL /dev/disk/by-id", logger.Ctx{"count": len(allDevs), "devices": allDevs})
+				}
+
+				// Log /dev/mapper contents to catch multipath devices.
+				if mapperEntries, err := os.ReadDir("/dev/mapper"); err == nil {
+					var mapperNames []string
+					for _, e := range mapperEntries {
+						mapperNames = append(mapperNames, e.Name())
+					}
+
+					logger.Warn("DEBUG: post-rescan /dev/mapper", logger.Ctx{"devices": mapperNames})
 				}
 
 				// Log SCSI devices from sysfs to see if kernel discovered the LUN.
@@ -291,16 +299,30 @@ func (c *connectorISCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilte
 					var devInfos []string
 					for _, dev := range sysDevs {
 						vendorBytes, _ := os.ReadFile(filepath.Join("/sys/class/scsi_device", dev.Name(), "device", "vendor"))
-						modelBytes, _ := os.ReadFile(filepath.Join("/sys/class/scsi_device", dev.Name(), "device", "model"))
 						vendor := strings.TrimSpace(string(vendorBytes))
-						model := strings.TrimSpace(string(modelBytes))
 						if vendor == "DellEMC" {
 							devInfos = append(devInfos, dev.Name())
-							_ = model
 						}
 					}
 
-					logger.Warn("DEBUG: post-rescan PowerStore SCSI LUNs", logger.Ctx{"count": len(devInfos), "devices": devInfos})
+					logger.Warn("DEBUG: post-rescan PowerStore SCSI LUNs in sysfs", logger.Ctx{"count": len(devInfos), "devices": devInfos})
+				}
+
+				// Log recent dmesg SCSI lines.
+				if out, err := shared.RunCommand(context.TODO(), "dmesg", "-T"); err == nil {
+					var scsiLines []string
+					for line := range strings.SplitSeq(out, "\n") {
+						lower := strings.ToLower(line)
+						if strings.Contains(lower, "scsi") || strings.Contains(lower, "sd ") || strings.Contains(lower, "multipath") || strings.Contains(lower, "mpath") {
+							scsiLines = append(scsiLines, line)
+						}
+					}
+
+					if len(scsiLines) > 20 {
+						scsiLines = scsiLines[len(scsiLines)-20:]
+					}
+
+					logger.Warn("DEBUG: recent dmesg SCSI/mpath lines", logger.Ctx{"count": len(scsiLines), "lines": scsiLines})
 				}
 
 				timer.Reset(rescanInterval)
