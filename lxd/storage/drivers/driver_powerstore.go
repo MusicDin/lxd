@@ -216,6 +216,7 @@ func (d *powerstore) Validate(config map[string]string) error {
 		"powerstore.gateway.verify": validate.Optional(validate.IsBool),
 		// lxdmeta:generate(entities=storage-powerstore; group=pool-conf; key=powerstore.target)
 		// A comma-separated list of NVMe or iSCSI target addresses. When empty, targets are discovered via discovery endpoints.
+		// For FC transport, this key is not used; targets are discovered automatically from the SAN fabric.
 		// ---
 		//  type: string
 		//  defaultdesc: the list of target addresses
@@ -232,7 +233,7 @@ func (d *powerstore) Validate(config map[string]string) error {
 		"powerstore.mode": validate.Optional(validate.IsOneOf(powerStoreSupportedModesAndTransports.Modes()...)),
 		// lxdmeta:generate(entities=storage-powerstore; group=pool-conf; key=powerstore.transport)
 		// The transport gets discovered automatically if the system provides the necessary kernel modules.
-		// Supported values are `tcp`.
+		// Supported values are `tcp` and `fc`.
 		// ---
 		//  type: string
 		//  defaultdesc: the discovered transport
