@@ -71,10 +71,21 @@ func (c *connectorISCSIFC) QualifiedName() (string, error) {
 			continue
 		}
 
-		// Linux sysfs reports WWPNs with "0x" prefix (e.g., "0x210034800d7035b3"),
-		// but storage arrays expect raw hex format without the prefix.
-		wwpn := strings.TrimSpace(string(portNameBytes))
-		wwpn = strings.TrimPrefix(wwpn, "0x")
+		// Linux sysfs reports WWPNs as "0x" + 16 hex chars (e.g., "0x210034800d7035b3").
+		// PowerStore identifies initiators on the FC fabric using the colon-separated
+		// byte format (e.g., "21:00:34:80:0d:70:35:b3"). Registering with the raw
+		// sysfs string causes a format mismatch and the array never presents data LUNs
+		// to the host. Convert to colon-separated for PowerStore API compatibility.
+		wwpn := strings.TrimPrefix(strings.TrimSpace(string(portNameBytes)), "0x")
+		if len(wwpn) == 16 {
+			parts := make([]string, 8)
+			for i := range 8 {
+				parts[i] = wwpn[i*2 : i*2+2]
+			}
+
+			return strings.Join(parts, ":"), nil
+		}
+
 		return wwpn, nil
 	}
 
@@ -116,10 +127,7 @@ func (c *connectorISCSIFC) findSession(targetQN string) (*session, error) {
 			continue
 		}
 
-		// Linux sysfs reports WWPNs with "0x" prefix; strip it for comparison.
-		portName := strings.TrimPrefix(strings.TrimSpace(string(portNameBytes)), "0x")
-		targetQNNormalized := strings.TrimPrefix(targetQN, "0x")
-		if !strings.EqualFold(portName, targetQNNormalized) {
+		if strings.TrimSpace(string(portNameBytes)) != targetQN {
 			continue
 		}
 
@@ -163,15 +171,12 @@ func (c *connectorISCSIFC) Discover(ctx context.Context, targetAddresses ...stri
 			continue
 		}
 
-		// Linux sysfs reports WWPNs with "0x" prefix; strip it for consistency.
-		portName := strings.TrimPrefix(strings.TrimSpace(string(portNameBytes)), "0x")
+		portName := strings.TrimSpace(string(portNameBytes))
 
 		if len(targetAddresses) > 0 {
 			found := false
 			for _, addr := range targetAddresses {
-				// Compare without "0x" prefix for flexibility.
-				addrNormalized := strings.TrimPrefix(addr, "0x")
-				if strings.EqualFold(portName, addrNormalized) {
+				if strings.EqualFold(portName, addr) {
 					found = true
 					break
 				}
@@ -189,7 +194,7 @@ func (c *connectorISCSIFC) Discover(ctx context.Context, targetAddresses ...stri
 
 		nodeNameBytes, err := os.ReadFile(filepath.Join(rportBasePath, rport.Name(), "node_name"))
 		if err == nil {
-			record.NodeName = strings.TrimPrefix(strings.TrimSpace(string(nodeNameBytes)), "0x")
+			record.NodeName = strings.TrimSpace(string(nodeNameBytes))
 		}
 
 		stateBytes, err := os.ReadFile(filepath.Join(rportBasePath, rport.Name(), "port_state"))
