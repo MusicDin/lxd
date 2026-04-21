@@ -71,7 +71,11 @@ func (c *connectorISCSIFC) QualifiedName() (string, error) {
 			continue
 		}
 
-		return strings.TrimSpace(string(portNameBytes)), nil
+		// Linux sysfs reports WWPNs with "0x" prefix (e.g., "0x210034800d7035b3"),
+		// but storage arrays expect raw hex format without the prefix.
+		wwpn := strings.TrimSpace(string(portNameBytes))
+		wwpn = strings.TrimPrefix(wwpn, "0x")
+		return wwpn, nil
 	}
 
 	return "", errors.New("No FC host initiators found")
@@ -112,7 +116,10 @@ func (c *connectorISCSIFC) findSession(targetQN string) (*session, error) {
 			continue
 		}
 
-		if strings.TrimSpace(string(portNameBytes)) != targetQN {
+		// Linux sysfs reports WWPNs with "0x" prefix; strip it for comparison.
+		portName := strings.TrimPrefix(strings.TrimSpace(string(portNameBytes)), "0x")
+		targetQNNormalized := strings.TrimPrefix(targetQN, "0x")
+		if !strings.EqualFold(portName, targetQNNormalized) {
 			continue
 		}
 
@@ -156,12 +163,15 @@ func (c *connectorISCSIFC) Discover(ctx context.Context, targetAddresses ...stri
 			continue
 		}
 
-		portName := strings.TrimSpace(string(portNameBytes))
+		// Linux sysfs reports WWPNs with "0x" prefix; strip it for consistency.
+		portName := strings.TrimPrefix(strings.TrimSpace(string(portNameBytes)), "0x")
 
 		if len(targetAddresses) > 0 {
 			found := false
 			for _, addr := range targetAddresses {
-				if strings.EqualFold(portName, addr) {
+				// Compare without "0x" prefix for flexibility.
+				addrNormalized := strings.TrimPrefix(addr, "0x")
+				if strings.EqualFold(portName, addrNormalized) {
 					found = true
 					break
 				}
@@ -179,7 +189,7 @@ func (c *connectorISCSIFC) Discover(ctx context.Context, targetAddresses ...stri
 
 		nodeNameBytes, err := os.ReadFile(filepath.Join(rportBasePath, rport.Name(), "node_name"))
 		if err == nil {
-			record.NodeName = strings.TrimSpace(string(nodeNameBytes))
+			record.NodeName = strings.TrimPrefix(strings.TrimSpace(string(nodeNameBytes)), "0x")
 		}
 
 		stateBytes, err := os.ReadFile(filepath.Join(rportBasePath, rport.Name(), "port_state"))
