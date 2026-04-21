@@ -1262,9 +1262,10 @@ func mountVolume(d Driver, vol Volume, getDevicePath getVolumePathFunc, op *oper
 					if fsckErr != nil {
 						runErr, ok := fsckErr.(shared.RunError)
 						if ok {
+							// The e2fsck exit code 0 means "no errors" and 1 means "errors were corrected" (not a fatal error).
 							exitError, ok := runErr.Unwrap().(*exec.ExitError)
-							// e2fsck exit code 1 means "errors were corrected" — not a fatal error.
-							if !ok || exitError.ExitCode() != 1 {
+							exitCode := exitError.ExitCode()
+							if !ok || (exitCode != 0 && exitCode != 1) {
 								return fmt.Errorf("%s: %w", strings.TrimSpace(output), fsckErr)
 							}
 						}
