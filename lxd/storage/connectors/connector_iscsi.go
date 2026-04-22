@@ -181,12 +181,54 @@ func (c *connectorISCSI) Disconnect(targetQN string) error {
 			return fmt.Errorf("Failed disconnecting from iSCSI target %q: %w", targetQN, err)
 		}
 
-		// Remove target entries from local iSCSI database.
-		_, err = shared.RunCommand(context.Background(), "iscsiadm", "--mode", "node", "--targetname", targetQN, "--op", "delete")
+		// Remove target portal entries from the local iSCSI database.
+		err = c.deleteNodeEntries(targetQN)
 		if err != nil {
-			return fmt.Errorf("Failed removing local iSCSI entries for target %q: %w", targetQN, err)
+			return err
 		}
 	}
+
+	return nil
+}
+
+// deleteNodeEntries removes all portal entries for the given target from the local iSCSI node
+// database. Entries are deleted individually per portal to avoid failures caused by stale entries
+// from external discovery runs.
+func (c *connectorISCSI) deleteNodeEntries(targetQN string) error {
+	nodePath := shared.HostPath(filepath.Join("/etc/iscsi/nodes", targetQN))
+
+	entries, err := os.ReadDir(nodePath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// No entries found for the target.
+			return nil
+		}
+
+		return fmt.Errorf("Failed reading iSCSI node entries for target %q: %w", targetQN, err)
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		// Entry name is formatted as "address,port" (e.g., "192.168.5.221,3260").
+		// This format is accepted by iscsiadm for identifying the portal when deleting the entry.
+		portal := entry.Name()
+
+		_, err := shared.RunCommand(context.Background(), "iscsiadm", "--mode", "node", "--targetname", targetQN, "--portal", portal, "--op", "delete")
+		if err != nil {
+			exitCode, _ := shared.ExitStatus(err)
+			if exitCode == iscsiErrCodeNotFound {
+				continue
+			}
+
+			logger.Warn("Failed removing iSCSI node entry", logger.Ctx{"target": targetQN, "portal": portal, "err": err})
+		}
+	}
+
+	// Remove the target directory if empty.
+	_ = os.Remove(nodePath)
 
 	return nil
 }
