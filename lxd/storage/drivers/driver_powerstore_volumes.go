@@ -675,6 +675,16 @@ func (d *powerstore) MigrateVolume(vol VolumeCopy, conn io.ReadWriteCloser, volS
 	return genericVFSMigrateVolume(d, d.state, vol, conn, volSrcArgs, progressReporter)
 }
 
+// MigrateVolume sends a volume for migration.
+func (d *powerstore) MigrateVolume(vol VolumeCopy, conn io.ReadWriteCloser, volSrcArgs *migration.VolumeSourceArgs, op *operations.Operation) error {
+	// When performing a cluster member move don't do anything on the source member.
+	if volSrcArgs.ClusterMove {
+		return nil
+	}
+
+	return genericVFSMigrateVolume(d, d.state, vol, conn, volSrcArgs, op)
+}
+
 // RestoreVolume restores a volume from a snapshot.
 func (d *powerstore) RestoreVolume(vol Volume, snapVol Volume, progressReporter ioprogress.ProgressReporter) error {
 	client := d.client()
