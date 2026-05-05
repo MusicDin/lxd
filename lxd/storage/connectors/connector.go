@@ -20,6 +20,9 @@ const (
 
 	// TypeISCSI represents an iSCSI storage connector.
 	TypeISCSI string = "iscsi"
+
+	// TypeSCSIFC represents an SCSI over Fibre Channel storage connector.
+	TypeSCSIFC string = "scsi-fc"
 )
 
 // session represents a connector session that is established with a target.
@@ -72,6 +75,11 @@ func NewConnector(connectorType string, serverUUID string) (Connector, error) {
 
 	case TypeISCSI:
 		return &connectorISCSI{
+			common: common,
+		}, nil
+
+	case TypeSCSIFC:
+		return &connectorSCSIFC{
 			common: common,
 		}, nil
 
