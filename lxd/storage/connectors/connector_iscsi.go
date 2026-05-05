@@ -31,8 +31,8 @@ const (
 	iscsiErrCodeNotFound = 21
 )
 
-// iscsiDiskDevicePrefix is the prefix of the iSCSI disk device name in /dev/disk/by-id/.
-const iscsiDiskDevicePrefix = "scsi-"
+// scsiDiskDevicePrefix is the prefix of the SCSI disk device name in /dev/disk/by-id/.
+const scsiDiskDevicePrefix = "scsi-"
 
 const (
 	// ISCSIDefaultPort is the default port number for iSCSI targets.
@@ -362,7 +362,7 @@ func (c *connectorISCSI) WaitDiskDevicePath(ctx context.Context, diskPathFilter 
 		defer cancel()
 	}
 
-	devicePath, err := block.WaitDiskDevicePath(ctx, iscsiDiskDevicePrefix, diskPathFilter)
+	devicePath, err := block.WaitDiskDevicePath(ctx, scsiDiskDevicePrefix, diskPathFilter)
 	if err != nil {
 		return "", err
 	}
@@ -394,12 +394,12 @@ func (c *connectorISCSI) WaitDiskDevicePath(ctx context.Context, diskPathFilter 
 
 	// The multipath command is synchronous, but udev updates the /dev/disk/by-id
 	// symlinks asynchronously. Wait for the multipath-backed device path to appear.
-	return block.WaitDiskDevicePath(ctx, iscsiDiskDevicePrefix, multipathDeviceFilter)
+	return block.WaitDiskDevicePath(ctx, scsiDiskDevicePrefix, multipathDeviceFilter)
 }
 
 // GetDiskDevicePath returns the path of the mapped iSCSI device.
 func (c *connectorISCSI) GetDiskDevicePath(diskPathFilter block.DevicePathFilterFunc) (string, error) {
-	return block.GetDiskDevicePath(iscsiDiskDevicePrefix, diskPathFilter)
+	return block.GetDiskDevicePath(scsiDiskDevicePrefix, diskPathFilter)
 }
 
 // RemoveDiskDevice removes the disk device from the system.
