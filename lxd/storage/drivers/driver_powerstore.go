@@ -329,6 +329,8 @@ func (d *powerstore) targets() (map[string][]string, error) {
 			defaultPort = connectors.ISCSIDefaultPort
 		case connectors.TypeNVME:
 			defaultPort = connectors.NVMeDefaultDiscoveryPort
+		case connectors.TypeSCSIFC:
+			// No port.
 		default:
 			return nil, fmt.Errorf("Unsupported PowerStore mode %q", mode)
 		}
@@ -348,6 +350,11 @@ func (d *powerstore) targets() (map[string][]string, error) {
 		case connectors.NVMeDiscoveryLogRecord:
 			address = net.JoinHostPort(r.TransportAddress, r.TransportServiceIdentifier)
 			qn = r.SubNQN
+		case connectors.FCDiscoveryRecord:
+			// Fiber channel has no concept of qualified name, but since QN is used as
+			// a key in the map of targets, return WWPN both as the address and the QN.
+			address = r.PortName
+			qn = r.PortName
 		default:
 			return "", "", fmt.Errorf("Unknown discovery log record entry type %T", record)
 		}
