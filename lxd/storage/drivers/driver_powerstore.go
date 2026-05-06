@@ -329,6 +329,8 @@ func (d *powerstore) targets() (map[string][]string, error) {
 			defaultPort = connectors.ISCSIDefaultPort
 		case connectors.TypeNVME:
 			defaultPort = connectors.NVMeDefaultDiscoveryPort
+		case connectors.TypeSCSIFC:
+			// No port.
 		default:
 			return nil, fmt.Errorf("Unsupported PowerStore mode %q", mode)
 		}
@@ -348,6 +350,10 @@ func (d *powerstore) targets() (map[string][]string, error) {
 		case connectors.NVMeDiscoveryLogRecord:
 			address = net.JoinHostPort(r.TransportAddress, r.TransportServiceIdentifier)
 			qn = r.SubNQN
+		case connectors.FCDiscoveryRecord:
+			// Set only WWPN, which is required to discover SCSI host.
+			address = ""
+			qn = r.PortName
 		default:
 			return "", "", fmt.Errorf("Unknown discovery log record entry type %T", record)
 		}
