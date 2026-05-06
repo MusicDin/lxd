@@ -255,7 +255,7 @@ func (c *connectorSCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilter
 
 	// Periodically re-trigger SCSI bus rescans while waiting for the device.
 	go func() {
-		rescanInterval := 5 * time.Second
+		rescanInterval := time.Second
 		timer := time.NewTimer(rescanInterval)
 		defer timer.Stop()
 
@@ -276,6 +276,11 @@ func (c *connectorSCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilter
 	}
 
 	if isMultipathDevice(devicePath) {
+		err = waitMultipathReady(ctx, devicePath)
+		if err != nil {
+			return "", err
+		}
+
 		return devicePath, nil
 	}
 
@@ -302,7 +307,17 @@ func (c *connectorSCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilter
 
 	// The multipath command is synchronous, but udev updates the /dev/disk/by-id
 	// symlinks asynchronously. Wait for the multipath-backed device path to appear.
-	return block.WaitDiskDevicePath(ctx, scsiDiskDevicePrefix, multipathDeviceFilter)
+	mpDevicePath, err := block.WaitDiskDevicePath(ctx, scsiDiskDevicePrefix, multipathDeviceFilter)
+	if err != nil {
+		return "", err
+	}
+
+	err = waitMultipathReady(ctx, mpDevicePath)
+	if err != nil {
+		return "", err
+	}
+
+	return mpDevicePath, nil
 }
 
 // GetDiskDevicePath returns the path of the mapped SCSI/FC device if it already exists.
@@ -416,4 +431,37 @@ func (c *connectorSCSIFC) WaitDiskDeviceResize(ctx context.Context, diskPath str
 	}
 
 	return block.WaitDiskDeviceResize(ctx, diskPath, newSizeBytes)
+}
+
+// waitMultipathReady waits for the multipath device to have at least one active path.
+// A multipath device can exist (dm-X visible in sysfs) before multipathd has finished
+// verifying paths. If all paths are in "faulty" or "ghost" state and the multipath
+// configuration uses no_path_retry=queue, any I/O to the device is queued indefinitely.
+// This function polls sysfs until at least one underlying SCSI path reports "running".
+func waitMultipathReady(ctx context.Context, devicePath string) error {
+	deviceName := filepath.Base(devicePath)
+	slavesPath := filepath.Join("/sys/block", deviceName, "slaves")
+
+	for {
+		slaves, err := os.ReadDir(slavesPath)
+		if err == nil {
+			for _, slave := range slaves {
+				stateBytes, err := os.ReadFile(filepath.Join("/sys/block", slave.Name(), "device", "state"))
+				if err != nil {
+					continue
+				}
+
+				if strings.TrimSpace(string(stateBytes)) == "running" {
+					return nil
+				}
+			}
+		}
+
+		err = ctx.Err()
+		if err != nil {
+			return fmt.Errorf("Timeout waiting for multipath device %q to have an active path: %w", devicePath, err)
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
 }
