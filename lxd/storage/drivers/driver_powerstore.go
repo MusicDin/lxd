@@ -293,23 +293,32 @@ func (d *powerstore) targets() (map[string][]string, error) {
 		return nil, err
 	}
 
-	// Fetch discovery addresses from PowerStore for the selected connector type.
-	discoveryAddresses, err := d.client().DiscoveryAddresses(connector.Type())
-	if err != nil {
-		return nil, err
-	}
-
 	// Fetch discovery log records for each discovery address.
 	// The records contain the information about available targets.
 	var discoveryLogRecords []any
-	for _, addr := range discoveryAddresses {
-		discovered, err := connector.Discover(d.state.ShutdownCtx, addr)
+
+	if connector.Type() == connectors.TypeSCSIFC {
+		// Fiber channel targets are visible through the HBA.
+		discoveryLogRecords, err = connector.Discover(d.state.ShutdownCtx)
 		if err != nil {
-			// Underlying connector already logs a warning.
-			continue
+			return nil, err
+		}
+	} else {
+		// Fetch discovery addresses from PowerStore for the selected connector type.
+		discoveryAddresses, err := d.client().DiscoveryAddresses(connector.Type())
+		if err != nil {
+			return nil, err
 		}
 
-		discoveryLogRecords = append(discoveryLogRecords, discovered...)
+		for _, addr := range discoveryAddresses {
+			discovered, err := connector.Discover(d.state.ShutdownCtx, addr)
+			if err != nil {
+				// Underlying connector already logs a warning.
+				continue
+			}
+
+			discoveryLogRecords = append(discoveryLogRecords, discovered...)
+		}
 	}
 
 	if len(discoveryLogRecords) == 0 {
@@ -329,6 +338,8 @@ func (d *powerstore) targets() (map[string][]string, error) {
 			defaultPort = connectors.ISCSIDefaultPort
 		case connectors.TypeNVME:
 			defaultPort = connectors.NVMeDefaultDiscoveryPort
+		case connectors.TypeSCSIFC:
+			// No port.
 		default:
 			return nil, fmt.Errorf("Unsupported PowerStore mode %q", mode)
 		}
@@ -348,6 +359,9 @@ func (d *powerstore) targets() (map[string][]string, error) {
 		case connectors.NVMeDiscoveryLogRecord:
 			address = net.JoinHostPort(r.TransportAddress, r.TransportServiceIdentifier)
 			qn = r.SubNQN
+		case connectors.FCDiscoveryRecord:
+			// Set only WWPN, which is required to discover SCSI host.
+			qn = r.PortName
 		default:
 			return "", "", fmt.Errorf("Unknown discovery log record entry type %T", record)
 		}
