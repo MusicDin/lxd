@@ -26,6 +26,7 @@ var powerStoreVersion string
 // powerStoreSupportedConnectors represents a list of storage connectors that can be used with PowerStore.
 var powerStoreSupportedConnectors = []string{
 	connectors.TypeISCSI,
+	connectors.TypeSCSIFC,
 }
 
 // powerStoreDefaultUser represents the default PowerStore user name.
