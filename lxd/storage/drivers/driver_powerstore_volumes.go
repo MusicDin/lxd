@@ -522,13 +522,28 @@ func (d *powerstore) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, all
 		}
 	}
 
-	// Finally, copy the source volume (or snapshot) into destination volume snapshots.
+	// Freeze the source filesystem to ensure the ext4 journal is clean before
+	// the array-side copy. Without this, the destination inherits a dirty journal
+	// from a mounted source, causing EUCLEAN or EIO on mount.
+	var unfreezeFS func() error
+	if !srcVol.IsSnapshot() && vol.contentType == ContentTypeFS {
+		srcMountPath := srcVol.MountPath()
+		if filesystem.IsMountPoint(srcMountPath) {
+			unfreezeFS, _ = d.filesystemFreeze(srcMountPath)
+		}
+	}
+
+	// Finally, copy the source volume (or snapshot) into destination volume.
 	if srcVol.IsSnapshot() || volID == "" {
 		// Copy the source volume/snapshot into destination volume.
 		_, err = client.CloneVolume(srcVolID, volName)
 	} else {
 		// Destination volume already exists, so refresh it.
 		err = client.RefreshVolume(srcVolID, volID)
+	}
+
+	if unfreezeFS != nil {
+		_ = unfreezeFS()
 	}
 
 	if err != nil {
@@ -887,7 +902,23 @@ func (d *powerstore) refreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSna
 		return nil, err
 	}
 
+	// Freeze the source filesystem to ensure the ext4 journal is clean before
+	// the array-side copy. Without this, the destination inherits a dirty journal
+	// from a mounted source, causing EUCLEAN or EIO on mount.
+	var unfreezeFS func() error
+	if !srcVol.IsSnapshot() && vol.contentType == ContentTypeFS {
+		srcMountPath := srcVol.MountPath()
+		if filesystem.IsMountPoint(srcMountPath) {
+			unfreezeFS, _ = d.filesystemFreeze(srcMountPath)
+		}
+	}
+
 	err = client.RefreshVolume(srcVolID, volID)
+
+	if unfreezeFS != nil {
+		_ = unfreezeFS()
+	}
+
 	if err != nil {
 		// Re-mount on error if we unmounted.
 		if ourUnmount {
