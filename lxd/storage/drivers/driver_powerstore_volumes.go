@@ -832,10 +832,28 @@ func (d *powerstore) refreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSna
 				return nil, err
 			}
 
+			// Unmount and unmap the destination volume before overwriting its content
+			// to avoid stale kernel block layer state.
+			snapUnmount, err := d.UnmountVolume(vol.Volume, false, progressReporter)
+			if err != nil {
+				return nil, err
+			}
+
 			// Overwrite existing destination volume with snapshot.
 			err = client.RefreshVolume(srcSnapshotID, volID)
 			if err != nil {
+				if snapUnmount {
+					_ = d.MountVolume(vol.Volume, progressReporter)
+				}
+
 				return nil, err
+			}
+
+			if snapUnmount {
+				err = d.MountVolume(vol.Volume, progressReporter)
+				if err != nil {
+					return nil, err
+				}
 			}
 
 			// Set snapshot's parent UUID.
@@ -861,10 +879,29 @@ func (d *powerstore) refreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSna
 		}
 	}
 
-	// Finally, copy the source volume (or snapshot) into destination volume snapshots.
-	err = client.RefreshVolume(srcVolID, volID)
+	// Finally, copy the source volume (or snapshot) into destination volume.
+	// Unmount and unmap the destination volume first to avoid stale kernel
+	// block layer state (EIO) after the array overwrites the volume content.
+	ourUnmount, err := d.UnmountVolume(vol.Volume, false, progressReporter)
 	if err != nil {
 		return nil, err
+	}
+
+	err = client.RefreshVolume(srcVolID, volID)
+	if err != nil {
+		// Re-mount on error if we unmounted.
+		if ourUnmount {
+			_ = d.MountVolume(vol.Volume, progressReporter)
+		}
+
+		return nil, err
+	}
+
+	if ourUnmount {
+		err = d.MountVolume(vol.Volume, progressReporter)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	err = postCreateTasks(vol.Volume)
