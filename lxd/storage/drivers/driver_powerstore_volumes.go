@@ -522,14 +522,14 @@ func (d *powerstore) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, all
 		}
 	}
 
-	// Freeze the source filesystem to ensure the ext4 journal is clean before
-	// the array-side copy. Without this, the destination inherits a dirty journal
-	// from a mounted source, causing EUCLEAN or EIO on mount.
-	var unfreezeFS func() error
+	// Unmount the source filesystem companion volume before the array copy to
+	// ensure the ext4 journal is cleanly closed (NEEDS_RECOVERY cleared). The
+	// source instance is already frozen (RunningCopyFreeze) so unmounting is safe.
+	var srcUnmount bool
 	if !srcVol.IsSnapshot() && vol.contentType == ContentTypeFS {
-		srcMountPath := srcVol.MountPath()
-		if filesystem.IsMountPoint(srcMountPath) {
-			unfreezeFS, _ = d.filesystemFreeze(srcMountPath)
+		srcUnmount, err = d.UnmountVolume(srcVol.Volume, true, progressReporter)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -542,8 +542,12 @@ func (d *powerstore) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, all
 		err = client.RefreshVolume(srcVolID, volID)
 	}
 
-	if unfreezeFS != nil {
-		_ = unfreezeFS()
+	// Remount the source volume if we unmounted it.
+	if srcUnmount {
+		mountErr := d.MountVolume(srcVol.Volume, progressReporter)
+		if mountErr != nil && err == nil {
+			err = mountErr
+		}
 	}
 
 	if err != nil {
@@ -847,28 +851,10 @@ func (d *powerstore) refreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSna
 				return nil, err
 			}
 
-			// Unmount and unmap the destination volume before overwriting its content
-			// to avoid stale kernel block layer state.
-			snapUnmount, err := d.UnmountVolume(vol.Volume, false, progressReporter)
-			if err != nil {
-				return nil, err
-			}
-
 			// Overwrite existing destination volume with snapshot.
 			err = client.RefreshVolume(srcSnapshotID, volID)
 			if err != nil {
-				if snapUnmount {
-					_ = d.MountVolume(vol.Volume, progressReporter)
-				}
-
 				return nil, err
-			}
-
-			if snapUnmount {
-				err = d.MountVolume(vol.Volume, progressReporter)
-				if err != nil {
-					return nil, err
-				}
 			}
 
 			// Set snapshot's parent UUID.
@@ -895,44 +881,31 @@ func (d *powerstore) refreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSna
 	}
 
 	// Finally, copy the source volume (or snapshot) into destination volume.
-	// Unmount and unmap the destination volume first to avoid stale kernel
-	// block layer state (EIO) after the array overwrites the volume content.
-	ourUnmount, err := d.UnmountVolume(vol.Volume, false, progressReporter)
-	if err != nil {
-		return nil, err
-	}
-
-	// Freeze the source filesystem to ensure the ext4 journal is clean before
-	// the array-side copy. Without this, the destination inherits a dirty journal
-	// from a mounted source, causing EUCLEAN or EIO on mount.
-	var unfreezeFS func() error
+	// Unmount the source filesystem companion volume before the array copy to
+	// ensure the ext4 journal is cleanly closed. A mounted ext4 filesystem always
+	// has NEEDS_RECOVERY set in the superblock; copying that state causes EIO when
+	// the destination is mounted and journal replay encounters incomplete entries.
+	// The source instance is already frozen (RunningCopyFreeze) so unmounting is safe.
+	var srcUnmount bool
 	if !srcVol.IsSnapshot() && vol.contentType == ContentTypeFS {
-		srcMountPath := srcVol.MountPath()
-		if filesystem.IsMountPoint(srcMountPath) {
-			unfreezeFS, _ = d.filesystemFreeze(srcMountPath)
+		srcUnmount, err = d.UnmountVolume(srcVol.Volume, true, progressReporter)
+		if err != nil {
+			return nil, err
 		}
 	}
 
 	err = client.RefreshVolume(srcVolID, volID)
 
-	if unfreezeFS != nil {
-		_ = unfreezeFS()
+	// Remount the source volume if we unmounted it.
+	if srcUnmount {
+		mountErr := d.MountVolume(srcVol.Volume, progressReporter)
+		if mountErr != nil && err == nil {
+			err = mountErr
+		}
 	}
 
 	if err != nil {
-		// Re-mount on error if we unmounted.
-		if ourUnmount {
-			_ = d.MountVolume(vol.Volume, progressReporter)
-		}
-
 		return nil, err
-	}
-
-	if ourUnmount {
-		err = d.MountVolume(vol.Volume, progressReporter)
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	err = postCreateTasks(vol.Volume)
