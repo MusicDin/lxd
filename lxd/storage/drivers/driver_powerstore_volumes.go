@@ -1,7 +1,6 @@
 package drivers
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
@@ -19,7 +17,6 @@ import (
 	"github.com/canonical/lxd/lxd/backup"
 	"github.com/canonical/lxd/lxd/instancewriter"
 	"github.com/canonical/lxd/lxd/migration"
-	"github.com/canonical/lxd/lxd/storage/block"
 	"github.com/canonical/lxd/lxd/storage/filesystem"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
@@ -1777,12 +1774,15 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 		return fmt.Errorf("Failed detaching volume %q from host %q: %w", vol.name, host.Name, err)
 	}
 
-	// Wait until the volume has disappeared.
-	ctx, cancel := context.WithTimeout(d.state.ShutdownCtx, 30*time.Second)
-	defer cancel()
-
-	if volumePath != "" && !block.WaitDiskDeviceGone(ctx, volumePath) {
-		return fmt.Errorf("Timeout exceeded waiting for PowerStore volume %q to disappear on path %q", vol.name, volumePath)
+	// A concurrent SCSI bus rescan may have rediscovered the LUN between RemoveDiskDevice and
+	// DetachVolumeFromHost above, causing a race condition where multipathd recreates the device
+	// after being removed. If the path reappears, remove the zombie device. Because the device
+	// is detached from the array, it will not be rediscovered again after this removal.
+	if volumePath != "" && shared.PathExists(volumePath) {
+		err = connector.RemoveDiskDevice(d.state.ShutdownCtx, volumePath)
+		if err != nil {
+			return fmt.Errorf("Failed removing reappeared PowerStore volume device %q: %w", vol.name, err)
+		}
 	}
 
 	// If this was the last volume being unmapped from this system, disconnect the active session
