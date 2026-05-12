@@ -51,6 +51,9 @@ ci-reproducer:
   if: failure()
   needs: [job-a, job-b]
   runs-on: ubuntu-24.04
+  permissions:
+    actions: read
+    contents: read
   steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -109,7 +112,7 @@ Plus reproduction status: `confirmed`, `not confirmed`, or `not attempted`.
 ## How It Works
 
 ### Step 1: Log Fetching
-- Uses `gh run view` to download full job logs via GitHub API
+- Uses `gh api repos/.../actions/jobs/{id}/logs` to download job logs; falls back to the run-level logs archive if the job-scoped fetch is empty
 - Extracts job metadata (name, matrix context if applicable)
 - Validates log is non-empty and contains error patterns
 

@@ -52,11 +52,16 @@ failed_step_name=$(jq -r --argjson id "$failed_job_id" '.jobs[] | select(.id==$i
 
 echo "Target failed job: $failed_job_name (id: $failed_job_id)" >&2
 
-echo "Fetching logs via gh run view for failed job..." >&2
-if ! gh run view "$RUN_ID" --job "$failed_job_id" --log > "$log_file" 2>/dev/null; then
+echo "Fetching logs via GitHub API for failed job..." >&2
+if ! gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$failed_job_id/logs" > "$log_file" 2>/dev/null || [[ ! -s "$log_file" ]]; then
   echo "WARNING: Job-scoped log fetch failed, falling back to full run logs" >&2
-  if ! gh run view "$RUN_ID" --log > "$log_file" 2>/dev/null; then
+  zip_file="$REPRO_TMP/run_logs.zip"
+  if ! gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/logs" > "$zip_file" 2>/dev/null; then
     echo "ERROR: Failed to fetch logs from run $RUN_ID" >&2
+    exit 1
+  fi
+  if ! unzip -p "$zip_file" > "$log_file" 2>/dev/null || [[ ! -s "$log_file" ]]; then
+    echo "ERROR: Failed to extract run logs for run $RUN_ID" >&2
     exit 1
   fi
 fi
