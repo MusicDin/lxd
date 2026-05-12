@@ -1,0 +1,86 @@
+name: CI Reproducer
+description: Automatically analyzes CI failures, derives minimal reproducer commands, and generates diagnostic reports.
+
+inputs:
+  github-token:
+    description: GitHub token for accessing logs via gh CLI
+    required: true
+  timeout-seconds:
+    description: Maximum time (seconds) to run the reproducer
+    required: false
+    default: '900'
+  failed-job-name:
+    description: Name of the failed job (auto-detected if not provided)
+    required: false
+    default: ''
+
+outputs:
+  report:
+    description: Markdown-formatted reproducer report
+    value: ${{ steps.generate-report.outputs.report }}
+  confidence:
+    description: Confidence level of the reproducer (Low/Medium/High)
+    value: ${{ steps.generate-report.outputs.confidence }}
+  reproducer-command:
+    description: The minimal reproducer command derived from logs
+    value: ${{ steps.run-reproducer.outputs.reproducer-command }}
+
+runs:
+  using: composite
+  steps:
+    - id: setup
+      shell: bash
+      run: |
+        set -e
+        echo "=== CI Reproducer: Setup ===" >&2
+
+        # Export inputs
+        export GITHUB_TOKEN="${{ inputs.github-token }}"
+        export TIMEOUT_SECONDS="${{ inputs.timeout-seconds }}"
+        export FAILED_JOB_NAME="${{ inputs.failed-job-name }}"
+        export RUN_ID="${{ github.run_id }}"
+        export RUN_ATTEMPT="${{ github.run_attempt }}"
+        export ACTOR="${{ github.actor }}"
+        export REF="${{ github.ref }}"
+
+        # Create temp directory for logs and artifacts
+        export REPRO_TMP=$(mktemp -d /tmp/ci-reproducer-XXXXXX)
+        trap "rm -rf '$REPRO_TMP'" EXIT
+
+        # Export for following steps
+        echo "REPRO_TMP=$REPRO_TMP" >> $GITHUB_ENV
+        echo "GITHUB_TOKEN=$GITHUB_TOKEN" >> $GITHUB_ENV
+
+    - id: fetch-logs
+      shell: bash
+      run: ${{ github.action_path }}/parsers/log-fetcher.sh
+      env:
+        REPRO_TMP: ${{ env.REPRO_TMP }}
+
+    - id: parse-logs
+      shell: bash
+      run: ${{ github.action_path }}/parsers/system-tests.sh
+      env:
+        REPRO_TMP: ${{ env.REPRO_TMP }}
+      continue-on-error: true
+
+    - id: validate
+      shell: bash
+      run: ${{ github.action_path }}/parsers/validator.sh
+      env:
+        REPRO_TMP: ${{ env.REPRO_TMP }}
+      continue-on-error: true
+
+    - id: run-reproducer
+      shell: bash
+      run: ${{ github.action_path }}/parsers/run-reproducer.sh
+      env:
+        REPRO_TMP: ${{ env.REPRO_TMP }}
+        TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
+      continue-on-error: true
+
+    - id: generate-report
+      shell: bash
+      run: ${{ github.action_path }}/report.sh
+      env:
+        REPRO_TMP: ${{ env.REPRO_TMP }}

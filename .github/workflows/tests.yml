@@ -507,6 +507,13 @@ jobs:
           retention-days: 1
         if: env.GOCOVERDIR != ''
 
+      - name: CI Reproducer
+        uses: ./.github/actions/ci-reproducer
+        if: failure()
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          timeout-seconds: '900'
+
       - name: Tmate debugging session
         if: ${{ failure() && inputs.tmate-debug }}
         timeout-minutes: 30
