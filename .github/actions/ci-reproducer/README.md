@@ -8,19 +8,23 @@ The CI Reproducer analyzes failed CI jobs, derives the minimal reproducer comman
 
 ## Expected Behavior Contract
 
+The action is expected to:
+
+
 This action is expected to satisfy the following requirements:
 
+- Provide an agent that will analyze current workflow failures and try to find out the cause of the failure, reproducer (if appropriate), and propose a fix.
+- It should use logs, current code, and current (failed) environment to extract required information and derive proper report with a reproducer and a fix.
 1. Be reusable and callable from any job or step location in a workflow.
 2. Analyze failures from the current workflow run at invocation time.
 3. Be generic across job types, not tied to a single suite.
 4. Identify failed job, failed step, failed command, key error, and likely cause from evidence.
-5. Derive the smallest practical reproducer command from available logs.
-6. Run that reproducer only when safe and practical.
-7. Report reproduction status truthfully as `confirmed`, `not confirmed`, or `not attempted`.
-8. Propose a potential fix based on observed failure context, not hardcoded templates.
-9. Write exactly the required Markdown report structure to the job summary.
-10. Never claim reproduction or validation succeeded unless a command was actually run.
-11. If no failure signal is found, report that explicitly instead of guessing.
+5. Derive the smallest practical reproducer command from available logs and the checked out code. If run as a step, use the current (failed) environment to attempt confirmation of the reproducer.
+6. Report reproduction status truthfully as `confirmed`, `not confirmed`, or `not attempted`.
+7. Propose a potential fix based on observed failure context, not hardcoded templates.
+8. Write exactly the required Markdown report structure to the job summary.
+9. Never claim reproduction or validation succeeded unless a command was actually run.
+10. If no failure signal is found, report that explicitly instead of guessing.
 
 Acceptance criteria:
 
@@ -98,7 +102,6 @@ The reproducer generates a Markdown report with the following sections:
 
 **Reproducer** — Minimal command to reproduce:
 ```bash
-# from repository root
 <derived command from failing logs>
 ```
 Plus reproduction status: `confirmed`, `not confirmed`, or `not attempted`.
@@ -195,8 +198,9 @@ The reproducer is uncertain. Common reasons:
 
 ## Reproducer
 ```bash
-# from repository root
 make
+```
+
 ```
 Reproduction: **confirmed** (command reproduced failure with exit code 2)
 ```
@@ -214,7 +218,6 @@ Reproduction: **confirmed** (command reproduced failure with exit code 2)
 
 ## Reproducer
 ```bash
-# from repository root
 <derived command unavailable>
 ```
 Reproduction: **not attempted** (insufficient reproducible command evidence)
