@@ -6,6 +6,30 @@ Automated GitHub Actions composite action for reproducing and diagnosing LXD CI 
 
 The CI Reproducer analyzes failed CI jobs, derives the minimal reproducer command from logs, executes it safely with resource constraints, and generates a developer-friendly diagnostic report.
 
+## Expected Behavior Contract
+
+This action is expected to satisfy the following requirements:
+
+1. Be reusable and callable from any job or step location in a workflow.
+2. Analyze failures from the current workflow run at invocation time.
+3. Be generic across job types, not tied to a single suite.
+4. Identify failed job, failed step, failed command, key error, and likely cause from evidence.
+5. Derive the smallest practical reproducer command from available logs.
+6. Run that reproducer only when safe and practical.
+7. Report reproduction status truthfully as `confirmed`, `not confirmed`, or `not attempted`.
+8. Propose a potential fix based on observed failure context, not hardcoded templates.
+9. Write exactly the required Markdown report structure to the job summary.
+10. Never claim reproduction or validation succeeded unless a command was actually run.
+11. If no failure signal is found, report that explicitly instead of guessing.
+
+Acceptance criteria:
+
+1. No parser logic restricted to a single test suite.
+2. No hardcoded logic for synthetic failures.
+3. Action can be inserted in any workflow location and still analyze current-run failures.
+4. Report fields are backed by real log evidence.
+5. Validation section lists only commands actually executed.
+
 **Key Features:**
 - Automatic log parsing to identify failed tests and error context
 - Minimal reproducer command derivation (no unnecessary setup)
@@ -18,16 +42,26 @@ The CI Reproducer analyzes failed CI jobs, derives the minimal reproducer comman
 
 ### In a Workflow
 
-Add as the final step of a job that may fail:
+You can insert this action wherever you want.
+
+Recommended pattern: run it in a follow-up job so it can inspect failures across prior jobs in the same run.
 
 ```yaml
-- name: CI Reproducer
-  uses: ./.github/actions/ci-reproducer
+ci-reproducer:
   if: failure()
-  with:
-    github-token: ${{ secrets.GITHUB_TOKEN }}
-    timeout-seconds: '900'
+  needs: [job-a, job-b]
+  runs-on: ubuntu-24.04
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: CI Reproducer
+      uses: ./.github/actions/ci-reproducer
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        timeout-seconds: '900'
 ```
+
+      Use `if: always()` only if you explicitly want diagnostic summaries on successful runs too.
 
 ### Inputs
 
@@ -53,7 +87,7 @@ The reproducer generates a Markdown report with the following sections:
 
 **Summary** — Key facts about the failure:
 - Failed job name
-- Failed step type (panic, assertion, timeout, etc.)
+- Failed step
 - Failed command (if identifiable)
 - Key error message (truncated to 150 chars)
 - Likely root cause (inferred)
@@ -62,11 +96,11 @@ The reproducer generates a Markdown report with the following sections:
 **Reproducer** — Minimal command to reproduce:
 ```bash
 # from repository root
-test/main.sh system-tests:cluster btrfs
+<derived command from failing logs>
 ```
 Plus reproduction status: `confirmed`, `not confirmed`, or `not attempted`.
 
-**Potential Fix** — Actionable guidance based on confidence and error type.
+**Potential Fix** — Actionable guidance based on observed failure evidence.
 
 **Validation** — Commands that were actually executed and their status.
 
@@ -79,14 +113,14 @@ Plus reproduction status: `confirmed`, `not confirmed`, or `not attempted`.
 - Extracts job metadata (name, matrix context if applicable)
 - Validates log is non-empty and contains error patterns
 
-### Step 2: Log Parsing (system-tests)
-- Scans for `panic`, `AssertionError`, `FAIL`, `timeout` patterns
-- Identifies `sub_test` phase boundaries
-- Extracts test group (e.g., `cluster`, `standalone`) and backend (e.g., `zfs`, `btrfs`)
-- Assigns confidence:
-  - **High**: Panic or segfault in logs
-  - **Medium**: Assertion failure or clear command failure
-  - **Low**: Timeout, transient, or insufficient context
+### Step 2: Generic Log Parsing
+- Finds failed jobs/steps and extracts strongest failure signals
+- Detects command errors, assertion failures, panics, timeouts, and toolchain errors
+- Extracts actionable context for reproducer and fix suggestion
+- Assigns confidence based on evidence quality:
+  - **High**: clear failing command + clear root error
+  - **Medium**: partial command/error context
+  - **Low**: ambiguous or incomplete evidence
 
 ### Step 3: Validation
 Checks logs for environmental issues that would prevent safe reproduction:
@@ -99,7 +133,7 @@ Checks logs for environmental issues that would prevent safe reproduction:
 Skips reproducer execution if validation fails.
 
 ### Step 4: Reproducer Execution
-- Derives minimal command from parsed results (e.g., `test/main.sh system-tests:cluster btrfs`)
+- Derives a minimal command from parsed results
 - Validates command syntax
 - Executes with timeout enforcement (default 15 minutes)
 - Captures exit code and output (last 20 lines)
@@ -125,7 +159,7 @@ The reproducer is very likely accurate. Root cause is clear from logs.
 The reproducer is probably accurate, but there may be environmental factors.
 
 **Actions:**
-- Run locally with same backend/group
+- Run locally with the same command and environment assumptions
 - Check for timing-dependent or flaky behavior
 - Look for race conditions if applicable
 
@@ -144,42 +178,43 @@ The reproducer is uncertain. Common reasons:
 
 ## Examples
 
-### Example 1: Panic Reproducer
+### Example 1: Build Failure Reproducer
 
 **Report Output:**
 ```
 ## Summary
-- **Failed job:** `system-tests (cluster, btrfs)`
-- **Failed step:** `panic`
-- **Key error:** `runtime error: invalid memory address or nil pointer dereference`
-- **Likely cause:** Code panic (segmentation fault or runtime error in LXD daemon)
-- **Confidence:** High
+- **Failed job:** `Code`
+- **Failed step:** `Build binaries`
+- **Failed command:** `make`
+- **Key error:** `undefined: SomeSymbol`
+- **Likely cause:** Missing import or API mismatch
+- **Confidence:** Medium
 
 ## Reproducer
 ```bash
 # from repository root
-test/main.sh system-tests:cluster btrfs
+make
 ```
 Reproduction: **confirmed** (command reproduced failure with exit code 2)
 ```
 
-### Example 2: Flaky Test
+### Example 2: Timeout Reproducer
 
 **Report Output:**
 ```
 ## Summary
-- **Failed job:** `system-tests (standalone, dir)`
+- **Failed job:** `Integration`
 - **Failed step:** `timeout`
-- **Key error:** `Test timed out`
-- **Likely cause:** Likely flaky/intermittent test (timing or race condition)
+- **Key error:** `Job timed out after 60 minutes`
+- **Likely cause:** Long-running test or deadlock
 - **Confidence:** Low
 
 ## Reproducer
 ```bash
 # from repository root
-test/main.sh system-tests:standalone dir
+<derived command unavailable>
 ```
-Reproduction: **not confirmed** (reproducer timed out after 900 seconds)
+Reproduction: **not attempted** (insufficient reproducible command evidence)
 
 ## Notes
 - **Confidence is Low:** The reproducer is uncertain. Test may be flaky or environment-dependent.
@@ -187,7 +222,7 @@ Reproduction: **not confirmed** (reproducer timed out after 900 seconds)
 
 ## Limitations
 
-- **Phase 1 scope**: Only parses `system-tests` failures. Extension to snap-tests, code-tests planned.
+- **Current maturity**: Confidence quality depends on log quality and command visibility.
 - **Log access**: Requires GitHub token with read access to workflow logs (provided by Actions).
 - **No retry logic**: Single execution. Flaky tests may not reproduce on first run.
 - **Environment-dependent**: Local environment may differ from CI (hardware, network, packages).
@@ -200,7 +235,7 @@ Reproduction: **not confirmed** (reproducer timed out after 900 seconds)
 ├── report.sh                  # Report generation
 └── parsers/
     ├── log-fetcher.sh         # Fetch logs via gh CLI
-    ├── system-tests.sh        # Parse system-tests failures
+  ├── system-tests.sh        # Parser entrypoint (to be renamed to generic-parser.sh)
     ├── validator.sh           # Check safety
     └── run-reproducer.sh      # Execute reproducer
 ```
