@@ -34,28 +34,29 @@ runs:
         set -e
         echo "=== CI Reproducer: Setup ===" >&2
 
-        # Export inputs
-        export GITHUB_TOKEN="${{ inputs.github-token }}"
-        export TIMEOUT_SECONDS="${{ inputs.timeout-seconds }}"
-        export FAILED_JOB_NAME="${{ inputs.failed-job-name }}"
-        export RUN_ID="${{ github.run_id }}"
-        export RUN_ATTEMPT="${{ github.run_attempt }}"
-        export ACTOR="${{ github.actor }}"
-        export REF="${{ github.ref }}"
-
         # Create temp directory for logs and artifacts
         export REPRO_TMP=$(mktemp -d /tmp/ci-reproducer-XXXXXX)
         trap "rm -rf '$REPRO_TMP'" EXIT
 
-        # Export for following steps
+        # Export all variables to $GITHUB_ENV for following steps
         echo "REPRO_TMP=$REPRO_TMP" >> $GITHUB_ENV
-        echo "GITHUB_TOKEN=$GITHUB_TOKEN" >> $GITHUB_ENV
+        echo "GITHUB_TOKEN=${{ inputs.github-token }}" >> $GITHUB_ENV
+        echo "TIMEOUT_SECONDS=${{ inputs.timeout-seconds }}" >> $GITHUB_ENV
+        echo "FAILED_JOB_NAME=${{ inputs.failed-job-name }}" >> $GITHUB_ENV
+        echo "RUN_ID=${{ github.run_id }}" >> $GITHUB_ENV
+        echo "RUN_ATTEMPT=${{ github.run_attempt }}" >> $GITHUB_ENV
+        echo "ACTOR=${{ github.actor }}" >> $GITHUB_ENV
+        echo "REF=${{ github.ref }}" >> $GITHUB_ENV
+        echo "GITHUB_REPOSITORY=${{ github.repository }}" >> $GITHUB_ENV
 
     - id: fetch-logs
       shell: bash
       run: ${{ github.action_path }}/parsers/log-fetcher.sh
       env:
         REPRO_TMP: ${{ env.REPRO_TMP }}
+        RUN_ID: ${{ env.RUN_ID }}
+        GITHUB_TOKEN: ${{ env.GITHUB_TOKEN }}
+        GITHUB_REPOSITORY: ${{ env.GITHUB_REPOSITORY }}
 
     - id: parse-logs
       shell: bash
@@ -76,7 +77,7 @@ runs:
       run: ${{ github.action_path }}/parsers/run-reproducer.sh
       env:
         REPRO_TMP: ${{ env.REPRO_TMP }}
-        TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
+        TIMEOUT_SECONDS: ${{ env.TIMEOUT_SECONDS }}
       continue-on-error: true
 
     - id: generate-report
@@ -84,3 +85,7 @@ runs:
       run: ${{ github.action_path }}/report.sh
       env:
         REPRO_TMP: ${{ env.REPRO_TMP }}
+        GITHUB_STEP_SUMMARY: ${{ env.GITHUB_STEP_SUMMARY }}
+        RUN_ID: ${{ env.RUN_ID }}
+        RUN_ATTEMPT: ${{ env.RUN_ATTEMPT }}
+        ACTOR: ${{ env.ACTOR }}
