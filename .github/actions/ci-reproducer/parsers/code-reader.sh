@@ -19,15 +19,9 @@ set -e
 
 files_read=0
 
-{
-  echo "## CI failure context"
-  echo ""
-  echo "**Job:** ${failed_job:-unknown}"
-  echo "**Step:** ${failed_step:-unknown}"
-  echo "**Command:** \`${failed_command:-unknown}\`"
-  echo "**Error:** ${error_message:-none}"
-  echo ""
-} > "$context_file"
+# Start with an empty context file — report.sh provides the failure facts section.
+# This file contains only CODE EVIDENCE: source files, workflow YAML, and log excerpts.
+> "$context_file"
 
 # ── 1. Extract file:line references from the log ──────────────────────────────
 # Matches patterns like: lxd/foo.go:42, ./shared/bar.go:10:5, test/suites/foo.sh:99
@@ -87,12 +81,30 @@ for wf_candidate in \
   fi
 done
 
-# ── 3. Append last 80 lines of the job log as raw evidence ────────────────────
+# ── 3. Error patterns from the full log (not just tail) ─────────────────────
+# Extract lines matching known error patterns from anywhere in the log.
+# This catches panics, build errors, and test failures that may not be near the end.
+if [[ -f "$log_file" ]]; then
+  error_lines=$(grep -nEi \
+    '(panic:|fatal:|##\[error\]|FAIL\s|FAIL\t|--- FAIL|build failed|vet:.*error|undefined:|cannot use|does not implement|assignment mismatch|exit status [^0])' \
+    "$log_file" | head -40 || true)
+  if [[ -n "$error_lines" ]]; then
+    {
+      echo "## Error patterns found in log"
+      echo '```'
+      echo "$error_lines"
+      echo '```'
+      echo ""
+    } >> "$context_file"
+  fi
+fi
+
+# ── 4. Log tail (last 150 lines) as full context ─────────────────────────────
 if [[ -f "$log_file" ]]; then
   {
-    echo "## Log tail (last 80 lines)"
+    echo "## Log tail (last 150 lines)"
     echo '```'
-    tail -80 "$log_file"
+    tail -150 "$log_file"
     echo '```'
     echo ""
   } >> "$context_file"

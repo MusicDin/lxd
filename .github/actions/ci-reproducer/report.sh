@@ -57,6 +57,10 @@ if [[ -f "$prompt_file" ]] && [[ -n "$GITHUB_TOKEN" ]]; then
   } >> "$user_msg_file"
 
   if [[ -f "$context_file" ]]; then
+    echo "" >> "$user_msg_file"
+    echo "## Code evidence (source files, workflow YAML, log excerpts)" >> "$user_msg_file"
+    echo "Use this to identify the exact location of the failure and produce a concrete fix." >> "$user_msg_file"
+    echo "" >> "$user_msg_file"
     cat "$context_file" >> "$user_msg_file"
   fi
 
