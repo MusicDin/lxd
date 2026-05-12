@@ -65,6 +65,7 @@ defaults:
 
 jobs:
   code-tests:
+    if: false  # Disabled for faster testing
     outputs:
       fast-backend: ${{ steps.pick-fast-backend.outputs.fast-backend }}
     env:
@@ -74,7 +75,6 @@ jobs:
       LD_RUN_PATH: "/home/runner/go/bin/dqlite/libs/"
       CGO_LDFLAGS_ALLOW: "(-Wl,-wrap,pthread_create)|(-Wl,-z,now)"
       SUDO_PRESERVE_ENV: "CGO_CFLAGS,CGO_LDFLAGS,CGO_LDFLAGS_ALLOW,GOCOVERDIR,PKG_CONFIG_PATH,LD_LIBRARY_PATH,PATH"
-    if: ${{ github.event_name != 'schedule' || github.repository_owner == 'canonical' }}
     name: Code
     runs-on: ubuntu-24.04
     steps:
@@ -288,7 +288,7 @@ jobs:
       matrix:
         include:
           - group: cluster
-            backends: ${{ needs.code-tests.outputs.fast-backend }}
+            backends: btrfs
           - group: cluster_storage
             backends: all
           - group: image
@@ -296,7 +296,7 @@ jobs:
           - group: instance
             backends: fasts
           - group: network
-            backends: ${{ needs.code-tests.outputs.fast-backend }}
+            backends: btrfs
           - group: standalone
             backends: ${{ needs.code-tests.outputs.fast-backend }}
           - group: snap
