@@ -66,24 +66,28 @@ if ! gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$failed_job_id/logs" > "$log_
   fi
 fi
 
-# Extract metadata from log headers
-# Look for job name, matrix context (if any), and step context
+# Extract metadata using API-provided values (log grep is unreliable due to timestamp prefixes).
 echo "Extracting metadata..." >&2
 
-# Get matrix context from job name in logs
-# Pattern: "Job: system-tests (cluster, btrfs)" or similar
-matrix_context=$(grep -oP 'Job: [^(]*\(\K[^)]*' "$log_file" | head -1 || echo "")
-job_name=$(grep -oP 'Job: \K[^(]*' "$log_file" | head -1 || echo "$failed_job_name")
+# Strip GitHub Actions timestamp prefixes ("2006-01-02T15:04:05.999Z ") from log lines
+# so downstream parsers can match patterns without timestamp noise.
+sed -i -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+Z //g' "$log_file"
 
+job_name="$failed_job_name"
+
+# Matrix context is embedded in the job name when present, e.g. "System (cluster, btrfs)".
+matrix_context=$(echo "$job_name" | grep -oP '\(\K[^)]*' | head -1 || echo "")
+
+# Use printf %q so that values with spaces source cleanly back into bash.
 {
-  echo "job_name=$job_name"
-  echo "job_id=$failed_job_id"
-  echo "failed_step=$failed_step_name"
-  echo "matrix_context=$matrix_context"
-  echo "run_id=$RUN_ID"
-  echo "run_attempt=$RUN_ATTEMPT"
-  echo "actor=$ACTOR"
-  echo "log_file=$log_file"
+  printf 'job_name=%q\n'       "$job_name"
+  printf 'job_id=%q\n'         "$failed_job_id"
+  printf 'failed_step=%q\n'    "$failed_step_name"
+  printf 'matrix_context=%q\n' "$matrix_context"
+  printf 'run_id=%q\n'         "$RUN_ID"
+  printf 'run_attempt=%q\n'    "$RUN_ATTEMPT"
+  printf 'actor=%q\n'          "$ACTOR"
+  printf 'log_file=%q\n'       "$log_file"
 } > "$meta_file"
 
 # Check if log is non-empty

@@ -33,20 +33,31 @@ error_message=""
 likely_cause=""
 confidence="Low"
 
-# Try to derive a command from shell traces.
-failed_command=$(grep -E '^\+\s+.+|^\$\s+.+' "$log_file" | tail -1 | sed -E 's/^\+\s+|^\$\s+//' || true)
+# Primary: identify the failing command from the GitHub Actions ##[group]Run pattern.
+# After timestamp stripping, lines look like: "##[group]Run exit 1" or "##[group]Run make build".
+failed_command=$(grep -E '^##\[group\]Run ' "$log_file" | tail -1 | sed -E 's/^##\[group\]Run //' || true)
 
-# Fallback: detect commands printed in workflow logs.
+# Secondary fallback: shell trace lines (only present when set -x is active).
 if [[ -z "$failed_command" ]]; then
-  failed_command=$(grep -E '(^|\s)(make|go test|go build|go vet|golangci-lint|pytest|npm test|cargo test|./[^ ]+)' "$log_file" | tail -1 || true)
+  failed_command=$(grep -E '^\+\s+.+|^\$\s+.+' "$log_file" | tail -1 | sed -E 's/^\+\s+|^\$\s+//' || true)
 fi
 
-# Find strongest error signal near end of log.
-error_message=$(grep -Ei 'panic:|fatal:|error:|assert|failed|timed out|exit code [0-9]+|No such file|permission denied|undefined reference|cannot find|segmentation fault' "$log_file" | tail -1 || true)
+# Tertiary fallback: well-known tooling invocations anywhere in the log.
+if [[ -z "$failed_command" ]]; then
+  failed_command=$(grep -E '(^|\s)(make|go test|go build|go vet|golangci-lint|pytest|npm test|cargo test)' "$log_file" | tail -1 || true)
+fi
 
-# If step not provided by API metadata, infer from logs.
+# Primary error signal: GitHub Actions ##[error] annotation (already stripped of timestamp).
+error_message=$(grep -E '^##\[error\]' "$log_file" | tail -1 | sed -E 's/^##\[error\]//' || true)
+
+# Fallback error signal: known error keywords.
+if [[ -z "$error_message" ]]; then
+  error_message=$(grep -Ei 'panic:|fatal:|error:|assert|failed|timed out|exit code [0-9]+|No such file|permission denied|undefined reference|cannot find|segmentation fault' "$log_file" | tail -1 || true)
+fi
+
+# If step not provided by API metadata, infer from ##[group]Run in logs.
 if [[ -z "$failed_step" ]]; then
-  failed_step=$(grep -E '^Run\s+' "$log_file" | tail -1 | sed -E 's/^Run\s+//' || true)
+  failed_step=$(grep -E '^##\[group\]Run ' "$log_file" | tail -1 | sed -E 's/^##\[group\]Run //' || true)
 fi
 
 # Determine likely cause using observed evidence.
