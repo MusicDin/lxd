@@ -85,6 +85,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Deliberate failure to test CI reproducer
+        run: exit 1
+
       - name: Require GHA pinning
         uses: ./.github/actions/require-gha-pinning
 
@@ -130,9 +133,6 @@ jobs:
 
       - name: Install build dependencies
         uses: ./.github/actions/install-lxd-builddeps
-
-      - name: Deliberate failure to test CI reproducer
-        run: exit 1
 
       - name: Download go dependencies
         run: |
