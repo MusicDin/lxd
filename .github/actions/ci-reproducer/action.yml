@@ -13,6 +13,10 @@ inputs:
     description: Name of the failed job (auto-detected if not provided)
     required: false
     default: ''
+  model:
+    description: GitHub Models model name to use for the AI report
+    required: false
+    default: 'gpt-4o-mini'
 
 outputs:
   report:
@@ -43,6 +47,7 @@ runs:
         echo "GITHUB_TOKEN=${{ inputs.github-token }}" >> $GITHUB_ENV
         echo "TIMEOUT_SECONDS=${{ inputs.timeout-seconds }}" >> $GITHUB_ENV
         echo "FAILED_JOB_NAME=${{ inputs.failed-job-name }}" >> $GITHUB_ENV
+        echo "REPRO_MODEL=${{ inputs.model }}" >> $GITHUB_ENV
         echo "RUN_ID=${{ github.run_id }}" >> $GITHUB_ENV
         echo "RUN_ATTEMPT=${{ github.run_attempt }}" >> $GITHUB_ENV
         echo "ACTOR=${{ github.actor }}" >> $GITHUB_ENV
@@ -98,3 +103,4 @@ runs:
         ACTOR: ${{ env.ACTOR }}
         GITHUB_TOKEN: ${{ env.GITHUB_TOKEN }}
         GITHUB_REPOSITORY: ${{ env.GITHUB_REPOSITORY }}
+        REPRO_MODEL: ${{ env.REPRO_MODEL }}
