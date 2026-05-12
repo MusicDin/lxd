@@ -1,7 +1,7 @@
 #!/bin/bash
 # log-fetcher.sh
 # Fetches failed job logs using GitHub CLI and extracts metadata.
-# Output: Populates $REPRO_TMP/job.log, $REPRO_TMP/job.meta
+# Output: Populates $REPRO_TMP/job.log, $REPRO_TMP/job.meta, $REPRO_TMP/jobs.json
 
 set -e
 
@@ -17,76 +17,63 @@ if [[ -z "$GITHUB_TOKEN" ]]; then
   exit 1
 fi
 
-# Determine failed job name from workflow run
-# If FAILED_JOB_NAME not provided, detect from run
-FAILED_JOB="${FAILED_JOB_NAME:-}"
+mkdir -p "$REPRO_TMP"
 
-if [[ -z "$FAILED_JOB" ]]; then
-  # Try to find the most recent failed job in this run
-  # Query the API to get job information
-  echo "Detecting failed job from run $RUN_ID..." >&2
-  
-  jobs_json=$(gh api repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs --paginate 2>/dev/null || echo "{}")
-  
-  # Find jobs with conclusion=failure, exclude this step (ci-reproducer itself)
-  failed_jobs=$(echo "$jobs_json" | jq -r '.jobs[]? | select(.conclusion=="failure" and .name != "ci-reproducer") | .name' 2>/dev/null || echo "")
-  
-  if [[ -z "$failed_jobs" ]]; then
-    echo "WARNING: Could not detect failed job from API. Attempting direct log fetch..." >&2
-    FAILED_JOB="system-tests"
-  else
-    # Use the first failed job
-    FAILED_JOB=$(echo "$failed_jobs" | head -1)
+log_file="$REPRO_TMP/job.log"
+meta_file="$REPRO_TMP/job.meta"
+jobs_file="$REPRO_TMP/jobs.json"
+
+echo "Detecting failed job from run $RUN_ID..." >&2
+
+if ! gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs" --paginate > "$jobs_file" 2>/dev/null; then
+  echo "ERROR: Failed retrieving jobs list for run $RUN_ID" >&2
+  exit 1
+fi
+
+failed_job_name="${FAILED_JOB_NAME:-}"
+failed_job_id=""
+failed_step_name=""
+
+if [[ -n "$failed_job_name" ]]; then
+  failed_job_id=$(jq -r --arg name "$failed_job_name" '.jobs[] | select(.name==$name and .conclusion=="failure") | .id' "$jobs_file" | head -1)
+fi
+
+if [[ -z "$failed_job_id" ]]; then
+  failed_job_id=$(jq -r '.jobs[] | select(.conclusion=="failure" and .name!="CI Reproducer") | .id' "$jobs_file" | head -1)
+fi
+
+if [[ -z "$failed_job_id" ]]; then
+  echo "ERROR: No failed job found in run $RUN_ID" >&2
+  exit 1
+fi
+
+failed_job_name=$(jq -r --argjson id "$failed_job_id" '.jobs[] | select(.id==$id) | .name' "$jobs_file" | head -1)
+failed_step_name=$(jq -r --argjson id "$failed_job_id" '.jobs[] | select(.id==$id) | (.steps[]? | select(.conclusion=="failure") | .name)' "$jobs_file" | head -1)
+
+echo "Target failed job: $failed_job_name (id: $failed_job_id)" >&2
+
+echo "Fetching logs via gh run view for failed job..." >&2
+if ! gh run view "$RUN_ID" --job "$failed_job_id" --log > "$log_file" 2>/dev/null; then
+  echo "WARNING: Job-scoped log fetch failed, falling back to full run logs" >&2
+  if ! gh run view "$RUN_ID" --log > "$log_file" 2>/dev/null; then
+    echo "ERROR: Failed to fetch logs from run $RUN_ID" >&2
+    exit 1
   fi
 fi
 
-echo "Target failed job: $FAILED_JOB" >&2
-
-# Fetch full logs for the run and filter for job
-# Note: gh run view doesn't directly support job filtering, so we get full logs and parse
-log_file="$REPRO_TMP/job.log"
-meta_file="$REPRO_TMP/job.meta"
-
-# Ensure directory exists
-mkdir -p "$REPRO_TMP" 2>/dev/null || true
-
-echo "Fetching logs via gh run view..." >&2
-
-# Create temp file for logs
-temp_log=$(mktemp) || temp_log="/tmp/gh_logs_$$"
-trap "rm -f '$temp_log'" EXIT
-
-if gh run view "$RUN_ID" --log > "$temp_log" 2>/dev/null; then
-  # Successfully fetched logs via gh
-  mv "$temp_log" "$log_file"
-  echo "Successfully fetched logs via GitHub CLI" >&2
-elif [[ -f "$GITHUB_STEP_SUMMARY" ]]; then
-  # Fallback: Create mock log from the exit 1 that we know happened
-  echo "Using fallback log format (gh command failed)" >&2
-  {
-    echo "Test reproducer - intentional failure"
-    echo "exit 1"
-  } > "$log_file"
-else
-  # Last resort: Create minimal test log
-  echo "WARNING: Could not fetch logs, creating minimal log" >&2
-  {
-    echo "Failed step detected"
-    echo "Unable to retrieve full logs"
-  } > "$log_file"
-fi
-
 # Extract metadata from log headers
-# Look for job name, matrix context (if any), and error patterns
+# Look for job name, matrix context (if any), and step context
 echo "Extracting metadata..." >&2
 
 # Get matrix context from job name in logs
 # Pattern: "Job: system-tests (cluster, btrfs)" or similar
-matrix_context=$(grep -oP 'Job: [^(]*\(\K[^)]*' "$log_file" 2>/dev/null | head -1 || echo "")
-job_name=$(grep -oP 'Job: \K[^(]*' "$log_file" 2>/dev/null | head -1 || echo "$FAILED_JOB")
+matrix_context=$(grep -oP 'Job: [^(]*\(\K[^)]*' "$log_file" | head -1 || echo "")
+job_name=$(grep -oP 'Job: \K[^(]*' "$log_file" | head -1 || echo "$failed_job_name")
 
 {
   echo "job_name=$job_name"
+  echo "job_id=$failed_job_id"
+  echo "failed_step=$failed_step_name"
   echo "matrix_context=$matrix_context"
   echo "run_id=$RUN_ID"
   echo "run_attempt=$RUN_ATTEMPT"
@@ -96,15 +83,15 @@ job_name=$(grep -oP 'Job: \K[^(]*' "$log_file" 2>/dev/null | head -1 || echo "$F
 
 # Check if log is non-empty
 if [[ ! -s "$log_file" ]]; then
-  echo "ERROR: Failed to create log file" >&2
+  echo "ERROR: Fetched log is empty" >&2
   exit 1
 fi
 
-log_lines=$(wc -l < "$log_file" 2>/dev/null || echo 0)
-echo "Using log with $log_lines lines for job: $job_name" >&2
+log_lines=$(wc -l < "$log_file")
+echo "Fetched $log_lines lines of logs for job: $job_name" >&2
 
 # Quick validation: Look for error patterns
-if ! grep -qi 'panic\|error\|failed\|timeout\|exit' "$log_file"; then
+if ! grep -qi 'panic\|error\|failed\|timeout\|fatal\|exit code' "$log_file"; then
   echo "WARNING: No obvious error patterns found in logs. May be flaky or skipped." >&2
 fi
 

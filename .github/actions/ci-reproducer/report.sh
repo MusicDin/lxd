@@ -27,7 +27,9 @@ report+="# CI Reproducer Report"$'\n\n'
 # === Summary Section ===
 report+="## Summary"$'\n\n'
 
-if [[ -n "$job_name" ]]; then
+if [[ -n "$failed_job" ]]; then
+  report+="- **Failed job:** \`$failed_job\`"$'\n'
+elif [[ -n "$job_name" ]]; then
   report+="- **Failed job:** \`$job_name\`"$'\n'
 fi
 
@@ -35,8 +37,8 @@ if [[ -n "$failed_step" ]]; then
   report+="- **Failed step:** \`$failed_step\`"$'\n'
 fi
 
-if [[ -n "$reproducer_command" ]]; then
-  report+="- **Failed command:** \`${reproducer_command:0:100}\`"$'\n'
+if [[ -n "$failed_command" ]]; then
+  report+="- **Failed command:** \`${failed_command:0:160}\`"$'\n'
 fi
 
 if [[ -n "$error_message" ]]; then
@@ -46,23 +48,10 @@ if [[ -n "$error_message" ]]; then
   report+="- **Key error:** \`${truncated_error}\`"$'\n'
 fi
 
-if [[ -n "$failed_command" ]] || [[ -n "$error_message" ]]; then
-  # Infer likely cause
-  likely_cause=""
-  if [[ "$failed_step" == "panic" ]]; then
-    likely_cause="Code panic (segmentation fault or runtime error in LXD daemon)"
-  elif [[ "$failed_step" == "assertion" ]]; then
-    likely_cause="Test assertion failure (logic error in LXD or test)"
-  elif [[ "$failed_step" == "timeout" ]]; then
-    likely_cause="Test timeout (excessive duration, deadlock, or resource contention)"
-  elif [[ "$validation_safe" != "true" ]]; then
-    likely_cause="Environment issue: $validation_reason"
-  elif grep -q 'flaky' "$REPRO_TMP/job.log" 2>/dev/null; then
-    likely_cause="Likely flaky/intermittent test (timing or race condition)"
-  else
-    likely_cause="Test failure (see error message for details)"
-  fi
+if [[ -n "$likely_cause" ]]; then
   report+="- **Likely cause:** $likely_cause"$'\n'
+elif [[ -n "$error_message" ]]; then
+  report+="- **Likely cause:** Failure inferred from log evidence"$'\n'
 fi
 
 report+="- **Confidence:** $confidence"$'\n\n'
@@ -90,6 +79,8 @@ elif [[ "$reproducer_status" == "timeout" ]]; then
   report+="**not confirmed** (reproducer timed out after $TIMEOUT_SECONDS seconds)"$'\n\n'
 elif [[ "$reproducer_status" == "skipped" ]]; then
   report+="**not attempted** ($validation_reason)"$'\n\n'
+elif [[ "$reproducer_status" == "not-run" ]]; then
+  report+="**not attempted** (derived command was not safe to execute in CI reproducer)"$'\n\n'
 else
   report+="**not attempted** (unable to derive command)"$'\n\n'
 fi
@@ -97,24 +88,20 @@ fi
 # === Potential Fix Section ===
 report+="## Potential Fix"$'\n\n'
 
-if [[ "$confidence" == "High" ]] && [[ "$failed_step" == "panic" ]]; then
-  report+="Panic detected in logs. Recommended action:"$'\n'
-  report+="- Check stack trace in logs for pointer dereference or nil access"$'\n'
-  report+="- Verify boundary conditions in code near the panic"$'\n'
-  report+="- Consider adding defensive checks or error handling"$'\n\n'
-elif [[ "$confidence" == "Medium" ]] && [[ "$failed_step" == "assertion" ]]; then
-  report+="Assertion failure detected. Recommended action:"$'\n'
-  report+="- Review the assertion condition and expected vs actual values"$'\n'
-  report+="- Check for race conditions or ordering issues"$'\n'
-  report+="- Verify state transitions are correct"$'\n\n'
-elif [[ "$confidence" == "Low" ]] && [[ "$reproducer_status" == "timeout" ]]; then
-  report+="Test timed out. This could indicate:"$'\n'
-  report+="- Deadlock or resource contention"$'\n'
-  report+="- Slow test environment"$'\n'
-  report+="- Flaky/intermittent behavior"$'\n\n'
-  report+="Recommend: Run locally to reproduce, increase timeout, or refactor test."$'\n\n'
+if [[ -n "$failed_command" ]]; then
+  report+="Start by re-running the failing command locally and compare output:"$'\n'
+  report+="- \`$failed_command\`"$'\n'
+fi
+
+if [[ -n "$error_message" ]]; then
+  report+="Focus fix area from error signal:"$'\n'
+  report+="- \`${error_message:0:180}\`"$'\n'
+fi
+
+if [[ "$reproducer_status" == "skipped" ]] || [[ "$reproducer_status" == "uncertain" ]] || [[ "$reproducer_status" == "not-run" ]] || [[ -z "$failed_command" ]]; then
+  report+="If command evidence is incomplete, enable shell tracing (for example \`set -x\`) in the failing step to improve next run analysis."$'\n\n'
 else
-  report+="No clear fix identified from logs. Reason: Insufficient error context."$'\n\n'
+  report+="Validate the suspected fix by re-running the same command in CI and locally."$'\n\n'
 fi
 
 # === Validation Section ===
@@ -123,11 +110,11 @@ report+="Commands actually executed:"$'\n\n'
 
 if [[ "$reproducer_status" == "skipped" ]]; then
   report+="- Reproducer not executed (validation failure)"$'\n\n'
-elif [[ "$reproducer_status" == "uncertain" ]]; then
+elif [[ "$reproducer_status" == "uncertain" ]] || [[ "$reproducer_status" == "not-run" ]]; then
   report+="- Unable to derive reproducer command"$'\n\n'
 else
   report+="- \`${reproducer_command:0:100}\` → $reproducer_status"$'\n\n'
-  
+
   # Show output snippet if available
   if [[ -n "$reproducer_stdout" ]] && [[ "$reproducer_stdout" != "\\n" ]]; then
     report+="**Last output:**"$'\n'

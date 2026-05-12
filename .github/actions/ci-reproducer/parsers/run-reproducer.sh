@@ -41,45 +41,36 @@ if [[ "$validation_safe" != "true" ]]; then
   exit 0
 fi
 
-# Derive the minimal reproducer command
-# For system-tests, the basic structure is: test/main.sh GROUP BACKEND
+# Derive the minimal reproducer command from parsed evidence
 reproducer_cmd=""
 
 if [[ -n "$failed_command" ]]; then
-  # If we have the exact failed command, try to run it directly
   reproducer_cmd="$failed_command"
 else
-  # Fall back to constructing test/main.sh command
-  if [[ -n "$test_group" ]] && [[ -n "$backend" ]]; then
-    reproducer_cmd="test/main.sh system-tests:$test_group $backend"
-  elif [[ -n "$test_group" ]]; then
-    reproducer_cmd="test/main.sh system-tests:$test_group"
-  else
-    echo "WARNING: Could not derive reproducer command. Insufficient context." >&2
-    {
-      echo "reproducer_status=uncertain"
-      echo "reproducer_exit_code=1"
-      echo "reproducer_stdout='Could not derive reproducer command'"
-      echo "reproducer_stderr='Missing test group and/or backend'"
-      echo "reproducer_command=''"
-    } > "$repro_result"
-    exit 0
-  fi
+  echo "WARNING: Could not derive reproducer command from logs." >&2
+  {
+    echo "reproducer_status=uncertain"
+    echo "reproducer_exit_code=1"
+    echo "reproducer_stdout='Could not derive reproducer command'"
+    echo "reproducer_stderr='No reliable failing command found in logs'"
+    echo "reproducer_command=''"
+  } > "$repro_result"
+  exit 0
 fi
 
 echo "Reproducer command: $reproducer_cmd" >&2
 
-# Validate command syntax
-if ! [[ "$reproducer_cmd" =~ ^(test/main.sh|lxc|lxd) ]]; then
-  echo "ERROR: Invalid reproducer command (suspicious syntax)" >&2
+# Validate command syntax conservatively
+if ! [[ "$reproducer_cmd" =~ ^(make|go|lxc|lxd|test/|\./|npm|pnpm|yarn|cargo|pytest|python3|bash) ]]; then
+  echo "WARNING: Derived command is not in allowed execution prefixes; reporting command without running it" >&2
   {
-    echo "reproducer_status=error"
-    echo "reproducer_exit_code=1"
-    echo "reproducer_stdout='Invalid reproducer command syntax'"
-    echo "reproducer_stderr='Command does not match expected patterns'"
-    echo "reproducer_command=''"
+    echo "reproducer_status=not-run"
+    echo "reproducer_exit_code=0"
+    echo "reproducer_stdout='Command derivation succeeded but execution was skipped for safety'"
+    echo "reproducer_stderr='Derived command prefix not allowed by safety policy'"
+    echo "reproducer_command=\"$reproducer_cmd\""
   } > "$repro_result"
-  exit 1
+  exit 0
 fi
 
 # Run with timeout and capture output
