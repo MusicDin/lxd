@@ -323,6 +323,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Test reproducer - intentional failure
+        run: |
+          echo "Testing CI Reproducer"
+          exit 1
+
       - name: Tune disk performance
         uses: ./.github/actions/tune-disk-performance
 
@@ -488,6 +493,16 @@ jobs:
 
           # Run the tests for the selected backend
           sudo --preserve-env="${SUDO_PRESERVE_ENV}" ./main.sh "group:${GROUP}"
+
+      - name: Test CI Reproducer with Mock Failure
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.test-reproducer == 'true'
+        env:
+          LXD_BACKEND: ${{ matrix.backends }}
+          GROUP: ${{ matrix.group }}
+        run: |
+          set -eux
+          echo "=== Testing CI Reproducer ===" >&2
+          ./test/ci-reproducer-test-case.sh panic
 
       - name: Upload crash dumps
         if: always()
