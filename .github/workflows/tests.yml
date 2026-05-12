@@ -85,9 +85,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Deliberate failure to test CI reproducer
-        run: exit 1
-
       - name: Require GHA pinning
         uses: ./.github/actions/require-gha-pinning
 
@@ -514,18 +511,17 @@ jobs:
           # Never allow public SSH access
           limit-access-to-actor: true
 
+  fail-for-testing:
+    name: Deliberate failure (CI reproducer test)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fail
+        run: exit 1
+
   ci-reproducer:
     if: ${{ always() && contains(join(needs.*.result, ','), 'failure') }}
     needs:
-      - code-tests
-      - system-tests
-      - snap-tests
-      - tics
-      - client
-      - ui-e2e-tests
-      - documentation
-      - documentation-linkcheck
-      - snap
+      - fail-for-testing
     name: CI Reproducer
     runs-on: ubuntu-24.04
     steps:
