@@ -94,13 +94,17 @@ else
 fi
 
 {
-  echo "failed_job=\"$failed_job\""
-  echo "failed_step=\"$failed_step\""
-  echo "failed_command=\"$failed_command\""
-  echo "error_message=\"$error_message\""
-  echo "likely_cause=\"$likely_cause\""
-  echo "confidence=\"$confidence\""
-  echo "parse_status=\"success\""
+  printf 'failed_job=%q\n'     "$failed_job"
+  printf 'failed_step=%q\n'    "$failed_step"
+  printf 'failed_command=%q\n' "$failed_command"
+  printf 'error_message=%q\n'  "$error_message"
+  printf 'likely_cause=%q\n'   "$likely_cause"
+  printf 'confidence=%q\n'     "$confidence"
+  printf 'parse_status=%q\n'   "success"
+  # File references extracted from the log for the code-reader step.
+  source_files=$(grep -oE '[a-zA-Z0-9_./-]+\.(go|sh|yaml|yml|py|ts|js):[0-9]+' "$log_file" \
+                   | sort -u | head -8 | tr '\n' ' ' || true)
+  printf 'source_files=%q\n'   "${source_files}"
 } > "$result_file"
 
 echo "Parse result saved to $result_file" >&2

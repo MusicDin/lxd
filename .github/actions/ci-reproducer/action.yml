@@ -65,6 +65,14 @@ runs:
         REPRO_TMP: ${{ env.REPRO_TMP }}
       continue-on-error: true
 
+    - id: read-code
+      shell: bash
+      run: ${{ github.action_path }}/parsers/code-reader.sh
+      env:
+        REPRO_TMP: ${{ env.REPRO_TMP }}
+        GITHUB_WORKSPACE: ${{ github.workspace }}
+      continue-on-error: true
+
     - id: validate
       shell: bash
       run: ${{ github.action_path }}/parsers/validator.sh
@@ -88,3 +96,5 @@ runs:
         RUN_ID: ${{ env.RUN_ID }}
         RUN_ATTEMPT: ${{ env.RUN_ATTEMPT }}
         ACTOR: ${{ env.ACTOR }}
+        GITHUB_TOKEN: ${{ env.GITHUB_TOKEN }}
+        GITHUB_REPOSITORY: ${{ env.GITHUB_REPOSITORY }}
