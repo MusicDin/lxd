@@ -85,9 +85,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Deliberate failure to test CI reproducer
-        run: exit 1
-
       - name: Require GHA pinning
         uses: ./.github/actions/require-gha-pinning
 
