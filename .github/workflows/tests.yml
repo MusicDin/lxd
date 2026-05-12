@@ -517,13 +517,6 @@ jobs:
           retention-days: 1
         if: env.GOCOVERDIR != ''
 
-      - name: CI Reproducer
-        uses: ./.github/actions/ci-reproducer
-        if: failure()
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          timeout-seconds: '900'
-
       - name: Tmate debugging session
         if: ${{ failure() && inputs.tmate-debug }}
         timeout-minutes: 30
@@ -531,6 +524,23 @@ jobs:
         with:
           # Never allow public SSH access
           limit-access-to-actor: true
+
+  ci-reproducer:
+    if: failure()
+    needs: system-tests
+    name: CI Reproducer
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run CI Reproducer
+        uses: ./.github/actions/ci-reproducer
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          timeout-seconds: '900'
 
   snap-tests:
     if: github.event_name != 'schedule' || github.repository_owner == 'canonical'

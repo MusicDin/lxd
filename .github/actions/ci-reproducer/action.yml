@@ -77,7 +77,7 @@ runs:
       run: ${{ github.action_path }}/parsers/run-reproducer.sh
       env:
         REPRO_TMP: ${{ env.REPRO_TMP }}
-        TIMEOUT_SECONDS: ${{ env.TIMEOUT_SECONDS }}
+        TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
       continue-on-error: true
 
     - id: generate-report
@@ -85,7 +85,3 @@ runs:
       run: ${{ github.action_path }}/report.sh
       env:
         REPRO_TMP: ${{ env.REPRO_TMP }}
-        GITHUB_STEP_SUMMARY: ${{ env.GITHUB_STEP_SUMMARY }}
-        RUN_ID: ${{ env.RUN_ID }}
-        RUN_ATTEMPT: ${{ env.RUN_ATTEMPT }}
-        ACTOR: ${{ env.ACTOR }}
