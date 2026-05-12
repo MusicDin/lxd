@@ -235,7 +235,7 @@ Reproduction: **not attempted** (insufficient reproducible command evidence)
 ├── report.sh                  # Report generation
 └── parsers/
     ├── log-fetcher.sh         # Fetch logs via gh CLI
-  ├── system-tests.sh        # Parser entrypoint (to be renamed to generic-parser.sh)
+    ├── generic-parser.sh      # Parse failures from any job type
     ├── validator.sh           # Check safety
     └── run-reproducer.sh      # Execute reproducer
 ```
@@ -258,7 +258,7 @@ export GITHUB_RUN_ID="1234567890"
 .github/actions/ci-reproducer/parsers/log-fetcher.sh
 
 # Run parser
-.github/actions/ci-reproducer/parsers/system-tests.sh
+.github/actions/ci-reproducer/parsers/generic-parser.sh
 
 # Generate report
 .github/actions/ci-reproducer/report.sh
