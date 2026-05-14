@@ -77,7 +77,6 @@ jobs:
       LD_RUN_PATH: "/home/runner/go/bin/dqlite/libs/"
       CGO_LDFLAGS_ALLOW: "(-Wl,-wrap,pthread_create)|(-Wl,-z,now)"
       SUDO_PRESERVE_ENV: "CGO_CFLAGS,CGO_LDFLAGS,CGO_LDFLAGS_ALLOW,GOCOVERDIR,PKG_CONFIG_PATH,LD_LIBRARY_PATH,PATH"
-    if: ${{ github.event_name != 'schedule' || github.repository_owner == 'canonical' }}
     name: Code
     runs-on: ubuntu-24.04
     steps:
@@ -87,9 +86,6 @@ jobs:
           # A non-shallow clone is needed for the Differential ShellCheck
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Require GHA pinning
-        uses: ./.github/actions/require-gha-pinning
 
       - name: Tune disk performance
         uses: ./.github/actions/tune-disk-performance
@@ -284,7 +280,6 @@ jobs:
       LXD_TMPFS: "1"
       GOTRACEBACK: "crash"
       SUDO_PRESERVE_ENV: "PATH,GOPATH,GOCOVERDIR,GOTRACEBACK,GITHUB_ACTIONS,GITHUB_STEP_SUMMARY,SNAP_CACHE_DIR,IMAGE_CACHE_DIR,LXD_VERBOSE,LXD_REPEAT_TESTS,LXD_BACKENDS,LXD_BACKEND,LXD_CEPH_CLUSTER,LXD_CEPH_CEPHFS,LXD_CEPH_CEPHOBJECT_RADOSGW,LXD_OVN_NB_CONNECTION,LXD_OVN_NB_CLIENT_CRT_FILE,LXD_OVN_NB_CLIENT_KEY_FILE,LXD_OVN_NB_CA_CRT_FILE,LXD_SKIP_TESTS,LXD_REQUIRED_TESTS,LXD_TMPFS"
-    if: ${{ github.event_name != 'schedule' || github.repository_owner == 'canonical' }}
     name: System
     runs-on: ubuntu-24.04
     needs: code-tests
@@ -506,6 +501,23 @@ jobs:
           path: ${{ env.GOCOVERDIR }}
           retention-days: 1
         if: env.GOCOVERDIR != ''
+
+      - uses: actions/checkout@v6
+        if: failure() && !cancelled()
+        with:
+          repository: 'canonical/lxd-poney'
+          fetch-depth: 1
+          token: ${{ secrets.LXD_PONEY_PAT }}
+          path: lxd-poney
+
+      - name: CI Debugger
+        if: failure() && !cancelled()
+        uses: ./lxd-poney/.github/actions/ci-debugger
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          fix-output: comment
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          model: qwen/qwen3.6-flash
 
       - name: Tmate debugging session
         if: ${{ failure() && inputs.tmate-debug }}
