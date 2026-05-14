@@ -419,24 +419,88 @@ jobs:
           retention-days: 1
         if: env.GOCOVERDIR != ''
 
-      - uses: actions/checkout@v6
-        if: failure() && !cancelled()
-        with:
-          repository: 'canonical/lxd-poney'
-          fetch-depth: 1
-          token: ${{ secrets.LXD_PONEY_PAT }}
-          path: lxd-poney
-          ref: v2
+      # - uses: actions/checkout@v6
+      #   if: failure() && !cancelled()
+      #   with:
+      #     repository: 'canonical/lxd-poney'
+      #     fetch-depth: 1
+      #     token: ${{ secrets.LXD_PONEY_PAT }}
+      #     path: lxd-poney
+      #     ref: v2
 
-      - name: CI Debugger
+      # - name: CI Debugger
+      #   if: failure() && !cancelled()
+      #   uses: ./lxd-poney/.github/actions/ci-debugger
+      #   with:
+      #     openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+      #     fix-output: comment
+      #     github-token: ${{ secrets.GITHUB_TOKEN }}
+      #     # model: qwen/qwen3.6-flash
+      #     model: deepseek/deepseek-v4-pro
+
+      - name: Set log file for CI Debugger
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          log_file="$(mktemp)"
+
+          find /home/runner/actions-runner -type f -path '*/_diag/pages/*.log' -printf '%T@ %p\n' 2>/dev/null |
+            sort -n |
+            cut -d' ' -f2- |
+            while read -r page_log; do
+              cat "$page_log"
+            done > "$log_file"
+
+          echo "TEST_LOG_FILE=$log_file" >> "$GITHUB_ENV"
+          echo "Using log file: $log_file"
+
+      - name: Run Codex
         if: failure() && !cancelled()
-        uses: ./lxd-poney/.github/actions/ci-debugger
+        id: codex
+        uses: openai/codex-action@v1
         with:
-          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
-          fix-output: comment
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          # model: qwen/qwen3.6-flash
-          model: deepseek/deepseek-v4-pro
+          openai-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          responses-api-endpoint: https://openrouter.ai/api/v1/responses
+          model: qwen/qwen3.6-flash
+          prompt: |
+            This is PR #${{ github.event.pull_request.number }} for ${{ github.repository }}.
+            Investigate the test log file ${TEST_LOG_FILE} and the pull request changes.
+            You also have complete access to LXD.
+
+            Your goal is to FIND THE REPRODUCER and suggest a FIX for the issue that caused the failure.
+
+            Once you have enough information:
+
+            ```json
+            {
+              "status": "complete",
+              "summary": "...",
+              "reproducer": "...",
+              "suggested_fix": "...",
+              "suggestions": [...]
+            }
+            ```
+
+            Fields:
+            - `"summary"`: Concise (≤ 5 sentences) explanation of what went wrong.
+            - `"reproducer"`: Markdown string with step-by-step local reproduction instructions, or `null` if not determinable.
+            - `"suggested_fix"`: Concrete description of the fix with code snippets, or `null` if not determinable.
+            - `"suggestions"`: Array of inline code suggestions (see below), or an empty array.
+
+            Each suggestion element:
+            - `"file"`: Relative file path.
+            - `"line"`: 1-based line number.
+            - `"suggestion"`: Exact replacement text (no `+`/`-` diff markers, preserving original indentation). This will be rendered as a GitHub suggestion block that the author can apply with one click.
+
+            Include suggestions whenever you can identify specific lines that need changes.
+
+            Be specific. Reference exact file names, line numbers, and error messages from the logs.
+
+      - name: Summarize Codex findings
+        if: steps.codex.outputs.status == 'complete'
+        run: |
+          echo "${{ needs.codex.outputs.final_message }}" >> $GITHUB_STEP_SUMMARY
 
       - name: Tmate debugging session
         if: ${{ failure() && inputs.tmate-debug }}
