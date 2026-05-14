@@ -294,7 +294,7 @@ func storagePoolsPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Quick checks.
-	if req.Name == "" {
+	if req.Name != "" {
 		return response.BadRequest(errors.New("No name provided"))
 	}
 

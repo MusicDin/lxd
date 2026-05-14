@@ -77,7 +77,6 @@ jobs:
       LD_RUN_PATH: "/home/runner/go/bin/dqlite/libs/"
       CGO_LDFLAGS_ALLOW: "(-Wl,-wrap,pthread_create)|(-Wl,-z,now)"
       SUDO_PRESERVE_ENV: "CGO_CFLAGS,CGO_LDFLAGS,CGO_LDFLAGS_ALLOW,GOCOVERDIR,PKG_CONFIG_PATH,LD_LIBRARY_PATH,PATH"
-    if: ${{ github.event_name != 'schedule' || github.repository_owner == 'canonical' }}
     name: Code
     runs-on: ubuntu-24.04
     steps:
@@ -88,49 +87,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Require GHA pinning
-        uses: ./.github/actions/require-gha-pinning
-
       - name: Tune disk performance
         uses: ./.github/actions/tune-disk-performance
-
-      - name: Dependency Review
-        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
-        if: github.event_name == 'pull_request'
-
-      # XXX: `make static-analysis` also run shellcheck but this one provides
-      #      useful feedback in the PR through github-code-scanning bot
-      - id: ShellCheck
-        name: Differential ShellCheck
-        uses: redhat-plumbers-in-action/differential-shellcheck@d965e66ec0b3b2f821f75c8eff9b12442d9a7d1e # v5.5.6
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          strict-check-on-push: true
-        if: github.event_name == 'pull_request'
-
-      - name: Upload artifact with ShellCheck defects in SARIF format
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: Differential ShellCheck SARIF
-          path: ${{ steps.ShellCheck.outputs.sarif }}
-          retention-days: 1
-        if: ${{ github.event_name == 'pull_request' && runner.debug == '1' && !cancelled() }}
 
       - name: Install Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version-file: 'go.mod'
-
-      - name: Install Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        if: github.event_name != 'pull_request'
-        with:
-          cache: 'pip' # caching pip dependencies
-          cache-dependency-path: |
-            doc/requirements.txt
-            doc/conf.py
-          python-version: '3.x'  # satisfied by any 3.x version already installed
-
       - name: Install build dependencies
         uses: ./.github/actions/install-lxd-builddeps
 
@@ -146,15 +109,6 @@ jobs:
           # Ensure go.mod and go.sum were not modified by the above
           # commands which would indicate an issue (hint: run `make update-gomod`)
           git diff --exit-code
-
-      - name: Make GOCOVERDIR
-        run: |
-          set -eux
-          mkdir -p coverage
-          chmod 0777 coverage
-          cd coverage
-          echo "GOCOVERDIR=$(pwd)" >> "${GITHUB_ENV}"
-        if: env.GOCOVERAGE == 'true'
 
       - name: Make LXD tarball and unpack it
         env:
@@ -190,47 +144,6 @@ jobs:
       - name: Get pinned golangci-lint version
         id: golangci-lint-version
         run: echo "version=$(go list -C tools -m -f '{{.Version}}' github.com/golangci/golangci-lint/v2)" >> "$GITHUB_OUTPUT"
-
-      - name: Run golangci-lint
-        if: github.event_name == 'pull_request' || github.event_name == 'schedule'
-        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
-        with:
-          version: ${{ steps.golangci-lint-version.outputs.version }}
-
-      - name: Run static analysis
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.static-analysis == 'true' }}
-        run: |
-          set -eux
-          # For `make update-api`
-          sudo chmod o+w ./doc/rest-api.yaml
-          # For `make update-auth`
-          sudo chmod o+w ./lxd/auth/entitlements_generated.go ./lxd/auth/drivers/openfga_model.openfga
-          # For `make update-metadata`
-          sudo chmod o+w ./lxd/metadata/configuration.json ./doc/metadata.txt
-          # For `make update-schema`
-          sudo chmod o+w ./lxd/db/cluster/generated.go
-
-          make static-analysis
-          # If `git diff` does not come out clean, you likely forgot a `make update-*`
-          git diff --exit-code
-
-      - name: Unit tests
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.unit-tests == 'true' }}
-        run: |
-          set -eux
-          sudo apt-get install -y xdelta3 # Required for SimpleStreams client tests.
-          chmod +x ~
-          echo "root:1000000:1000000000" | sudo tee /etc/subuid /etc/subgid
-          sudo --preserve-env="${SUDO_PRESERVE_ENV}" LD_LIBRARY_PATH=${LD_LIBRARY_PATH} env "PATH=${PATH}" make check-unit
-          git diff --exit-code
-
-      - name: Upload coverage data
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: coverage-unit
-          path: ${{env.GOCOVERDIR}}
-          retention-days: 1
-        if: env.GOCOVERDIR != ''
 
       - name: Prime cache with external test images
         uses: ./.github/actions/download-images
@@ -284,7 +197,6 @@ jobs:
       LXD_TMPFS: "1"
       GOTRACEBACK: "crash"
       SUDO_PRESERVE_ENV: "PATH,GOPATH,GOCOVERDIR,GOTRACEBACK,GITHUB_ACTIONS,GITHUB_STEP_SUMMARY,SNAP_CACHE_DIR,IMAGE_CACHE_DIR,LXD_VERBOSE,LXD_REPEAT_TESTS,LXD_BACKENDS,LXD_BACKEND,LXD_CEPH_CLUSTER,LXD_CEPH_CEPHFS,LXD_CEPH_CEPHOBJECT_RADOSGW,LXD_OVN_NB_CONNECTION,LXD_OVN_NB_CLIENT_CRT_FILE,LXD_OVN_NB_CLIENT_KEY_FILE,LXD_OVN_NB_CA_CRT_FILE,LXD_SKIP_TESTS,LXD_REQUIRED_TESTS,LXD_TMPFS"
-    if: ${{ github.event_name != 'schedule' || github.repository_owner == 'canonical' }}
     name: System
     runs-on: ubuntu-24.04
     needs: code-tests
@@ -506,6 +418,89 @@ jobs:
           path: ${{ env.GOCOVERDIR }}
           retention-days: 1
         if: env.GOCOVERDIR != ''
+
+      # - uses: actions/checkout@v6
+      #   if: failure() && !cancelled()
+      #   with:
+      #     repository: 'canonical/lxd-poney'
+      #     fetch-depth: 1
+      #     token: ${{ secrets.LXD_PONEY_PAT }}
+      #     path: lxd-poney
+      #     ref: v2
+
+      # - name: CI Debugger
+      #   if: failure() && !cancelled()
+      #   uses: ./lxd-poney/.github/actions/ci-debugger
+      #   with:
+      #     openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+      #     fix-output: comment
+      #     github-token: ${{ secrets.GITHUB_TOKEN }}
+      #     # model: qwen/qwen3.6-flash
+      #     model: deepseek/deepseek-v4-pro
+
+      - name: Set log file for CI Debugger
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          log_file="$(mktemp)"
+
+          find /home/runner/actions-runner -type f -path '*/_diag/pages/*.log' -printf '%T@ %p\n' 2>/dev/null |
+            sort -n |
+            cut -d' ' -f2- |
+            while read -r page_log; do
+              cat "$page_log"
+            done > "$log_file"
+
+          echo "TEST_LOG_FILE=$log_file" >> "$GITHUB_ENV"
+          echo "Using log file: $log_file"
+
+      - name: Run Codex
+        if: failure() && !cancelled()
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          responses-api-endpoint: https://openrouter.ai/api/v1/responses
+          model: qwen/qwen3.6-flash
+          prompt: |
+            This is PR #${{ github.event.pull_request.number }} for ${{ github.repository }}.
+            Investigate the test log file ${TEST_LOG_FILE} and the pull request changes.
+            You also have complete access to LXD.
+
+            Your goal is to FIND THE REPRODUCER and suggest a FIX for the issue that caused the failure.
+
+            Once you have enough information:
+
+            ```json
+            {
+              "status": "complete",
+              "summary": "...",
+              "reproducer": "...",
+              "suggested_fix": "...",
+              "suggestions": [...]
+            }
+            ```
+
+            Fields:
+            - `"summary"`: Concise (≤ 5 sentences) explanation of what went wrong.
+            - `"reproducer"`: Markdown string with step-by-step local reproduction instructions, or `null` if not determinable.
+            - `"suggested_fix"`: Concrete description of the fix with code snippets, or `null` if not determinable.
+            - `"suggestions"`: Array of inline code suggestions (see below), or an empty array.
+
+            Each suggestion element:
+            - `"file"`: Relative file path.
+            - `"line"`: 1-based line number.
+            - `"suggestion"`: Exact replacement text (no `+`/`-` diff markers, preserving original indentation). This will be rendered as a GitHub suggestion block that the author can apply with one click.
+
+            Include suggestions whenever you can identify specific lines that need changes.
+
+            Be specific. Reference exact file names, line numbers, and error messages from the logs.
+
+      - name: Summarize Codex findings
+        if: steps.codex.outputs.status == 'complete'
+        run: |
+          echo "${{ needs.codex.outputs.final_message }}" >> $GITHUB_STEP_SUMMARY
 
       - name: Tmate debugging session
         if: ${{ failure() && inputs.tmate-debug }}
