@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/canonical/lxd/lxd/storage/block"
@@ -253,22 +254,33 @@ func (c *connectorSCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilter
 	// Trigger an immediate rescan before polling begins.
 	rescanDevice()
 
+	// Create a cancellable context for the rescan goroutine so it stops as soon
+	// as WaitDiskDevicePath returns, even if ctx has not yet expired.
+	rescanCtx, cancelRescan := context.WithCancel(ctx)
+	rescanWg := sync.WaitGroup{}
+
+	defer func() {
+		cancelRescan()
+		rescanWg.Wait()
+	}()
+
 	// Periodically re-trigger SCSI bus rescans while waiting for the device.
-	go func() {
+	rescanWg.Go(func() {
 		rescanInterval := time.Second
+
 		timer := time.NewTimer(rescanInterval)
 		defer timer.Stop()
 
 		for {
 			select {
-			case <-ctx.Done():
+			case <-rescanCtx.Done():
 				return
 			case <-timer.C:
 				rescanDevice()
 				timer.Reset(rescanInterval)
 			}
 		}
-	}()
+	})
 
 	devicePath, err := block.WaitDiskDevicePath(ctx, scsiDiskDevicePrefix, diskPathFilter)
 	if err != nil {
