@@ -85,6 +85,18 @@ func (PowerStoreVolume) selector() string {
 	return "id,name,type,size,logical_used,wwn"
 }
 
+// PowerStoreVolumeAttachment represents a PowerStore volume attachment.
+type PowerStoreVolumeAttachment struct {
+	ID       string `json:"id,omitempty"`
+	VolumeID string `json:"volume_id,omitempty"`
+	HostID   string `json:"host_id,omitempty"`
+	LUN      int    `json:"logical_unit_number,omitempty"`
+}
+
+func (PowerStoreVolumeAttachment) selector() string {
+	return "id,volume_id,host_id,logical_unit_number"
+}
+
 // PowerStoreApplianceMetrics represents metrics collected from a PowerStore appliance.
 type PowerStoreApplianceMetrics struct {
 	ID                     string `json:"id,omitempty"`
@@ -603,25 +615,6 @@ func (c *PowerStoreClient) GetCurrentHost(connectorType string, qn string) (*Pow
 	return &host, nil
 }
 
-// GetHost retrieves host using its ID.
-func (c *PowerStoreClient) GetHost(hostID string) (*PowerStoreHost, error) {
-	var host PowerStoreHost
-
-	url := api.NewURL().Path("api", "rest", "host", hostID)
-	url = url.WithQuery("select", host.selector())
-
-	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &host, nil)
-	if err != nil {
-		if isPowerStoreError(err, http.StatusNotFound) {
-			return nil, api.StatusErrorf(http.StatusNotFound, "Host with ID %q not found", hostID)
-		}
-
-		return nil, fmt.Errorf("Failed retrieving PowerStore host: %w", err)
-	}
-
-	return &host, nil
-}
-
 // CreateHost creates new host and returns its ID.
 func (c *PowerStoreClient) CreateHost(hostName string, connectorType string, qn string) (string, error) {
 	portType, err := powerStoreConnectorToPortType(connectorType)
@@ -935,17 +928,34 @@ func (c *PowerStoreClient) RestoreVolume(volumeID string, snapshotID string) err
 	return nil
 }
 
+// GetVolumeAttachments retrieves host to volume mapping for a volume with the given ID.
+func (c *PowerStoreClient) GetVolumeAttachments(volumeID string) ([]PowerStoreVolumeAttachment, error) {
+	var attachments []PowerStoreVolumeAttachment
+
+	url := api.NewURL().Path("api", "rest", "host_volume_mapping")
+	url = url.WithQuery("volume_id", "eq."+volumeID)
+	url = url.WithQuery("limit", strconv.Itoa(powerStoreQueryResponseLimit))
+	url = url.WithQuery("select", PowerStoreVolumeAttachment{}.selector())
+
+	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &attachments, nil)
+	if err != nil {
+		return nil, fmt.Errorf("Failed retrieving PowerStore volume attachments: %w", err)
+	}
+
+	return attachments, nil
+}
+
 // AttachVolumeToHost attaches (maps) volume to host, returning true if the volume was freshly
 // attached to the host, and false if the volume was already attached to the host.
 func (c *PowerStoreClient) AttachVolumeToHost(volumeID string, hostID string) (bool, error) {
 	// Check if the volume is already attached to the host.
-	host, err := c.GetHost(hostID)
+	attachments, err := c.GetVolumeAttachments(volumeID)
 	if err != nil {
 		return false, err
 	}
 
-	for _, mapping := range host.MappedVolumes {
-		if mapping.VolumeID == volumeID {
+	for _, attachment := range attachments {
+		if attachment.HostID == hostID {
 			// The volume is already attached to the host.
 			return false, nil
 		}
