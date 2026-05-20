@@ -362,9 +362,9 @@ func (d *powerstore) targets() (map[string][]string, error) {
 			qn = r.SubNQN
 		case connectors.FCDiscoveryRecord:
 			// Fiber channel has no concept of qualified name, but since QN is used as
-			// a key in the map of targets, return WWPN both as the address and the QN.
-			address = r.PortName
+			// a key in the map of targets, return WWPN as QN.
 			qn = r.PortName
+			address = ""
 		default:
 			return "", "", fmt.Errorf("Unknown discovery log record entry type %T", record)
 		}
@@ -384,7 +384,7 @@ func (d *powerstore) targets() (map[string][]string, error) {
 			continue
 		}
 
-		if len(filterAddresses) > 0 && !slices.Contains(filterAddresses, address) {
+		if address != "" && len(filterAddresses) > 0 && !slices.Contains(filterAddresses, address) {
 			continue
 		}
 

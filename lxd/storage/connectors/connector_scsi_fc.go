@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -95,23 +94,54 @@ func (c *connectorSCSIFC) QualifiedName() (string, error) {
 // Connect is a no-op for FC. The HBA driver handles login automatically.
 // The SCSI bus rescans are triggered when waiting for disk device path, which is everything
 // that has to be done to make the device visible.
-func (c *connectorSCSIFC) Connect(ctx context.Context, WWPN string, targetAddresses ...string) (revert.Hook, error) {
+func (c *connectorSCSIFC) Connect(ctx context.Context, WWPN string, luns ...string) (revert.Hook, error) {
 	revert := revert.New()
 	defer revert.Fail()
 
-	luns := make([]int, len(targetAddresses))
-	for i, addr := range targetAddresses {
-		lun, err := strconv.ParseInt(addr, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to parse LUN %q: %w", addr, err)
-		}
+	fcHostPath := "/sys/class/fc_host"
 
-		luns[i] = int(lun)
-	}
-
-	err := rescanFC(luns)
+	hosts, err := os.ReadDir(fcHostPath)
 	if err != nil {
 		return nil, fmt.Errorf("Failed initial SCSI rescan for FC: %w", err)
+	}
+
+	var scanHost string
+	for _, host := range hosts {
+		portNamePath := filepath.Join(fcHostPath, host.Name(), "port_name")
+		portNameBytes, err := os.ReadFile(portNamePath)
+		if err != nil {
+			continue
+		}
+
+		portName := string(portNameBytes)
+		portName = strings.ToLower(portName)
+		portName = strings.TrimSpace(portName)
+		portName = strings.TrimPrefix(portName, "0x")
+
+		if portName == WWPN {
+			scanHost = host.Name()
+			break
+		}
+	}
+
+	if scanHost == "" {
+		return nil, fmt.Errorf("No FC host with WWPN %q found", WWPN)
+	}
+
+	// If no LUNs were specified, trigger a full rescan for the host.
+	if len(luns) == 0 {
+		luns = []string{"-"}
+	}
+
+	// Scan target format is "<channel> <target> <lun>", where "-" is a wildcard.
+	scanTargets := make([]string, len(luns))
+	for i, lun := range luns {
+		scanTargets[i] = "- " + scanHost + " " + lun
+	}
+
+	for _, scanTarget := range scanTargets {
+		scanPath := filepath.Join("/sys/class/scsi_host", scanHost, "scan")
+		_ = os.WriteFile(scanPath, []byte(scanTarget), 0200)
 	}
 
 	revert.Success()
@@ -491,36 +521,4 @@ func waitMultipathReady(ctx context.Context, devicePath string) error {
 
 		time.Sleep(500 * time.Millisecond)
 	}
-}
-
-// rescanFC triggers SCSI bus rescans on all FC hosts for the specified LUNs.
-// If no LUNs are specified, a wildcard is used to rescan all LUNs.
-func rescanFC(luns []int) error {
-	fcHostPath := "/sys/class/fc_host"
-
-	hosts, err := os.ReadDir(fcHostPath)
-	if err != nil {
-		return err
-	}
-
-	// Scan target format is "<channel> <target> <lun>", where "-" is a wildcard.
-	scanTargets := make([]string, len(luns))
-
-	for i, lun := range luns {
-		scanTargets[i] = "- - " + strconv.Itoa(lun)
-	}
-
-	if len(scanTargets) == 0 {
-		scanTargets = []string{"- - -"}
-	}
-
-	for _, host := range hosts {
-		for _, target := range scanTargets {
-			hostNum := strings.TrimPrefix(host.Name(), "host")
-			scanPath := filepath.Join("/sys/class/scsi_host", "host"+hostNum, "scan")
-			_ = os.WriteFile(scanPath, []byte(target), 0200)
-		}
-	}
-
-	return nil
 }
