@@ -7,8 +7,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/canonical/lxd/lxd/storage/block"
@@ -95,8 +95,27 @@ func (c *connectorSCSIFC) QualifiedName() (string, error) {
 // Connect is a no-op for FC. The HBA driver handles login automatically.
 // The SCSI bus rescans are triggered when waiting for disk device path, which is everything
 // that has to be done to make the device visible.
-func (c *connectorSCSIFC) Connect(ctx context.Context, targetQN string, targetAddresses ...string) (revert.Hook, error) {
-	return revert.New().Fail, nil
+func (c *connectorSCSIFC) Connect(ctx context.Context, WWPN string, targetAddresses ...string) (revert.Hook, error) {
+	revert := revert.New()
+	defer revert.Fail()
+
+	luns := make([]int, len(targetAddresses))
+	for i, addr := range targetAddresses {
+		lun, err := strconv.ParseInt(addr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to parse LUN %q: %w", addr, err)
+		}
+
+		luns[i] = int(lun)
+	}
+
+	err := rescanFC(luns)
+	if err != nil {
+		return nil, fmt.Errorf("Failed initial SCSI rescan for FC: %w", err)
+	}
+
+	revert.Success()
+	return revert.Fail, nil
 }
 
 // Disconnect is a no-op for FC. The HBA driver manages fabric connectivity automatically.
@@ -233,68 +252,39 @@ func (c *connectorSCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilter
 		defer cancel()
 	}
 
-	rescanDevice := func() {
-		fcHostPath := "/sys/class/fc_host"
+	// // Trigger an immediate rescan before polling begins.
+	// err := rescanFC(luns)
+	// if err != nil {
+	// 	return "", fmt.Errorf("Failed SCSI rescan for FC: %w", err)
+	// }
 
-		hosts, err := os.ReadDir(fcHostPath)
-		if err != nil {
-			return
-		}
+	// // Create a cancellable context for the rescan goroutine so it stops as soon
+	// // as WaitDiskDevicePath returns, even if ctx has not yet expired.
+	// rescanCtx, cancelRescan := context.WithCancel(ctx)
+	// rescanWg := sync.WaitGroup{}
 
-		if len(luns) == 0 {
-			luns = []int{-1}
-		}
+	// defer func() {
+	// 	cancelRescan()
+	// 	rescanWg.Wait()
+	// }()
 
-		for _, lun := range luns {
-			var scanTarget string
-			if lun < 0 {
-				// Scan all LUNs if a specifc one is not provided.
-				scanTarget = "- - -"
-			} else {
-				scanTarget = fmt.Sprintf("- - %d", lun)
-			}
+	// // Periodically re-trigger SCSI bus rescans while waiting for the device.
+	// rescanWg.Go(func() {
+	// 	rescanInterval := time.Second
 
-			for _, host := range hosts {
-				hostNum := strings.TrimPrefix(host.Name(), "host")
-				scanPath := filepath.Join("/sys/class/scsi_host", "host"+hostNum, "scan")
+	// 	timer := time.NewTimer(rescanInterval)
+	// 	defer timer.Stop()
 
-				// Writing to the scan file triggers a SCSI bus rescan for that host.
-				// The format is "<channel> <target> <lun>"; "-" is a wildcard.
-				_ = os.WriteFile(scanPath, []byte(scanTarget), 0200)
-			}
-		}
-	}
-
-	// Trigger an immediate rescan before polling begins.
-	rescanDevice()
-
-	// Create a cancellable context for the rescan goroutine so it stops as soon
-	// as WaitDiskDevicePath returns, even if ctx has not yet expired.
-	rescanCtx, cancelRescan := context.WithCancel(ctx)
-	rescanWg := sync.WaitGroup{}
-
-	defer func() {
-		cancelRescan()
-		rescanWg.Wait()
-	}()
-
-	// Periodically re-trigger SCSI bus rescans while waiting for the device.
-	rescanWg.Go(func() {
-		rescanInterval := time.Second
-
-		timer := time.NewTimer(rescanInterval)
-		defer timer.Stop()
-
-		for {
-			select {
-			case <-rescanCtx.Done():
-				return
-			case <-timer.C:
-				rescanDevice()
-				timer.Reset(rescanInterval)
-			}
-		}
-	})
+	// 	for {
+	// 		select {
+	// 		case <-rescanCtx.Done():
+	// 			return
+	// 		case <-timer.C:
+	// 			_ = rescanFC(luns)
+	// 			timer.Reset(rescanInterval)
+	// 		}
+	// 	}
+	// })
 
 	devicePath, err := block.WaitDiskDevicePath(ctx, scsiDiskDevicePrefix, diskPathFilter)
 	if err != nil {
@@ -362,9 +352,11 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 		return nil
 	}
 
+	// removeDevice removes device from the system if the device is removable.
 	removeDevice := func(devName string) error {
 		path := "/sys/block/" + devName + "/device/delete"
-		err := os.WriteFile(path, []byte("1"), 0400)
+
+		err := os.WriteFile(path, []byte("1"), 0200)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -375,60 +367,58 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 	deviceName := filepath.Base(devicePath)
 
 	if isMultipathDevice(devicePath) {
-		// Collect slave devices before removing the map because
-		// /sys/block/dm-X/slaves/ disappears after the map is flushed.
+		// Collect the slave devices before removing the multipath map,
+		// as /sys/block/dm-X/slaves/ will be gone after removal.
 		slavesPath := filepath.Join("/sys/block", deviceName, "slaves")
 		slaves, _ := os.ReadDir(slavesPath)
 
-		removeMultipathDevice := func() error {
-			var err error
-			for range 10 {
-				if ctx.Err() != nil {
-					if err == nil {
-						err = ctx.Err()
-					}
-
-					break
-				}
-
-				_, err = shared.RunCommand(ctx, "multipath", "-f", devicePath)
+		// Remove the multipath map.
+		//
+		// This may fail transiently with "map in use" if the device is still
+		// briefly open (for example by udev), so retry a few times before giving up.
+		var err error
+		for range 10 {
+			ctxErr := ctx.Err()
+			if ctxErr != nil {
+				// Preserve the command error if we already have one.
+				// Otherwise return the generic context error.
 				if err == nil {
-					return nil
+					err = ctxErr
 				}
 
-				time.Sleep(500 * time.Millisecond)
+				break
 			}
 
+			_, err = shared.RunCommand(ctx, "multipath", "-f", devicePath)
+			if err == nil {
+				break
+			}
+
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		if err != nil {
 			return fmt.Errorf("Failed removing multipath device %q: %w", devicePath, err)
 		}
 
-		err := removeMultipathDevice()
-		if err != nil {
-			return err
-		}
-
+		// Remove the underlying SCSI devices that were part of the multipath map.
+		// If not removed, they remain on the system and cause I/O errors when the
+		// volume is disconnected from the storage array.
 		for _, slave := range slaves {
 			err := removeDevice(slave.Name())
 			if err != nil {
 				return fmt.Errorf("Failed removing multipath slave device %q: %w", slave.Name(), err)
 			}
 		}
-
-		// multipathd may recreate the map before the paths are fully gone;
-		// flush again if the device reappeared so WaitDiskDeviceGone works.
-		if shared.PathExists(devicePath) {
-			err := removeMultipathDevice()
-			if err != nil {
-				return err
-			}
-		}
 	} else {
+		// For non-multipath device (/dev/sd*), remove the device itself.
 		err := removeDevice(deviceName)
 		if err != nil {
-			return fmt.Errorf("Failed removing SCSI/FC device %q: %w", devicePath, err)
+			return fmt.Errorf("Failed removing device %q: %w", devicePath, err)
 		}
 	}
 
+	// Wait until the device has disappeared.
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -490,4 +480,36 @@ func waitMultipathReady(ctx context.Context, devicePath string) error {
 
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+// rescanFC triggers SCSI bus rescans on all FC hosts for the specified LUNs.
+// If no LUNs are specified, a wildcard is used to rescan all LUNs.
+func rescanFC(luns []int) error {
+	fcHostPath := "/sys/class/fc_host"
+
+	hosts, err := os.ReadDir(fcHostPath)
+	if err != nil {
+		return err
+	}
+
+	// Scan target format is "<channel> <target> <lun>", where "-" is a wildcard.
+	scanTargets := make([]string, len(luns))
+
+	for i, lun := range luns {
+		scanTargets[i] = "- - " + strconv.Itoa(lun)
+	}
+
+	if len(scanTargets) == 0 {
+		scanTargets = []string{"- - -"}
+	}
+
+	for _, host := range hosts {
+		for _, target := range scanTargets {
+			hostNum := strings.TrimPrefix(host.Name(), "host")
+			scanPath := filepath.Join("/sys/class/scsi_host", "host"+hostNum, "scan")
+			_ = os.WriteFile(scanPath, []byte(target), 0200)
+		}
+	}
+
+	return nil
 }

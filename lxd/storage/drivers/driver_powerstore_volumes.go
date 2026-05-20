@@ -20,6 +20,7 @@ import (
 	"github.com/canonical/lxd/lxd/instancewriter"
 	"github.com/canonical/lxd/lxd/migration"
 	"github.com/canonical/lxd/lxd/storage/block"
+	"github.com/canonical/lxd/lxd/storage/connectors"
 	"github.com/canonical/lxd/lxd/storage/filesystem"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
@@ -1664,7 +1665,13 @@ func (d *powerstore) mapVolume(vol Volume) (lun int, cleanup revert.Hook, err er
 
 	// Connect to the array.
 	for qualifiedName, addresses := range targets {
-		connReverter, err := connector.Connect(d.state.ShutdownCtx, qualifiedName, addresses...)
+		var connReverter revert.Hook
+		if connector.Type() == connectors.TypeSCSIFC {
+			connReverter, err = connector.Connect(d.state.ShutdownCtx, qualifiedName, strconv.Itoa(lun))
+		} else {
+			connReverter, err = connector.Connect(d.state.ShutdownCtx, qualifiedName, addresses...)
+		}
+
 		if err != nil {
 			return 0, nil, err
 		}
