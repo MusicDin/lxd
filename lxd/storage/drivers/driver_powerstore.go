@@ -362,8 +362,8 @@ func (d *powerstore) targets() (map[string][]string, error) {
 			qn = r.SubNQN
 		case connectors.FCDiscoveryRecord:
 			// Set only WWPN, which is required to discover SCSI host.
-			address = ""
 			qn = r.PortName
+			address = ""
 		default:
 			return "", "", fmt.Errorf("Unknown discovery log record entry type %T", record)
 		}
@@ -383,7 +383,7 @@ func (d *powerstore) targets() (map[string][]string, error) {
 			continue
 		}
 
-		if len(filterAddresses) > 0 && !slices.Contains(filterAddresses, address) {
+		if address != "" && len(filterAddresses) > 0 && !slices.Contains(filterAddresses, address) {
 			continue
 		}
 
