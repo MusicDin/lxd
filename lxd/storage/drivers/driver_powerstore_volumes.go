@@ -1562,8 +1562,10 @@ func (d *powerstore) getMappedDevicePath(vol Volume, mapVolume bool) (string, re
 		return "", nil, err
 	}
 
+	var lun int
 	if mapVolume {
-		cleanup, err := d.mapVolume(vol)
+		var cleanup func()
+		lun, cleanup, err = d.mapVolume(vol)
 		if err != nil {
 			return "", nil, err
 		}
@@ -1594,7 +1596,7 @@ func (d *powerstore) getMappedDevicePath(vol Volume, mapVolume bool) (string, re
 	var devicePath string
 	if mapVolume {
 		// Wait until the disk device is mapped to the host.
-		devicePath, err = connector.WaitDiskDevicePath(d.state.ShutdownCtx, devicePathFilter)
+		devicePath, err = connector.WaitDiskDevicePath(d.state.ShutdownCtx, devicePathFilter, lun)
 	} else {
 		// Expect device to be already mapped.
 		devicePath, err = connector.GetDiskDevicePath(devicePathFilter)
@@ -1609,8 +1611,8 @@ func (d *powerstore) getMappedDevicePath(vol Volume, mapVolume bool) (string, re
 	return devicePath, cleanup, nil
 }
 
-// mapVolume maps the given volume onto this host.
-func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
+// mapVolume maps the given volume onto this host and returns the LUN assigned by the array.
+func (d *powerstore) mapVolume(vol Volume) (lun int, cleanup revert.Hook, err error) {
 	client := d.client()
 
 	reverter := revert.New()
@@ -1618,17 +1620,17 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 
 	connector, err := d.connector()
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 
 	volID, err := d.getVolumeID(vol)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 
 	unlock, err := remoteVolumeMapLock(connector.Type(), d.Info().Name)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 
 	defer unlock()
@@ -1636,15 +1638,15 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 	// Ensure the host exists and is configured with the correct QN.
 	hostID, cleanup, err := d.ensureHost()
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 
 	reverter.Add(cleanup)
 
-	// Ensure the volume is connected to the host.
-	connCreated, err := client.AttachVolumeToHost(volID, hostID)
+	// Ensure the volume is connected to the host, obtaining the assigned LUN.
+	lun, connCreated, err := client.AttachVolumeToHost(volID, hostID)
 	if err != nil {
-		return nil, fmt.Errorf("Failed attaching volume %q to host: %w", vol.name, err)
+		return 0, nil, fmt.Errorf("Failed attaching volume %q to host: %w", vol.name, err)
 	}
 
 	if connCreated {
@@ -1654,7 +1656,7 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 	// Find the array's qualified name for the configured mode.
 	targets, err := d.targets()
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 
 	outerReverter := revert.New()
@@ -1664,7 +1666,7 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 	for qualifiedName, addresses := range targets {
 		connReverter, err := connector.Connect(d.state.ShutdownCtx, qualifiedName, addresses...)
 		if err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 
 		// If connect succeeded it means we have at least one established connection.
@@ -1685,7 +1687,7 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 	}
 
 	reverter.Success()
-	return outerReverter.Fail, nil
+	return lun, outerReverter.Fail, nil
 }
 
 // unmapVolume unmaps the given volume from this host.

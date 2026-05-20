@@ -945,19 +945,20 @@ func (c *PowerStoreClient) GetVolumeAttachments(volumeID string) ([]PowerStoreVo
 	return attachments, nil
 }
 
-// AttachVolumeToHost attaches (maps) volume to host, returning true if the volume was freshly
-// attached to the host, and false if the volume was already attached to the host.
-func (c *PowerStoreClient) AttachVolumeToHost(volumeID string, hostID string) (bool, error) {
+// AttachVolumeToHost attaches (maps) volume to host, returning the assigned LUN and
+// true if the volume was freshly attached to the host, or the existing LUN and false if
+// the volume was already attached to the host.
+func (c *PowerStoreClient) AttachVolumeToHost(volumeID string, hostID string) (lun int, created bool, err error) {
 	// Check if the volume is already attached to the host.
 	attachments, err := c.GetVolumeAttachments(volumeID)
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
 
 	for _, attachment := range attachments {
 		if attachment.HostID == hostID {
 			// The volume is already attached to the host.
-			return false, nil
+			return attachment.LUN, false, nil
 		}
 	}
 
@@ -969,10 +970,22 @@ func (c *PowerStoreClient) AttachVolumeToHost(volumeID string, hostID string) (b
 	url := api.NewURL().Path("api", "rest", "volume", volumeID, "attach")
 	err = c.requestAuthenticated(http.MethodPost, url.URL, req, nil, nil)
 	if err != nil {
-		return false, fmt.Errorf("Failed attaching PowerStore volume to the host: %w", err)
+		return 0, false, fmt.Errorf("Failed attaching PowerStore volume to the host: %w", err)
 	}
 
-	return true, nil
+	// Fetch the LUN assigned by the array for the newly created mapping.
+	attachments, err = c.GetVolumeAttachments(volumeID)
+	if err != nil {
+		return 0, true, fmt.Errorf("Failed retrieving volume attachments after attach: %w", err)
+	}
+
+	for _, attachment := range attachments {
+		if attachment.HostID == hostID {
+			return attachment.LUN, true, nil
+		}
+	}
+
+	return 0, true, nil
 }
 
 // DetachVolumeFromHost detaches (unmaps) volume from host.

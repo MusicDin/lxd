@@ -225,7 +225,7 @@ func (c *connectorSCSIFC) Discover(ctx context.Context, targetAddresses ...strin
 // FC fabric.
 // If the device is not a multipath device, multipath is forced and the device path is looked up again.
 // An error is returned if no multipath device is found after that.
-func (c *connectorSCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc) (string, error) {
+func (c *connectorSCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc, luns ...int) (string, error) {
 	_, ok := ctx.Deadline()
 	if !ok {
 		var cancel context.CancelFunc
@@ -241,13 +241,27 @@ func (c *connectorSCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilter
 			return
 		}
 
-		for _, host := range hosts {
-			hostNum := strings.TrimPrefix(host.Name(), "host")
-			scanPath := filepath.Join("/sys/class/scsi_host", "host"+hostNum, "scan")
+		if len(luns) == 0 {
+			luns = []int{-1}
+		}
 
-			// Writing "- - -" to the scan file triggers a rescan of the SCSI bus
-			// for that host, which is necessary for discovering new FC LUNs.
-			_ = os.WriteFile(scanPath, []byte("- - -"), 0200)
+		for _, lun := range luns {
+			var scanTarget string
+			if lun < 0 {
+				// Scan all LUNs if a specifc one is not provided.
+				scanTarget = "- - -"
+			} else {
+				scanTarget = fmt.Sprintf("- - %d", lun)
+			}
+
+			for _, host := range hosts {
+				hostNum := strings.TrimPrefix(host.Name(), "host")
+				scanPath := filepath.Join("/sys/class/scsi_host", "host"+hostNum, "scan")
+
+				// Writing to the scan file triggers a SCSI bus rescan for that host.
+				// The format is "<channel> <target> <lun>"; "-" is a wildcard.
+				_ = os.WriteFile(scanPath, []byte(scanTarget), 0200)
+			}
 		}
 	}
 

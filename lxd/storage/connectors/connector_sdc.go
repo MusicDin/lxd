@@ -81,7 +81,7 @@ func (c *connectorSDC) Discover(ctx context.Context, targetAddresses ...string) 
 }
 
 // WaitDiskDevicePath waits for the mapped device to appear and returns its path.
-func (c *connectorSDC) WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc) (string, error) {
+func (c *connectorSDC) WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc, _ ...int) (string, error) {
 	return block.WaitDiskDevicePath(ctx, sdcDiskDevicePrefix, diskPathFilter)
 }
 
