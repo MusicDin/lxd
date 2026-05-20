@@ -352,7 +352,7 @@ func (c *connectorISCSI) Discover(ctx context.Context, targetAddresses ...string
 // WaitDiskDevicePath waits for the mapped iSCSI device to appear.
 // If the device is not a multipath device, multipath is forced and the device path is looked up again.
 // An error is returned if no multipath device is found after that.
-func (c *connectorISCSI) WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc, _ ...int) (string, error) {
+func (c *connectorISCSI) WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc) (string, error) {
 	_, ok := ctx.Deadline()
 	if !ok {
 		// Set a default timeout of 30 seconds for the context

@@ -385,7 +385,7 @@ func (c *connectorNVMe) Discover(ctx context.Context, targetAddresses ...string)
 }
 
 // WaitDiskDevicePath waits for the mapped device to appear and returns its path.
-func (c *connectorNVMe) WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc, _ ...int) (string, error) {
+func (c *connectorNVMe) WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc) (string, error) {
 	return block.WaitDiskDevicePath(ctx, nvmeDiskDevicePrefix, diskPathFilter)
 }
 

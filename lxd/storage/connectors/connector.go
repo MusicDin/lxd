@@ -48,7 +48,7 @@ type Connector interface {
 	Disconnect(targetQN string) error
 	Discover(ctx context.Context, targetAddresses ...string) ([]any, error)
 	GetDiskDevicePath(diskPathFilter block.DevicePathFilterFunc) (string, error)
-	WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc, lun ...int) (string, error)
+	WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc) (string, error)
 	WaitDiskDeviceResize(ctx context.Context, diskPath string, newSizeBytes int64) error
 	RemoveDiskDevice(ctx context.Context, devicePath string) error
 	findSession(targetQN string) (*session, error)

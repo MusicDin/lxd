@@ -274,47 +274,13 @@ func (c *connectorSCSIFC) Discover(ctx context.Context, targetAddresses ...strin
 // FC fabric.
 // If the device is not a multipath device, multipath is forced and the device path is looked up again.
 // An error is returned if no multipath device is found after that.
-func (c *connectorSCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc, luns ...int) (string, error) {
+func (c *connectorSCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc) (string, error) {
 	_, ok := ctx.Deadline()
 	if !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 	}
-
-	// // Trigger an immediate rescan before polling begins.
-	// err := rescanFC(luns)
-	// if err != nil {
-	// 	return "", fmt.Errorf("Failed SCSI rescan for FC: %w", err)
-	// }
-
-	// // Create a cancellable context for the rescan goroutine so it stops as soon
-	// // as WaitDiskDevicePath returns, even if ctx has not yet expired.
-	// rescanCtx, cancelRescan := context.WithCancel(ctx)
-	// rescanWg := sync.WaitGroup{}
-
-	// defer func() {
-	// 	cancelRescan()
-	// 	rescanWg.Wait()
-	// }()
-
-	// // Periodically re-trigger SCSI bus rescans while waiting for the device.
-	// rescanWg.Go(func() {
-	// 	rescanInterval := time.Second
-
-	// 	timer := time.NewTimer(rescanInterval)
-	// 	defer timer.Stop()
-
-	// 	for {
-	// 		select {
-	// 		case <-rescanCtx.Done():
-	// 			return
-	// 		case <-timer.C:
-	// 			_ = rescanFC(luns)
-	// 			timer.Reset(rescanInterval)
-	// 		}
-	// 	}
-	// })
 
 	devicePath, err := block.WaitDiskDevicePath(ctx, scsiDiskDevicePrefix, diskPathFilter)
 	if err != nil {
