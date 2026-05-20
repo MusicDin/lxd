@@ -1640,8 +1640,8 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 
 	reverter.Add(cleanup)
 
-	// Ensure the volume is connected to the host.
-	connCreated, err := client.AttachVolumeToHost(volID, hostID)
+	// Ensure the volume is connected to the host, obtaining the assigned LUN.
+	lun, connCreated, err := client.AttachVolumeToHost(volID, hostID)
 	if err != nil {
 		return nil, fmt.Errorf("Failed attaching volume %q to host: %w", vol.name, err)
 	}
@@ -1661,7 +1661,13 @@ func (d *powerstore) mapVolume(vol Volume) (cleanup revert.Hook, err error) {
 
 	// Connect to the array.
 	for qualifiedName, addresses := range targets {
-		connReverter, err := connector.Connect(d.state.ShutdownCtx, qualifiedName, addresses...)
+		var connReverter revert.Hook
+		if connector.Type() == connectors.TypeSCSIFC {
+			connReverter, err = connector.Connect(d.state.ShutdownCtx, qualifiedName, strconv.Itoa(lun))
+		} else {
+			connReverter, err = connector.Connect(d.state.ShutdownCtx, qualifiedName, addresses...)
+		}
+
 		if err != nil {
 			return nil, err
 		}
