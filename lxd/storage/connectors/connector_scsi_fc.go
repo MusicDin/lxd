@@ -348,8 +348,22 @@ func (c *connectorSCSIFC) GetDiskDevicePath(diskPathFilter block.DevicePathFilte
 // trapping any task that tries to access it in D-state (including udevd).
 // Removing the device node first avoids this.
 func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath string) error {
+	// Wait until the device has disappeared.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	if devicePath == "" {
 		return nil
+	}
+
+	deviceName := filepath.Base(devicePath)
+
+	var slaves []os.DirEntry
+	if isMultipathDevice(devicePath) {
+		// Collect the slave devices before removing the multipath map,
+		// as /sys/block/dm-X/slaves/ will be gone after removal.
+		slavesPath := filepath.Join("/sys/block", deviceName, "slaves")
+		slaves, _ = os.ReadDir(slavesPath)
 	}
 
 	// removeDevice removes device from the system if the device is removable.
@@ -364,65 +378,62 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 		return nil
 	}
 
-	deviceName := filepath.Base(devicePath)
+	for ctx.Err() == nil {
+		if isMultipathDevice(devicePath) {
+			// Remove multipath map.
+			//
+			// This may fail transiently with "map in use" if the device is still
+			// briefly open (for example by udev), so retry a few times before giving up.
+			var err error
+			for range 10 {
+				ctxErr := ctx.Err()
+				if ctxErr != nil {
+					// Preserve the command error if we already have one.
+					// Otherwise return the generic context error.
+					if err == nil {
+						err = ctxErr
+					}
 
-	if isMultipathDevice(devicePath) {
-		// Collect the slave devices before removing the multipath map,
-		// as /sys/block/dm-X/slaves/ will be gone after removal.
-		slavesPath := filepath.Join("/sys/block", deviceName, "slaves")
-		slaves, _ := os.ReadDir(slavesPath)
-
-		// Remove the multipath map.
-		//
-		// This may fail transiently with "map in use" if the device is still
-		// briefly open (for example by udev), so retry a few times before giving up.
-		var err error
-		for range 10 {
-			ctxErr := ctx.Err()
-			if ctxErr != nil {
-				// Preserve the command error if we already have one.
-				// Otherwise return the generic context error.
-				if err == nil {
-					err = ctxErr
+					break
 				}
 
-				break
+				_, err = shared.RunCommand(ctx, "multipath", "-f", devicePath)
+				if err == nil {
+					break
+				}
+
+				time.Sleep(500 * time.Millisecond)
 			}
 
-			_, err = shared.RunCommand(ctx, "multipath", "-f", devicePath)
-			if err == nil {
-				break
-			}
-
-			time.Sleep(500 * time.Millisecond)
-		}
-
-		if err != nil {
-			return fmt.Errorf("Failed removing multipath device %q: %w", devicePath, err)
-		}
-
-		// Remove the underlying SCSI devices that were part of the multipath map.
-		// If not removed, they remain on the system and cause I/O errors when the
-		// volume is disconnected from the storage array.
-		for _, slave := range slaves {
-			err := removeDevice(slave.Name())
 			if err != nil {
-				return fmt.Errorf("Failed removing multipath slave device %q: %w", slave.Name(), err)
+				return fmt.Errorf("Failed removing multipath device %q: %w", devicePath, err)
+			}
+
+			// Remove underlying SCSI devices that were part of the multipath map.
+			// If not removed, they remain on the system and cause I/O errors when the
+			// volume is disconnected from a storage array.
+			for _, slave := range slaves {
+				err := removeDevice(slave.Name())
+				if err != nil {
+					return fmt.Errorf("Failed removing multipath slave device %q: %w", slave.Name(), err)
+				}
+			}
+		} else {
+			// For non-multipath device (/dev/sd*), remove the device itself.
+			err := removeDevice(deviceName)
+			if err != nil {
+				return fmt.Errorf("Failed removing device %q: %w", devicePath, err)
 			}
 		}
-	} else {
-		// For non-multipath device (/dev/sd*), remove the device itself.
-		err := removeDevice(deviceName)
-		if err != nil {
-			return fmt.Errorf("Failed removing device %q: %w", devicePath, err)
+
+		if !shared.PathExists(devicePath) {
+			break
 		}
+
+		time.Sleep(500 * time.Millisecond)
 	}
 
-	// Wait until the device has disappeared.
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	if !block.WaitDiskDeviceGone(ctx, devicePath) {
+	if ctx.Err() != nil {
 		return fmt.Errorf("Timeout exceeded waiting for SCSI/FC device %q to disappear", devicePath)
 	}
 
