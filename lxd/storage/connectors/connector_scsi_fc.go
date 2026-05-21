@@ -512,6 +512,9 @@ func waitMultipathReady(ctx context.Context, devicePath string) error {
 	deviceName := filepath.Base(devicePath)
 	slavesPath := filepath.Join("/sys/block", deviceName, "slaves")
 
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
 	for {
 		slaves, err := os.ReadDir(slavesPath)
 		if err == nil {
@@ -527,11 +530,10 @@ func waitMultipathReady(ctx context.Context, devicePath string) error {
 			}
 		}
 
-		err = ctx.Err()
-		if err != nil {
-			return fmt.Errorf("Timeout waiting for multipath device %q to have an active path: %w", devicePath, err)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("Timeout waiting for multipath device %q to have an active path: %w", devicePath, ctx.Err())
+		case <-ticker.C:
 		}
-
-		time.Sleep(500 * time.Millisecond)
 	}
 }
