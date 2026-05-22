@@ -13,6 +13,7 @@ import (
 	"github.com/canonical/lxd/lxd/storage/block"
 	"github.com/canonical/lxd/lxd/util"
 	"github.com/canonical/lxd/shared"
+	"github.com/canonical/lxd/shared/logger"
 	"github.com/canonical/lxd/shared/revert"
 )
 
@@ -153,6 +154,14 @@ func (c *connectorSCSIFC) Connect(ctx context.Context, WWPN string, luns ...stri
 		scanPath := filepath.Join("/sys/class/scsi_host", scanTarget.host, "scan")
 
 		for _, lun := range luns {
+			logger.Warn("Triggering SCSI bus rescan for FC target", logger.Ctx{
+				"WWPN":    WWPN,
+				"host":    scanTarget.host,
+				"channel": scanTarget.channel,
+				"target":  scanTarget.target,
+				"lun":     lun,
+			})
+
 			scan := scanTarget.channel + " " + scanTarget.target + " " + lun
 
 			err := os.WriteFile(scanPath, []byte(scan), 0200)
