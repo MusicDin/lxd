@@ -103,6 +103,10 @@ func (c *connectorSCSIFC) Connect(ctx context.Context, WWPN string, luns ...stri
 
 	var scanTargets []scanTarget
 	for _, rport := range rports {
+		logger.Warn("Checking rport", logger.Ctx{
+			"name": rport.Name(),
+		})
+
 		portNameBytes, err := os.ReadFile(filepath.Join(rportBasePath, rport.Name(), "port_name"))
 		if err != nil {
 			continue
