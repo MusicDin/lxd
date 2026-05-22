@@ -1743,6 +1743,24 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 		return fmt.Errorf("Failed detaching volume %q from host %q: %w", vol.name, host.Name, err)
 	}
 
+	// Once detached, remove disk device again.
+	//
+	// This should be no-op, but there is still a chance for a race condition where
+	// multipath or udev restore the device through automatic probing after initial device
+	// removal and volume detachment on the storage array. Hence, if that happened, remove
+	// them again, and because they are detached from the array, they will not be recreated.
+	//
+	// Also, retrieve the path again. If another device got mapped in the meantime, we might
+	// disconnect the wrong device if we kept the old path.
+	volumePath, _, _ = d.getMappedDevicePath(vol, false)
+
+	if volumePath != "" {
+		err = connector.RemoveDiskDevice(d.state.ShutdownCtx, volumePath)
+		if err != nil {
+			return fmt.Errorf("Failed unmapping PowerStore volume %q: %w", vol.name, err)
+		}
+	}
+
 	// Wait until the volume has disappeared.
 	ctx, cancel := context.WithTimeout(d.state.ShutdownCtx, 30*time.Second)
 	defer cancel()
