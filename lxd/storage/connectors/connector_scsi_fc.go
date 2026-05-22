@@ -134,11 +134,6 @@ func (c *connectorSCSIFC) Connect(ctx context.Context, WWPN string, luns ...stri
 
 		target := strings.TrimSpace(string(targetBytes))
 
-		// If target is -1 or empty, the FC transport class is not bound to a SCSI target yet.
-		if target == "-1" || target == "" {
-			continue
-		}
-
 		scanTarget := scanTarget{
 			host:    "host" + hostIdx,
 			channel: channel,
