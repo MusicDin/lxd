@@ -1757,7 +1757,7 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 	if volumePath != "" {
 		err = connector.RemoveDiskDevice(d.state.ShutdownCtx, volumePath)
 		if err != nil {
-			return fmt.Errorf("Failed unmapping PowerStore volume %q: %w", vol.name, err)
+			return fmt.Errorf("Failed unmapping already detached PowerStore volume %q: %w", vol.name, err)
 		}
 	}
 
