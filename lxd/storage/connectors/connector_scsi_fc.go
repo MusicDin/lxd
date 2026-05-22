@@ -230,7 +230,7 @@ func (c *connectorSCSIFC) Discover(ctx context.Context, targetAddresses ...strin
 		}
 
 		record := FCDiscoveryRecord{
-			PortName: portName,
+			PortName: normalizeWWPN(portName),
 		}
 
 		result = append(result, record)
