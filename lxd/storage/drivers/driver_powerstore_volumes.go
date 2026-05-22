@@ -1743,12 +1743,27 @@ func (d *powerstore) unmapVolume(vol Volume) error {
 		return fmt.Errorf("Failed detaching volume %q from host %q: %w", vol.name, host.Name, err)
 	}
 
-	// Wait until the volume has disappeared.
-	ctx, cancel := context.WithTimeout(d.state.ShutdownCtx, 30*time.Second)
-	defer cancel()
+	// For NVMe and SDC the host-side device is removed asynchronously by
+	// the fabric after the array detaches the volume. RemoveDiskDevice is
+	// a no-op for those connectors, so this is the only sync point.
+	//
+	// iSCSI's and SCSI/FC's RemoveDiskDevice already wait for the device
+	// to disappear before returning, so re-checking the resolved /dev/dm-N
+	// path here is both redundant and unsafe — the kernel can reuse the
+	// dm minor for a different mpath assembled concurrently, making the
+	// poll see a leftover that has nothing to do with this volume.
+	switch connector.Type() {
+	case connectors.TypeSCSIFC, connectors.TypeISCSI:
+		// Verified inside RemoveDiskDevice; skip.
+	default:
+		if volumePath != "" {
+			ctx, cancel := context.WithTimeout(d.state.ShutdownCtx, 30*time.Second)
+			defer cancel()
 
-	if volumePath != "" && !block.WaitDiskDeviceGone(ctx, volumePath) {
-		return fmt.Errorf("Timeout exceeded waiting for PowerStore volume %q to disappear on path %q", vol.name, volumePath)
+			if !block.WaitDiskDeviceGone(ctx, volumePath) {
+				return fmt.Errorf("Timeout exceeded waiting for PowerStore volume %q to disappear on path %q", vol.name, volumePath)
+			}
+		}
 	}
 
 	// If this was the last volume being unmapped from this system, disconnect the active session
