@@ -426,8 +426,7 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 			// briefly open (for example by udev), so retry a few times before giving up.
 			for range 10 {
 				_, err = shared.RunCommand(ctx, "multipath", "-f", devicePath)
-				if err == nil || !shared.PathExists(devicePath) {
-					err = nil
+				if err == nil {
 					break
 				}
 
