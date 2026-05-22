@@ -256,13 +256,13 @@ func (c *connectorSCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilter
 
 	devicePath, err := block.WaitDiskDevicePath(ctx, scsiDiskDevicePrefix, diskPathFilter)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("Failed waiting for device path to appear: %w", err)
 	}
 
 	if isMultipathDevice(devicePath) {
 		err = waitMultipathReady(ctx, devicePath)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("Failed waiting for multipath device %q to be ready: %w", devicePath, err)
 		}
 
 		return devicePath, nil
@@ -293,12 +293,12 @@ func (c *connectorSCSIFC) WaitDiskDevicePath(ctx context.Context, diskPathFilter
 	// symlinks asynchronously. Wait for the multipath-backed device path to appear.
 	mpDevicePath, err := block.WaitDiskDevicePath(ctx, scsiDiskDevicePrefix, multipathDeviceFilter)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("Failed waiting for forced multipath device path to appear: %w", err)
 	}
 
 	err = waitMultipathReady(ctx, mpDevicePath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("Failed waiting for forced multipath device %q to be ready: %w", mpDevicePath, err)
 	}
 
 	return mpDevicePath, nil
