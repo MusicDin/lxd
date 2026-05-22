@@ -410,7 +410,7 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
-	for !shared.PathExists(devicePath) {
+	for shared.PathExists(devicePath) {
 		if isMultipathDevice(devicePath) {
 			// Collect the slave devices before removing the multipath map,
 			// as /sys/block/dm-X/slaves/ will be gone after removal.
@@ -424,7 +424,8 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 			var err error
 			for range 10 {
 				_, err = shared.RunCommand(ctx, "multipath", "-f", devicePath)
-				if err == nil {
+				if err == nil || !shared.PathExists(devicePath) {
+					err = nil
 					break
 				}
 
