@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -503,36 +504,24 @@ func normalizeWWPN(wwpn string) string {
 	return wwpn
 }
 
-// waitMultipathReady waits for the multipath device to have at least one active path.
-// A multipath device can exist (dm-X visible in sysfs) before multipathd has finished
-// verifying paths. If all paths are in "faulty" or "ghost" state and the multipath
-// configuration uses no_path_retry=queue, any I/O to the device is queued indefinitely.
-// This function polls sysfs until at least one underlying SCSI path reports "running".
+// waitMultipathReady checks if the multipath device has active, usable paths
+// by querying the multipath daemon's topology state.
 func waitMultipathReady(ctx context.Context, devicePath string) error {
-	deviceName := filepath.Base(devicePath)
-	slavesPath := filepath.Join("/sys/block", deviceName, "slaves")
-
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
-
 	for {
-		slaves, err := os.ReadDir(slavesPath)
-		if err == nil {
-			for _, slave := range slaves {
-				stateBytes, err := os.ReadFile(filepath.Join("/sys/block", slave.Name(), "device", "state"))
-				if err != nil {
-					continue
-				}
-
-				if strings.TrimSpace(string(stateBytes)) == "running" {
-					return nil
-				}
-			}
+		// The "multipath -ll" outputs the topology of a mapper. We look for a path that is:
+		// - running = Kernel SCSI device state is online.
+		// - ready   = Path checker confirms the device isusable.
+		// - active  = Path group currently used by multipath.
+		out, err := exec.CommandContext(ctx, "multipath", "-ll", devicePath).CombinedOutput()
+		if err == nil && strings.Contains(string(out), "active ready running") {
+			return nil
 		}
 
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("Timeout waiting for multipath device %q to have an active path: %w", devicePath, ctx.Err())
+			return fmt.Errorf("timeout waiting for multipath device %q to have usable paths: %w", devicePath, ctx.Err())
 		case <-ticker.C:
 		}
 	}
