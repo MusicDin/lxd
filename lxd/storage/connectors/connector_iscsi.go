@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -519,4 +520,26 @@ func (c *connectorISCSI) WaitDiskDeviceResize(ctx context.Context, diskPath stri
 
 func isMultipathDevice(devicePath string) bool {
 	return strings.HasPrefix(filepath.Base(devicePath), "dm-")
+}
+
+// waitMultipathReady checks if the multipath device has at least one active path.
+func waitMultipathReady(ctx context.Context, devicePath string) error {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		// The "multipath -ll" outputs the topology of a mapper. We look for a path that is:
+		// - running = Kernel SCSI device state is online.
+		// - ready   = Path checker confirms the device isusable.
+		// - active  = Path group currently used by multipath.
+		out, err := exec.CommandContext(ctx, "multipath", "-ll", devicePath).CombinedOutput()
+		if err == nil && strings.Contains(string(out), "active ready running") {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("Timeout waiting for multipath device %q to have active paths: %w", devicePath, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
