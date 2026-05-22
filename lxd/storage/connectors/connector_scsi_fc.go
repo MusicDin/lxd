@@ -96,6 +96,10 @@ func (c *connectorSCSIFC) QualifiedName() (string, error) {
 // matching WWPN. The HBA driver handles fabric login automatically; the rescan
 // makes newly mapped LUNs visible to the host.
 func (c *connectorSCSIFC) Connect(ctx context.Context, WWPN string, luns ...string) (revert.Hook, error) {
+	if len(luns) == 0 {
+		return nil, errors.New("At least one LUN must be provided for SCSI/FC connector")
+	}
+
 	rportBasePath := "/sys/class/fc_remote_ports"
 	rports, err := os.ReadDir(rportBasePath)
 	if err != nil {
@@ -160,10 +164,6 @@ func (c *connectorSCSIFC) Connect(ctx context.Context, WWPN string, luns ...stri
 
 	if len(scanTargets) == 0 {
 		return nil, fmt.Errorf("No FC remote port with WWPN %q found", WWPN)
-	}
-
-	if len(luns) == 0 {
-		luns = []string{"-"}
 	}
 
 	for _, scanTarget := range scanTargets {
@@ -437,7 +437,7 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 				}
 			}
 
-			if err != nil {
+			if err != nil && !shared.PathExists(devicePath) {
 				return fmt.Errorf("Failed removing multipath device %q: %w", devicePath, err)
 			}
 
