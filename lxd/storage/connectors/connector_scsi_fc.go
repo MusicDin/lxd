@@ -317,6 +317,93 @@ func (c *connectorSCSIFC) GetDiskDevicePath(diskPathFilter block.DevicePathFilte
 	return block.GetDiskDevicePath(scsiDiskDevicePrefix, diskPathFilter)
 }
 
+// collectSCSIPathsForMpath returns every /sys/block/sd* basename that
+// belongs to the multipath device-mapper device named by dmName. The
+// returned set is the union of:
+//
+//  1. The device-mapper map's current slaves (/sys/block/<dm>/slaves).
+//  2. Every /sys/block/sd* whose device/wwid matches the multipath
+//     device's wwid (extracted from /sys/block/<dm>/dm/uuid). This
+//     includes sd devices multipathd previously failed and dropped
+//     from the map, which would otherwise persist as zombies and
+//     trigger "Logical unit not supported" probe storms once the
+//     array detaches the underlying LUN.
+//
+// If the multipath wwid cannot be parsed, the slaves alone are returned.
+func collectSCSIPathsForMpath(dmName string) ([]string, error) {
+	seen := make(map[string]struct{})
+	var ordered []string
+
+	add := func(name string) {
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		ordered = append(ordered, name)
+	}
+
+	slavesPath := filepath.Join("/sys/block", dmName, "slaves")
+	slaves, err := os.ReadDir(slavesPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("Failed reading slaves of %q: %w", dmName, err)
+	}
+
+	for _, s := range slaves {
+		add(s.Name())
+	}
+
+	// Extract the bare hex wwid from the mpath uuid. Format observed on
+	// PowerStore (NAA-6): "mpath-3<32 hex chars>". The "3" is the SCSI
+	// VPD-83 type byte. On the sd side, device/wwid reports as either
+	// "naa.6<hex>" or "0x6<hex>" or just the bare hex. Normalize both
+	// sides to lowercase bare hex before comparison.
+	uuidBytes, err := os.ReadFile(filepath.Join("/sys/block", dmName, "dm", "uuid"))
+	if err != nil {
+		// No usable wwid — slave list is all we have.
+		return ordered, nil
+	}
+
+	uuid := strings.ToLower(strings.TrimSpace(string(uuidBytes)))
+	rest, ok := strings.CutPrefix(uuid, "mpath-")
+	if !ok {
+		return ordered, nil
+	}
+	// Drop the SCSI VPD-83 type-byte prefix if present.
+	rest = strings.TrimPrefix(rest, "3")
+
+	if rest == "" {
+		return ordered, nil
+	}
+
+	entries, err := os.ReadDir("/sys/block")
+	if err != nil {
+		return nil, fmt.Errorf("Failed reading /sys/block: %w", err)
+	}
+
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "sd") {
+			continue
+		}
+
+		b, err := os.ReadFile(filepath.Join("/sys/block", name, "device", "wwid"))
+		if err != nil {
+			continue
+		}
+
+		w := strings.ToLower(strings.TrimSpace(string(b)))
+		w = strings.TrimPrefix(w, "naa.")
+		w = strings.TrimPrefix(w, "0x")
+		w = strings.TrimPrefix(w, "eui.")
+
+		if w == rest {
+			add(name)
+		}
+	}
+
+	return ordered, nil
+}
+
 // RemoveDiskDevice removes the FC disk device from the system.
 //
 // The devices should be removed from the host before being unmapped on the storage array.
@@ -359,10 +446,18 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 		}
 
 		if isMultipathDevice(realPath) {
-			slavesPath := filepath.Join("/sys/block", deviceName, "slaves")
-			slaves, err := os.ReadDir(slavesPath)
-			if err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return fmt.Errorf("Failed reading slave devices for multipath device %q: %w", devicePath, err)
+			// Build the set of SCSI paths to remove. Start with the
+			// multipath device's current slaves, then extend with any
+			// /sys/block/sd* whose VPD-83 wwid matches the multipath's
+			// wwid. Paths that multipathd has previously failed and
+			// dropped from the map are no longer slaves but still exist
+			// as kernel SCSI devices. Leaving them behind across cycles
+			// is what causes "Logical unit not supported" probe storms
+			// and stale dm tables with non-existent path minors on the
+			// next reuse of this wwid.
+			toRemove, err := collectSCSIPathsForMpath(deviceName)
+			if err != nil {
+				return fmt.Errorf("Failed enumerating SCSI paths for multipath device %q: %w", devicePath, err)
 			}
 
 			var flushErr error
@@ -387,22 +482,24 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 			}
 
 			// Annihilate the underlying physical SCSI paths.
-			for _, slave := range slaves {
-				if err := removeDevice(slave.Name()); err != nil {
-					return fmt.Errorf("Failed removing multipath slave device %q: %w", slave.Name(), err)
+			for _, sn := range toRemove {
+				if err := removeDevice(sn); err != nil {
+					return fmt.Errorf("Failed removing SCSI path %q for %q: %w", sn, devicePath, err)
 				}
 			}
 
-			// Wait for each slave's /sys/block entry to actually disappear.
-			// device/delete is asynchronous: returning while the kernel still
-			// holds the (host,channel,target,LUN) slot lets the next attach
-			// rescan short-circuit on scsi_probe_and_add_lun (LUN_PRESENT)
-			// and reuse the stale sd device — keeping its old wwid even
-			// after the array remapped the LUN. multipathd then aggregates
-			// stale paths into the new map and reads/writes corrupt data.
-			for _, slave := range slaves {
-				slavePath := filepath.Join("/sys/block", slave.Name())
-				block.WaitDiskDeviceGone(ctx, slavePath)
+			// Wait for each SCSI path's /sys/block entry to actually
+			// disappear. device/delete is asynchronous: returning
+			// while the kernel still holds the (host,channel,target,
+			// LUN) slot lets the next attach rescan short-circuit on
+			// scsi_probe_and_add_lun (LUN_PRESENT) and reuse the
+			// stale sd device — keeping its old wwid even after the
+			// array remapped the LUN.
+			for _, sn := range toRemove {
+				slavePath := filepath.Join("/sys/block", sn)
+				if !block.WaitDiskDeviceGone(ctx, slavePath) {
+					return fmt.Errorf("Timeout exceeded waiting for SCSI path %q of %q to disappear", sn, devicePath)
+				}
 			}
 		} else {
 			// For non-multipath device (/dev/sd*), remove the device itself.
