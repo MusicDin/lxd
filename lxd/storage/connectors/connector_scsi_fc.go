@@ -392,11 +392,25 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 					return fmt.Errorf("Failed removing multipath slave device %q: %w", slave.Name(), err)
 				}
 			}
-		} else {
-			// For non-multipath device (/dev/sd*), remove the device itself.
-			if err := removeDevice(deviceName); err != nil {
-				return fmt.Errorf("Failed removing device %q: %w", devicePath, err)
+
+			// Wait for each slave's /sys/block entry to actually disappear.
+			// device/delete is asynchronous: returning while the kernel still
+			// holds the (host,channel,target,LUN) slot lets the next attach
+			// rescan short-circuit on scsi_probe_and_add_lun (LUN_PRESENT)
+			// and reuse the stale sd device — keeping its old wwid even
+			// after the array remapped the LUN. multipathd then aggregates
+			// stale paths into the new map and reads/writes corrupt data.
+			for _, slave := range slaves {
+				slavePath := filepath.Join("/sys/block", slave.Name())
+				block.WaitDiskDeviceGone(ctx, slavePath)
 			}
+
+			return nil
+		}
+
+		// For non-multipath device (/dev/sd*), remove the device itself.
+		if err := removeDevice(deviceName); err != nil {
+			return fmt.Errorf("Failed removing device %q: %w", devicePath, err)
 		}
 
 		// Check again immediately to avoid unnecessary delay.
