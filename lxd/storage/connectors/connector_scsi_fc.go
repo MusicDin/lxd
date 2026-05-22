@@ -412,7 +412,10 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 		return nil
 	}
 
-	for ctx.Err() == nil {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
 		if isMultipathDevice(devicePath) {
 			// Remove multipath map.
 			//
@@ -464,11 +467,11 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 			break
 		}
 
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	if ctx.Err() != nil {
-		return fmt.Errorf("Timeout exceeded waiting for SCSI/FC device %q to disappear", devicePath)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("Timeout exceeded waiting for SCSI/FC device %q to disappear: %w", devicePath, ctx.Err())
+		case <-ticker.C:
+		}
 	}
 
 	return nil
