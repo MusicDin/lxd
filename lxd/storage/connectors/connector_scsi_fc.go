@@ -385,13 +385,13 @@ func (c *connectorSCSIFC) GetDiskDevicePath(diskPathFilter block.DevicePathFilte
 // trapping any task that tries to access it in D-state (including udevd).
 // Removing the device node first avoids this.
 func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath string) error {
-	// Wait until the device has disappeared.
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
 	if devicePath == "" {
 		return nil
 	}
+
+	// Wait until the device has disappeared.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
 	deviceName := filepath.Base(devicePath)
 
@@ -415,13 +415,15 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 			// Collect the slave devices before removing the multipath map,
 			// as /sys/block/dm-X/slaves/ will be gone after removal.
 			slavesPath := filepath.Join("/sys/block", deviceName, "slaves")
-			slaves, _ := os.ReadDir(slavesPath)
+			slaves, err := os.ReadDir(slavesPath)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("Failed reading multipath slaves for %q: %w", devicePath, err)
+			}
 
 			// Remove multipath map.
 			//
 			// This may fail transiently with "map in use" if the device is still
 			// briefly open (for example by udev), so retry a few times before giving up.
-			var err error
 			for range 10 {
 				_, err = shared.RunCommand(ctx, "multipath", "-f", devicePath)
 				if err == nil || !shared.PathExists(devicePath) {
