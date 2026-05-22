@@ -562,6 +562,8 @@ func (c *PowerStoreClient) GetCurrentHost(connectorType string, qn string) (*Pow
 		return nil, err
 	}
 
+	qn = formatQN(connectorType, qn)
+
 	// Find initiator with the provided port type (connector type) and name (qualified name),
 	// and retrieve the ID of the host it belongs to.
 	var initiator PowerStoreHostInitiator
@@ -628,6 +630,8 @@ func (c *PowerStoreClient) CreateHost(hostName string, connectorType string, qn 
 	if err != nil {
 		return "", err
 	}
+
+	qn = formatQN(connectorType, qn)
 
 	req := map[string]any{
 		"name":    hostName,
@@ -1030,4 +1034,22 @@ func powerStoreConnectorToPortType(connectorType string) (string, error) {
 	default:
 		return "", fmt.Errorf("Unsupported connector type: %q", connectorType)
 	}
+}
+
+// formatQN formats the qualified name (or WWPN in case of FC) into PowerStore expected format
+// based on the connector transport type.
+func formatQN(connectorType string, qn string) string {
+	if connectorType == connectors.TypeSCSIFC {
+		// Connector normalizes the WWPNs and returns them as 16 hex chars
+		// ("0x210034800d7035b3"). PowerStore identifies initiators on the FC
+		// fabric using the colon-separated byte format ("21:00:34:80:0d:70:35:b3").
+		parts := make([]string, 8)
+		for i := range 8 {
+			parts[i] = qn[i*2 : i*2+2]
+		}
+
+		qn = strings.Join(parts, ":")
+	}
+
+	return qn
 }
