@@ -25,6 +25,16 @@ const (
 	TypeSCSIFC string = "fc"
 )
 
+type TransportType string
+
+const (
+	// TransportTCP represents a TCP-based storage transport.
+	TransportTCP TransportType = "tcp"
+
+	// TransportFC represents a Fibre Channel storage transport.
+	TransportFC TransportType = "fc"
+)
+
 // session represents a connector session that is established with a target.
 type session struct {
 	// id is a unique identifier of the session.
@@ -41,6 +51,7 @@ type session struct {
 // appropriate storage subsystem.
 type Connector interface {
 	Type() string
+	Transport() TransportType
 	Version() (string, error)
 	QualifiedName() (string, error)
 	LoadModules() error

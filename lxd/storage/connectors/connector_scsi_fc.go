@@ -32,6 +32,11 @@ func (c *connectorSCSIFC) Type() string {
 	return TypeSCSIFC
 }
 
+// Transport returns the transport type of the connector.
+func (c *connectorSCSIFC) Transport() TransportType {
+	return TransportFC
+}
+
 // Version returns "fc" if FC host adapters are present on the system, error otherwise.
 func (c *connectorSCSIFC) Version() (string, error) {
 	_, err := os.ReadDir("/sys/class/fc_host")
