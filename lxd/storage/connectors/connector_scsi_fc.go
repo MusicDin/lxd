@@ -404,13 +404,11 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 				slavePath := filepath.Join("/sys/block", slave.Name())
 				block.WaitDiskDeviceGone(ctx, slavePath)
 			}
-
-			return nil
-		}
-
-		// For non-multipath device (/dev/sd*), remove the device itself.
-		if err := removeDevice(deviceName); err != nil {
-			return fmt.Errorf("Failed removing device %q: %w", devicePath, err)
+		} else {
+			// For non-multipath device (/dev/sd*), remove the device itself.
+			if err := removeDevice(deviceName); err != nil {
+				return fmt.Errorf("Failed removing device %q: %w", devicePath, err)
+			}
 		}
 
 		// Check again immediately to avoid unnecessary delay.
