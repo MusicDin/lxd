@@ -96,9 +96,6 @@ func (c *connectorSCSIFC) QualifiedName() (string, error) {
 // matching WWPN. The HBA driver handles fabric login automatically; the rescan
 // makes newly mapped LUNs visible to the host.
 func (c *connectorSCSIFC) Connect(ctx context.Context, WWPN string, luns ...string) (revert.Hook, error) {
-	reverter := revert.New()
-	defer reverter.Fail()
-
 	rportBasePath := "/sys/class/fc_remote_ports"
 	rports, err := os.ReadDir(rportBasePath)
 	if err != nil {
@@ -182,8 +179,7 @@ func (c *connectorSCSIFC) Connect(ctx context.Context, WWPN string, luns ...stri
 		}
 	}
 
-	reverter.Success()
-	return reverter.Fail, nil
+	return revert.New().Fail, nil
 }
 
 // Disconnect is a no-op for FC. The HBA driver manages fabric connectivity automatically.
@@ -286,7 +282,14 @@ func (c *connectorSCSIFC) Discover(ctx context.Context, targetAddresses ...strin
 
 		stateBytes, err := os.ReadFile(filepath.Join(rportBasePath, rport.Name(), "port_state"))
 		if err == nil {
-			record.PortState = strings.TrimSpace(string(stateBytes))
+			state := strings.TrimSpace(string(stateBytes))
+			state = strings.ToLower(state)
+
+			if state != "online" {
+				continue
+			}
+
+			record.PortState = state
 		}
 
 		rolesBytes, err := os.ReadFile(filepath.Join(rportBasePath, rport.Name(), "roles"))
@@ -392,14 +395,6 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 
 	deviceName := filepath.Base(devicePath)
 
-	var slaves []os.DirEntry
-	if isMultipathDevice(devicePath) {
-		// Collect the slave devices before removing the multipath map,
-		// as /sys/block/dm-X/slaves/ will be gone after removal.
-		slavesPath := filepath.Join("/sys/block", deviceName, "slaves")
-		slaves, _ = os.ReadDir(slavesPath)
-	}
-
 	// removeDevice removes device from the system if the device is removable.
 	removeDevice := func(devName string) error {
 		path := "/sys/block/" + devName + "/device/delete"
@@ -415,31 +410,29 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
-	for {
+	for !shared.PathExists(devicePath) {
 		if isMultipathDevice(devicePath) {
+			// Collect the slave devices before removing the multipath map,
+			// as /sys/block/dm-X/slaves/ will be gone after removal.
+			slavesPath := filepath.Join("/sys/block", deviceName, "slaves")
+			slaves, _ := os.ReadDir(slavesPath)
+
 			// Remove multipath map.
 			//
 			// This may fail transiently with "map in use" if the device is still
 			// briefly open (for example by udev), so retry a few times before giving up.
 			var err error
 			for range 10 {
-				ctxErr := ctx.Err()
-				if ctxErr != nil {
-					// Preserve the command error if we already have one.
-					// Otherwise return the generic context error.
-					if err == nil {
-						err = ctxErr
-					}
-
-					break
-				}
-
 				_, err = shared.RunCommand(ctx, "multipath", "-f", devicePath)
 				if err == nil {
 					break
 				}
 
-				time.Sleep(500 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					return fmt.Errorf("Timeout exceeded waiting for SCSI/FC device %q to disappear: %w", devicePath, ctx.Err())
+				case <-ticker.C:
+				}
 			}
 
 			if err != nil {
@@ -463,6 +456,7 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 			}
 		}
 
+		// Check again to avoid unnecessary waits if the device has already disappeared.
 		if !shared.PathExists(devicePath) {
 			break
 		}
