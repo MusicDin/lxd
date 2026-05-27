@@ -318,15 +318,23 @@ func (c *connectorSCSIFC) GetDiskDevicePath(diskPathFilter block.DevicePathFilte
 // The devices should be removed from the host before being unmapped on the storage array.
 // Removing a LUN mapping immediately can cause the device to be trapped in unresponsive (D state)
 // if there are still open references to it, for example by udev.
-func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath string) error {
+//
+// The returned string is the stable device identity (read from sysfs before removal).
+// Callers can pass this to [Connector.WaitDiskDeviceGone] to safely confirm the device
+// has gone without being misled by the kernel reusing the /dev/dm-X minor number.
+func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath string) (string, error) {
 	if devicePath == "" {
-		return nil
+		return "", nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	deviceName := filepath.Base(devicePath)
+
+	// Read the stable device identity before removal so callers can later
+	// detect whether a /dev/dm-X path has been reused by a different device.
+	deviceID := block.ReadDiskDeviceID(devicePath)
 
 	// removeDevice removes device from the system if the device is removable.
 	removeDevice := func(devName string) error {
@@ -342,13 +350,13 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 
 	// If the device is gone, we are done.
 	if !shared.PathExists(devicePath) {
-		return nil
+		return deviceID, nil
 	}
 
 	if isMultipathDevice(devicePath) {
 		slaveDevices, err := findMultipathSCSIDevices(deviceName)
 		if err != nil {
-			return fmt.Errorf("Failed searching SCSI paths for multipath device %q: %w", devicePath, err)
+			return "", fmt.Errorf("Failed searching SCSI paths for multipath device %q: %w", devicePath, err)
 		}
 
 		ticker := time.NewTicker(500 * time.Millisecond)
@@ -365,21 +373,21 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 
 			select {
 			case <-ctx.Done():
-				return fmt.Errorf("Timeout exceeded removing multipath device %q: %w", devicePath, ctx.Err())
+				return "", fmt.Errorf("Timeout exceeded removing multipath device %q: %w", devicePath, ctx.Err())
 			case <-ticker.C:
 			}
 		}
 
 		// Only return a failure if the map still exists after our retries.
 		if flushErr != nil && shared.PathExists(devicePath) {
-			return fmt.Errorf("Failed removing multipath device %q: %w", devicePath, flushErr)
+			return "", fmt.Errorf("Failed removing multipath device %q: %w", devicePath, flushErr)
 		}
 
 		// Remove underlying SCSI devices.
 		for _, devName := range slaveDevices {
 			err := removeDevice(devName)
 			if err != nil {
-				return fmt.Errorf("Failed removing SCSI path %q for %q: %w", devName, devicePath, err)
+				return "", fmt.Errorf("Failed removing SCSI path %q for %q: %w", devName, devicePath, err)
 			}
 		}
 
@@ -387,22 +395,22 @@ func (c *connectorSCSIFC) RemoveDiskDevice(ctx context.Context, devicePath strin
 		for _, devName := range slaveDevices {
 			slavePath := filepath.Join("/sys/block", devName)
 			if !block.WaitDiskDeviceGone(ctx, slavePath) {
-				return fmt.Errorf("Timeout exceeded waiting for SCSI path %q of %q to disappear", devName, devicePath)
+				return "", fmt.Errorf("Timeout exceeded waiting for SCSI path %q of %q to disappear", devName, devicePath)
 			}
 		}
 	} else {
 		// For non-multipath device (/dev/sd*), remove the device itself.
 		err := removeDevice(deviceName)
 		if err != nil {
-			return fmt.Errorf("Failed removing device %q: %w", devicePath, err)
+			return "", fmt.Errorf("Failed removing device %q: %w", devicePath, err)
 		}
 
 		if !block.WaitDiskDeviceGone(ctx, devicePath) {
-			return fmt.Errorf("Timeout exceeded waiting for SCSI device %q to disappear", devicePath)
+			return "", fmt.Errorf("Timeout exceeded waiting for SCSI device %q to disappear", devicePath)
 		}
 	}
 
-	return nil
+	return deviceID, nil
 }
 
 // WaitDiskDeviceResize waits until the SCSI/FC disk device reflects the new size.

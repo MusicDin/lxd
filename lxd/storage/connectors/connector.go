@@ -62,7 +62,8 @@ type Connector interface {
 	GetDiskDevicePath(diskPathFilter block.DevicePathFilterFunc) (string, error)
 	WaitDiskDevicePath(ctx context.Context, diskPathFilter block.DevicePathFilterFunc) (string, error)
 	WaitDiskDeviceResize(ctx context.Context, diskPath string, newSizeBytes int64) error
-	RemoveDiskDevice(ctx context.Context, devicePath string) error
+	RemoveDiskDevice(ctx context.Context, devicePath string) (string, error)
+	WaitDiskDeviceGone(ctx context.Context, devicePath string, deviceID string) bool
 	findSession(targetQN string) (*session, error)
 }
 

@@ -96,8 +96,9 @@ func (c *connectorSDC) GetDiskDevicePath(diskPathFilter block.DevicePathFilterFu
 }
 
 // RemoveDiskDevice does nothing. Device is removed when volume is unmapped on the storage array.
-func (c *connectorSDC) RemoveDiskDevice(ctx context.Context, devicePath string) error {
-	return nil
+// An empty device identity is returned since SDC devices do not expose a stable sysfs identity.
+func (c *connectorSDC) RemoveDiskDevice(ctx context.Context, devicePath string) (string, error) {
+	return "", nil
 }
 
 // WaitDiskDeviceResize waits until the disk device reflects the new size.

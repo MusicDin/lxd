@@ -399,9 +399,12 @@ func (c *connectorNVMe) GetDiskDevicePath(diskPathFilter block.DevicePathFilterF
 	return block.GetDiskDevicePath(nvmeDiskDevicePrefix, diskPathFilter)
 }
 
-// RemoveDiskDevice does nothing. Device is removed when volume is unmapped on the storage array.
-func (c *connectorNVMe) RemoveDiskDevice(ctx context.Context, devicePath string) error {
-	return nil
+// RemoveDiskDevice reads the device identity and returns it, but does NOT remove the
+// device. The NVMe device is removed asynchronously by the kernel after the storage
+// array detaches the volume. Callers should call [Connector.WaitDiskDeviceGone] after
+// this to wait for the device to actually disappear.
+func (c *connectorNVMe) RemoveDiskDevice(ctx context.Context, devicePath string) (string, error) {
+	return block.ReadDiskDeviceID(devicePath), nil
 }
 
 // WaitDiskDeviceResize waits until the disk device reflects the new size.

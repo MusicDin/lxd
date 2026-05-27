@@ -21,7 +21,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/canonical/lxd/lxd/storage/block"
 	"github.com/canonical/lxd/lxd/storage/connectors"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
@@ -1218,8 +1217,16 @@ func (d *powerflex) unmapVolume(vol Volume) error {
 	ctx, cancel := context.WithTimeout(d.state.ShutdownCtx, 10*time.Second)
 	defer cancel()
 
+	// SDC and NVMe devices disappear asynchronously, so the device is still briefly
+	// present here. Read its identity now so WaitDiskDeviceGone can detect if the path
+	// is later reused by a different device.
 	volumePath, _, _ := d.getMappedDevPath(vol, false)
-	if volumePath != "" && !block.WaitDiskDeviceGone(ctx, volumePath) {
+	deviceID, err := connector.RemoveDiskDevice(d.state.ShutdownCtx, volumePath)
+	if err != nil {
+		return err
+	}
+
+	if volumePath != "" && !connector.WaitDiskDeviceGone(ctx, volumePath, deviceID) {
 		return fmt.Errorf("Timeout whilst waiting for PowerFlex volume to disappear: %q", vol.name)
 	}
 

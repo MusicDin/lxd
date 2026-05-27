@@ -169,6 +169,33 @@ func WaitDiskDeviceResize(ctx context.Context, diskPath string, newSizeBytes int
 	}
 }
 
+// ReadDiskDeviceID returns a stable identity string for the block device at
+// diskPath by reading well-known sysfs attributes, or an empty string when no
+// identity can be determined.
+//
+// The following sources are tried in order:
+//   - device-mapper uuid  (/sys/block/dm-X/dm/uuid)   — multipath and other dm devices
+//   - NVMe namespace wwid (/sys/block/nvmeXnY/wwid)   — NVMe namespace devices
+func ReadDiskDeviceID(diskPath string) string {
+	devName := filepath.Base(diskPath)
+
+	switch {
+	case strings.HasPrefix(devName, "dm-"):
+		data, err := os.ReadFile(filepath.Join("/sys/block", devName, "dm/uuid"))
+		if err == nil {
+			return strings.TrimSpace(string(data))
+		}
+
+	case strings.HasPrefix(devName, "nvme"):
+		data, err := os.ReadFile(filepath.Join("/sys/block", devName, "wwid"))
+		if err == nil {
+			return strings.TrimSpace(string(data))
+		}
+	}
+
+	return ""
+}
+
 // WaitDiskDeviceGone waits for the given disk device path to disappear.
 // It periodically checks for the device to disappear and returns true once the
 // device is gone. It returns false if the context times out or is canceled first.
@@ -184,6 +211,40 @@ func WaitDiskDeviceGone(ctx context.Context, diskPath string) bool {
 
 	for {
 		if !shared.PathExists(diskPath) {
+			return true
+		}
+
+		if ctx.Err() != nil {
+			return false
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// WaitDiskDeviceGoneByID waits for the device at diskPath to disappear.
+// When deviceID is non-empty, the device is also considered gone if the
+// identity of the block device currently at diskPath no longer matches
+// deviceID — i.e. the path was reused by a different device.
+// It returns false if the context times out or is canceled first.
+func WaitDiskDeviceGoneByID(ctx context.Context, diskPath string, deviceID string) bool {
+	_, ok := ctx.Deadline()
+	if !ok {
+		// Set a default timeout of 30 seconds for the context
+		// if no deadline is already configured.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	}
+
+	for {
+		if !shared.PathExists(diskPath) {
+			return true
+		}
+
+		// If the device identity has changed, the original device is
+		// gone even though the path still exists.
+		if deviceID != "" && ReadDiskDeviceID(diskPath) != deviceID {
 			return true
 		}
 

@@ -435,9 +435,13 @@ func (c *connectorISCSI) GetDiskDevicePath(diskPathFilter block.DevicePathFilter
 // immediately makes device inaccessible and traps any task that tries to access it
 // to D-state (and this task can be systemd-udevd which tries to remove a device node!).
 // That's why it is better to remove the device node from the host and then remove vLUN.
-func (c *connectorISCSI) RemoveDiskDevice(ctx context.Context, devicePath string) error {
+//
+// The returned string is the stable device identity (read from sysfs before removal).
+// Callers can pass this to [Connector.WaitDiskDeviceGone] to safely confirm the device
+// has gone without being misled by the kernel reusing the /dev/dm-X minor number.
+func (c *connectorISCSI) RemoveDiskDevice(ctx context.Context, devicePath string) (string, error) {
 	if devicePath == "" {
-		return nil
+		return "", nil
 	}
 
 	// removeDevice removes device from the system if the device is removable.
@@ -454,15 +458,19 @@ func (c *connectorISCSI) RemoveDiskDevice(ctx context.Context, devicePath string
 
 	deviceName := filepath.Base(devicePath)
 
+	// Read the stable device identity before removal so callers can later
+	// detect whether a /dev/dm-X path has been reused by a different device.
+	deviceID := block.ReadDiskDeviceID(devicePath)
+
 	// If the device is gone, we are done.
 	if !shared.PathExists(devicePath) {
-		return nil
+		return deviceID, nil
 	}
 
 	if isMultipathDevice(devicePath) {
 		slaveDevices, err := findMultipathSCSIDevices(deviceName)
 		if err != nil {
-			return fmt.Errorf("Failed searching SCSI paths for multipath device %q: %w", devicePath, err)
+			return "", fmt.Errorf("Failed searching SCSI paths for multipath device %q: %w", devicePath, err)
 		}
 
 		ticker := time.NewTicker(500 * time.Millisecond)
@@ -483,14 +491,14 @@ func (c *connectorISCSI) RemoveDiskDevice(ctx context.Context, devicePath string
 
 			select {
 			case <-ctx.Done():
-				return fmt.Errorf("Timeout exceeded removing multipath device %q: %w", devicePath, ctx.Err())
+				return "", fmt.Errorf("Timeout exceeded removing multipath device %q: %w", devicePath, ctx.Err())
 			case <-ticker.C:
 			}
 		}
 
 		// Only return a failure if the map still exists after our retries.
 		if flushErr != nil && shared.PathExists(devicePath) {
-			return fmt.Errorf("Failed removing multipath device %q: %w", devicePath, flushErr)
+			return "", fmt.Errorf("Failed removing multipath device %q: %w", devicePath, flushErr)
 		}
 
 		// Remove the underlying SCSI devices that were part of the multipath map.
@@ -499,7 +507,7 @@ func (c *connectorISCSI) RemoveDiskDevice(ctx context.Context, devicePath string
 		for _, devName := range slaveDevices {
 			err := removeDevice(devName)
 			if err != nil {
-				return fmt.Errorf("Failed removing multipath slave device %q: %w", devName, err)
+				return "", fmt.Errorf("Failed removing multipath slave device %q: %w", devName, err)
 			}
 		}
 
@@ -507,22 +515,22 @@ func (c *connectorISCSI) RemoveDiskDevice(ctx context.Context, devicePath string
 		for _, devName := range slaveDevices {
 			devPath := filepath.Join("/sys/block", devName)
 			if !block.WaitDiskDeviceGone(ctx, devPath) {
-				return fmt.Errorf("Timeout exceeded waiting for multipath slave device %q to disappear", devPath)
+				return "", fmt.Errorf("Timeout exceeded waiting for multipath slave device %q to disappear", devPath)
 			}
 		}
 	} else {
 		// For non-multipath device (/dev/sd*), remove the device itself.
 		err := removeDevice(deviceName)
 		if err != nil {
-			return fmt.Errorf("Failed removing device %q: %w", devicePath, err)
+			return "", fmt.Errorf("Failed removing device %q: %w", devicePath, err)
 		}
 
 		if !block.WaitDiskDeviceGone(ctx, devicePath) {
-			return fmt.Errorf("Timeout exceeded waiting for device %q to disappear", devicePath)
+			return "", fmt.Errorf("Timeout exceeded waiting for device %q to disappear", devicePath)
 		}
 	}
 
-	return nil
+	return deviceID, nil
 }
 
 // WaitDiskDeviceResize waits until the disk device reflects the new size.
