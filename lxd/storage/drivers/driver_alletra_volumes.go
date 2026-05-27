@@ -364,7 +364,7 @@ func (d *alletra) getMappedDevPath(vol Volume, mapVolume bool) (string, revert.H
 	switch connector.Type() {
 	case connectors.TypeISCSI:
 		diskSuffix = strings.ToLower(hpeVol.WWN)
-	case connectors.TypeNVME:
+	case connectors.TypeNVMeTCP:
 		diskSuffix = strings.ToLower(hpeVol.NGUID)
 	default:
 		return "", nil, fmt.Errorf("Unsupported Alletra Storage mode %q", connector.Type())
