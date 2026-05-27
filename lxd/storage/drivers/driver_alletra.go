@@ -42,6 +42,12 @@ type alletra struct {
 
 // load is used to run one-time action per-driver rather than per-pool.
 func (d *alletra) load() error {
+	// Normalize legacy connector aliases so that the rest of the driver compares against
+	// actual connector types.
+	if d.config != nil && d.config["alletra.mode"] != "" {
+		d.config["alletra.mode"] = connectors.NormalizeType(d.config["alletra.mode"])
+	}
+
 	// Done if previously loaded.
 	if alletraLoaded {
 		return nil
@@ -128,6 +134,10 @@ func (d *alletra) FillConfig() error {
 
 // Validate checks that all provide keys are supported and that no conflicting or missing configuration is present.
 func (d *alletra) Validate(config map[string]string) error {
+	if config["alletra.mode"] != "" {
+		config["alletra.mode"] = connectors.NormalizeType(config["alletra.mode"])
+	}
+
 	rules := map[string]func(value string) error{
 		// lxdmeta:generate(entities=storage-alletra; group=pool-conf; key=alletra.wsapi)
 		//
@@ -169,7 +179,7 @@ func (d *alletra) Validate(config map[string]string) error {
 		"alletra.target": validate.Optional(validate.IsListOf(validate.IsNetworkAddress)),
 		// lxdmeta:generate(entities=storage-alletra; group=pool-conf; key=alletra.mode)
 		// The mode to use to map storage volumes to the local server.
-		// Supported values are `iscsi` and `nvme`.
+		// Supported values are `iscsi` and `nvme/tcp`.
 		// ---
 		//  type: string
 		//  defaultdesc: the discovered mode
@@ -190,7 +200,7 @@ func (d *alletra) Validate(config map[string]string) error {
 	}
 
 	newMode := config["alletra.mode"]
-	oldMode := d.config["alletra.mode"]
+	oldMode := connectors.NormalizeType(d.config["alletra.mode"])
 
 	// Ensure alletra.mode cannot be changed to avoid leaving volume mappings
 	// and prevent disturbing running instances.

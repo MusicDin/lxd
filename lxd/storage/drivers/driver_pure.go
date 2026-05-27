@@ -48,6 +48,12 @@ type pure struct {
 
 // load is used initialize the driver. It should be used only once.
 func (d *pure) load() error {
+	// Normalize legacy connector aliases so that the rest of the driver compares against
+	// actual connector types.
+	if d.config != nil && d.config["pure.mode"] != "" {
+		d.config["pure.mode"] = connectors.NormalizeType(d.config["pure.mode"])
+	}
+
 	// Done if previously loaded.
 	if pureLoaded {
 		return nil
@@ -130,6 +136,10 @@ func (d *pure) FillConfig() error {
 
 // Validate checks that all provided keys are supported and there is no conflicting or missing configuration.
 func (d *pure) Validate(config map[string]string) error {
+	if config["pure.mode"] != "" {
+		config["pure.mode"] = connectors.NormalizeType(config["pure.mode"])
+	}
+
 	rules := map[string]func(value string) error{
 		"size": validate.Optional(validate.IsSize),
 		// lxdmeta:generate(entities=storage-pure; group=pool-conf; key=pure.api.token)
@@ -160,7 +170,7 @@ func (d *pure) Validate(config map[string]string) error {
 		"pure.target": validate.Optional(validate.IsListOf(validate.IsNetworkAddress)),
 		// lxdmeta:generate(entities=storage-pure; group=pool-conf; key=pure.mode)
 		// The mode to use to map Pure Storage volumes to the local server.
-		// Supported values are `iscsi` and `nvme`.
+		// Supported values are `iscsi` and `nvme/tcp`.
 		// ---
 		//  type: string
 		//  defaultdesc: the discovered mode
@@ -181,7 +191,7 @@ func (d *pure) Validate(config map[string]string) error {
 	}
 
 	newMode := config["pure.mode"]
-	oldMode := d.config["pure.mode"]
+	oldMode := connectors.NormalizeType(d.config["pure.mode"])
 
 	// Ensure pure.mode cannot be changed to avoid leaving volume mappings
 	// and prevent disturbing running instances.

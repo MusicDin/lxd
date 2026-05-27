@@ -1210,7 +1210,8 @@ func (d *pure) ensureHost() (hostName string, cleanup revert.Hook, err error) {
 
 		// Append the mode to the server name because Pure Storage does not allow mixing
 		// NQNs, IQNs, and WWNs for a single host.
-		hostname = serverName + "-" + connector.Type()
+		// Replace any "/" with "-", as / is not a valid character in a host name.
+		hostname = serverName + "-" + strings.ReplaceAll(connector.Type(), "/", "-")
 
 		err = d.client().createHost(hostname, []string{qn})
 		if err != nil {

@@ -13,7 +13,7 @@ const (
 	TypeUnknown string = "unknown"
 
 	// TypeNVMeTCP represents an NVMe/TCP storage connector.
-	TypeNVMeTCP string = "nvme"
+	TypeNVMeTCP string = "nvme/tcp"
 
 	// TypeSDC represents Dell SDC storage connector.
 	TypeSDC string = "sdc"
@@ -21,6 +21,18 @@ const (
 	// TypeISCSI represents an iSCSI storage connector.
 	TypeISCSI string = "iscsi"
 )
+
+// NormalizeType resolves legacy connector type aliases to their current values.
+// For example, "nvme" was the old name for NVMe/TCP and is normalized to "nvme/tcp".
+// Call this during storage pool initialization so old connector mode names remain accepted,
+// while only current names are persisted and used internally.
+func NormalizeType(connectorType string) string {
+	if connectorType == "nvme" {
+		return TypeNVMeTCP
+	}
+
+	return connectorType
+}
 
 // session represents a connector session that is established with a target.
 type session struct {
@@ -57,7 +69,7 @@ func NewConnector(connectorType string, serverUUID string) (Connector, error) {
 		serverUUID: serverUUID,
 	}
 
-	switch connectorType {
+	switch NormalizeType(connectorType) {
 	case TypeNVMeTCP:
 		return &connectorNVMe{
 			common: common,

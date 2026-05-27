@@ -52,6 +52,12 @@ type powerflex struct {
 
 // load is used to run one-time action per-driver rather than per-pool.
 func (d *powerflex) load() error {
+	// Normalize legacy connector aliases so that the rest of the driver compares against
+	// actual connector types.
+	if d.config != nil && d.config["powerflex.mode"] != "" {
+		d.config["powerflex.mode"] = connectors.NormalizeType(d.config["powerflex.mode"])
+	}
+
 	// Done if previously loaded.
 	if powerFlexLoaded {
 		return nil
@@ -216,6 +222,10 @@ func (d *powerflex) Delete(progressReporter ioprogress.ProgressReporter) error {
 
 // Validate checks that all provided keys are supported and that no conflicting or missing configuration is present.
 func (d *powerflex) Validate(config map[string]string) error {
+	if config["powerflex.mode"] != "" {
+		config["powerflex.mode"] = connectors.NormalizeType(config["powerflex.mode"])
+	}
+
 	rules := map[string]func(value string) error{
 		// lxdmeta:generate(entities=storage-powerflex; group=pool-conf; key=powerflex.user.name)
 		// Must have at least SystemAdmin role to give LXD full control over managed storage pools.
@@ -263,7 +273,7 @@ func (d *powerflex) Validate(config map[string]string) error {
 		"powerflex.domain": validate.IsAny,
 		// lxdmeta:generate(entities=storage-powerflex; group=pool-conf; key=powerflex.mode)
 		// The mode gets discovered automatically if the system provides the necessary kernel modules.
-		// This can be either `nvme` or `sdc`.
+		// This can be either `nvme/tcp` or `sdc`.
 		// ---
 		//  type: string
 		//  defaultdesc: the discovered mode
@@ -303,7 +313,7 @@ func (d *powerflex) Validate(config map[string]string) error {
 	}
 
 	newMode := config["powerflex.mode"]
-	oldMode := d.config["powerflex.mode"]
+	oldMode := connectors.NormalizeType(d.config["powerflex.mode"])
 
 	// Ensure powerflex.mode cannot be changed to avoid leaving volume mappings
 	// and to prevent disturbing running instances.

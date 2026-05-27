@@ -52,6 +52,12 @@ type powerstore struct {
 
 // load initializes the PowerStore driver.
 func (d *powerstore) load() error {
+	// Normalize legacy connector aliases so that the rest of the driver compares against
+	// actual connector types.
+	if d.config != nil && d.config["powerstore.mode"] != "" {
+		d.config["powerstore.mode"] = connectors.NormalizeType(d.config["powerstore.mode"])
+	}
+
 	// Done if previously loaded.
 	if powerStoreLoaded {
 		return nil
@@ -128,6 +134,10 @@ func (d *powerstore) FillConfig() error {
 
 // Validate checks that all provided keys are supported and that no conflicting or missing configuration is present.
 func (d *powerstore) Validate(config map[string]string) error {
+	if config["powerstore.mode"] != "" {
+		config["powerstore.mode"] = connectors.NormalizeType(config["powerstore.mode"])
+	}
+
 	rules := map[string]func(value string) error{
 		// lxdmeta:generate(entities=storage-powerstore; group=pool-conf; key=powerstore.user.name)
 		// Name of the PowerStore user with an admin role that gives LXD full control over managed storage pools.
@@ -191,7 +201,7 @@ func (d *powerstore) Validate(config map[string]string) error {
 	}
 
 	newMode := config["powerstore.mode"]
-	oldMode := d.config["powerstore.mode"]
+	oldMode := connectors.NormalizeType(d.config["powerstore.mode"])
 
 	// Ensure powerstore.mode cannot be changed to avoid leaving volume mappings
 	// and prevent disturbing running instances.

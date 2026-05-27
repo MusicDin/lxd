@@ -128,7 +128,8 @@ func (d *alletra) ensureHost() (hostName string, cleanup revert.Hook, err error)
 
 		// Append the mode to the server name because storage array does not allow mixing
 		// NQNs, IQNs, and WWNs for a single host.
-		hostname = serverName + "-" + connector.Type()
+		// Replace "/" with "-", as "/" is not allowed in host names.
+		hostname = serverName + "-" + strings.ReplaceAll(connector.Type(), "/", "-")
 
 		err = d.client().CreateHost(connector.Type(), hostname, []string{qn})
 		if err != nil {
