@@ -52,8 +52,6 @@ type Connector interface {
 }
 
 // NewConnector instantiates a new connector of the given type.
-// The caller needs to ensure connector type is validated before calling this
-// function, as common (empty) connector is returned for unknown type.
 func NewConnector(connectorType string, serverUUID string) (Connector, error) {
 	common := common{
 		serverUUID: serverUUID,
