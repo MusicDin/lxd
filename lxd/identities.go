@@ -1622,6 +1622,14 @@ func identityGetCurrent(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
+	// ToAPI derives the expiry from what is stored for the identity, which describes the issued
+	// credential. Here the credential that authenticated this specific request is known, so
+	// prefer its expiry.
+	expiresAt := requestor.ExpiresAt()
+	if expiresAt != nil {
+		apiIdentity.ExpiresAt = expiresAt
+	}
+
 	effectivePermissions := make([]api.Permission, 0, len(permissions))
 	for _, permission := range permissions {
 		effectivePermissions = append(effectivePermissions, api.Permission{
@@ -1636,7 +1644,6 @@ func identityGetCurrent(d *Daemon, r *http.Request) response.Response {
 		EffectiveGroups:      effectiveGroups,
 		EffectivePermissions: effectivePermissions,
 		FineGrained:          identityType.IsFineGrained(),
-		ExpiresAt:            requestor.ExpiresAt(),
 	})
 }
 
