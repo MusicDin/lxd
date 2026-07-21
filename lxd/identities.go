@@ -530,7 +530,8 @@ func identityBearerTokenPost(d *Daemon, r *http.Request) response.Response {
 			return err
 		}
 
-		return nil
+		// Record the expiry alongside the new signing key so that it can be reported when the identity is listed.
+		return dbCluster.SetBearerIdentityTokenExpiry(ctx, tx.Tx(), id.ID, expiresAt)
 	})
 	if err != nil {
 		return response.SmartError(err)
@@ -610,7 +611,8 @@ func identityBearerTokenDelete(d *Daemon, r *http.Request) response.Response {
 			return fmt.Errorf("Failed revoking token: %w", err)
 		}
 
-		return nil
+		// Clear the recorded expiry so that the revoked token is no longer reported when the identity is listed.
+		return dbCluster.SetBearerIdentityTokenExpiry(ctx, tx.Tx(), id.ID, time.Time{})
 	})
 	if err != nil {
 		return response.SmartError(err)
@@ -1622,9 +1624,8 @@ func identityGetCurrent(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	// ToAPI derives the expiry from what is stored for the identity, which describes the issued
-	// credential. Here the credential that authenticated this specific request is known, so
-	// prefer its expiry.
+	// Populate metadata expiry from the requestor. This ensures bearer tokens issued before their
+	// expiry was recorded have the field correctly populated from the authenticating token/request.
 	expiresAt := requestor.ExpiresAt()
 	if expiresAt != nil {
 		apiIdentity.ExpiresAt = expiresAt
