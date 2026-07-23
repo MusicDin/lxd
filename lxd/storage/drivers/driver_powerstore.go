@@ -28,6 +28,7 @@ var powerStoreSupportedConnectors = []string{
 	connectors.TypeISCSI,
 	connectors.TypeSCSIFC,
 	connectors.TypeNVMeTCP,
+	connectors.TypeNVMeFC,
 }
 
 // powerStoreDefaultUser represents the default PowerStore user name.
@@ -181,7 +182,7 @@ func (d *powerstore) Validate(config map[string]string) error {
 		"powerstore.gateway.verify": validate.Optional(validate.IsBool),
 		// lxdmeta:generate(entities=storage-powerstore; group=pool-conf; key=powerstore.mode)
 		// The mode to use to map PowerStore volumes to the local server.
-		// Supported values are `iscsi`, `scsi/fc`, and `nvme/tcp`.
+		// Supported values are `iscsi`, `scsi/fc`, `nvme/tcp`, and `nvme/fc`.
 		// ---
 		//  type: string
 		//  defaultdesc: `nvme/tcp`
@@ -322,15 +323,25 @@ func (d *powerstore) targets() (map[string][]string, error) {
 	var discoveryLogRecords []any
 	var filterAddresses []string
 
-	if connector.Transport() == connectors.TransportFC {
-		// Fiber channel targets are visible through the HBA.
+	if connector.Type() == connectors.TypeSCSIFC {
+		// SCSI/FC targets are visible directly through the HBA on the FC fabric.
 		discoveryLogRecords, err = connector.Discover(d.state.ShutdownCtx)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		// Fetch discovery addresses from PowerStore for the selected connector type.
-		discoveryAddresses, err := d.client().DiscoveryAddresses(connector.Type())
+		// Fetch the discovery/target addresses from PowerStore for the selected mode.
+		// For IP-based transports (iSCSI, NVMe/TCP) these are the discovery portal
+		// addresses. For NVMe/FC these are the array's NVMe FC target port transport
+		// addresses ("nn-<wwnn>:pn-<wwpn>"), which are used to bootstrap the NVMe
+		// discovery against the fabric.
+		var discoveryAddresses []string
+		if connector.Type() == connectors.TypeNVMeFC {
+			discoveryAddresses, err = d.client().NVMeFCTargetAddresses()
+		} else {
+			discoveryAddresses, err = d.client().DiscoveryAddresses(connector.Type())
+		}
+
 		if err != nil {
 			return nil, err
 		}
@@ -345,24 +356,28 @@ func (d *powerstore) targets() (map[string][]string, error) {
 			discoveryLogRecords = append(discoveryLogRecords, discovered...)
 		}
 
-		// Make sure target addresses have port configured.
-		var defaultPort string
+		// IP-based transports need a default port on the target addresses, and support
+		// restricting the connection to a user-specified list of addresses. FC has no
+		// port and its targets are always fully determined by the array.
+		if connector.Transport() == connectors.TransportTCP {
+			var defaultPort string
 
-		mode := connector.Type()
-		switch mode {
-		case connectors.TypeISCSI:
-			defaultPort = connectors.ISCSIDefaultPort
-		case connectors.TypeNVMeTCP:
-			defaultPort = connectors.NVMeDefaultTransportPort
-		default:
-			return nil, fmt.Errorf("Unsupported PowerStore mode %q", mode)
-		}
+			mode := connector.Type()
+			switch mode {
+			case connectors.TypeISCSI:
+				defaultPort = connectors.ISCSIDefaultPort
+			case connectors.TypeNVMeTCP:
+				defaultPort = connectors.NVMeDefaultTransportPort
+			default:
+				return nil, fmt.Errorf("Unsupported PowerStore mode %q", mode)
+			}
 
-		// Parse user-specified list of addresses to connect to.
-		// If not specified, all discovered addresses will be used.
-		filterAddresses = shared.SplitNTrimSpace(d.config["powerstore.target"], ",", -1, true)
-		for i := range filterAddresses {
-			filterAddresses[i] = shared.EnsurePort(filterAddresses[i], defaultPort)
+			// Parse user-specified list of addresses to connect to.
+			// If not specified, all discovered addresses will be used.
+			filterAddresses = shared.SplitNTrimSpace(d.config["powerstore.target"], ",", -1, true)
+			for i := range filterAddresses {
+				filterAddresses[i] = shared.EnsurePort(filterAddresses[i], defaultPort)
+			}
 		}
 	}
 
@@ -378,7 +393,14 @@ func (d *powerstore) targets() (map[string][]string, error) {
 			address = r.Address
 			qn = r.IQN
 		case connectors.NVMeDiscoveryLogRecord:
-			address = net.JoinHostPort(r.TransportAddress, r.TransportServiceIdentifier)
+			if connector.Transport() == connectors.TransportFC {
+				// NVMe/FC targets are addressed by their FC transport address
+				// ("nn-<wwnn>:pn-<wwpn>"), which carries no port number.
+				address = r.TransportAddress
+			} else {
+				address = net.JoinHostPort(r.TransportAddress, r.TransportServiceIdentifier)
+			}
+
 			qn = r.SubNQN
 		case connectors.FCDiscoveryRecord:
 			// FC targets are identified only by WWPN, so use it for both fields.
