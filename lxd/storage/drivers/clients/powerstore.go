@@ -88,6 +88,21 @@ func (PowerStoreVolume) selector() string {
 	return "id,name,type,size,logical_used,wwn,nguid"
 }
 
+// PowerStoreFCPort represents a Fibre Channel port on a PowerStore appliance.
+type PowerStoreFCPort struct {
+	ID        string   `json:"id,omitempty"`
+	Name      string   `json:"name,omitempty"`
+	WWN       string   `json:"wwn,omitempty"`
+	WWNNode   string   `json:"wwn_node,omitempty"`
+	WWNNVMe   string   `json:"wwn_nvme,omitempty"`
+	IsLinkUp  bool     `json:"is_link_up,omitempty"`
+	Protocols []string `json:"protocols,omitempty"`
+}
+
+func (PowerStoreFCPort) selector() string {
+	return "id,name,wwn,wwn_node,wwn_nvme,is_link_up,protocols"
+}
+
 // PowerStoreApplianceMetrics represents metrics collected from a PowerStore appliance.
 type PowerStoreApplianceMetrics struct {
 	ID                     string `json:"id,omitempty"`
@@ -554,6 +569,55 @@ func (c *PowerStoreClient) DiscoveryAddresses(connectorType string) ([]string, e
 	}
 
 	return addresses, nil
+}
+
+// NVMeFCTargetAddresses retrieves the FC transport addresses ("nn-<wwnn>:pn-<wwpn>")
+// of the array's NVMe Fibre Channel target ports that are currently link up. The
+// node name is the port's node WWN and the port name is its dedicated NVMe WWN,
+// which differs from the port's SCSI WWN.
+func (c *PowerStoreClient) NVMeFCTargetAddresses() ([]string, error) {
+	var fcPort PowerStoreFCPort
+
+	url := api.NewURL().Path("api", "rest", "fc_port")
+	url = url.WithQuery("select", fcPort.selector())
+
+	var fcPorts []PowerStoreFCPort
+	err := c.requestAuthenticated(http.MethodGet, url.URL, nil, &fcPorts, nil)
+	if err != nil {
+		return nil, fmt.Errorf("Failed retrieving PowerStore FC ports: %w", err)
+	}
+
+	var addresses []string
+	for _, port := range fcPorts {
+		// Skip ports that are down, do not serve the NVMe protocol, or that do
+		// not expose an NVMe WWN.
+		if !port.IsLinkUp || !slices.Contains(port.Protocols, "NVMe") || port.WWNNode == "" || port.WWNNVMe == "" {
+			continue
+		}
+
+		address := "nn-" + formatFCWWN(port.WWNNode) + ":pn-" + formatFCWWN(port.WWNNVMe)
+		if slices.Contains(addresses, address) {
+			continue
+		}
+
+		addresses = append(addresses, address)
+	}
+
+	if len(addresses) == 0 {
+		return nil, errors.New("No NVMe/FC target ports found on PowerStore")
+	}
+
+	return addresses, nil
+}
+
+// formatFCWWN normalizes a PowerStore WWN into the "0x"-prefixed 16 hex character
+// form used by the NVMe/FC transport addresses. PowerStore reports WWNs in the
+// colon-separated byte format ("58:cc:f0:90:cb:20:03:46").
+func formatFCWWN(wwn string) string {
+	normalized := strings.ToLower(strings.TrimSpace(wwn))
+	normalized = strings.TrimPrefix(normalized, "0x")
+	normalized = strings.ReplaceAll(normalized, ":", "")
+	return "0x" + normalized
 }
 
 // GetCurrentHost retrieves the PowerStore host linked to the current LXD host.
@@ -1048,7 +1112,9 @@ func powerStoreConnectorToPortType(connectorType string) (string, error) {
 	switch connectorType {
 	case connectors.TypeISCSI:
 		return "iSCSI", nil
-	case connectors.TypeNVMeTCP:
+	case connectors.TypeNVMeTCP, connectors.TypeNVMeFC:
+		// PowerStore identifies NVMe initiators by their host NQN regardless of
+		// the underlying transport (TCP or Fibre Channel).
 		return "NVMe", nil
 	case connectors.TypeSCSIFC:
 		return "FC", nil
