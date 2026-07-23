@@ -53,6 +53,7 @@ const (
 // Transport type definitions (from https://github.com/linux-nvme/libnvme/blob/97886cb68d238ccbbed804a275851f63e490b22f/src/nvme/fabrics.c#L73).
 const (
 	nvmeTransportTypeTCP = "tcp"
+	nvmeTransportTypeFC  = "fc"
 )
 
 // SubtypeNVMESubsys defines an NVMe subsystem type (from https://github.com/linux-nvme/libnvme/blob/97886cb68d238ccbbed804a275851f63e490b22f/src/nvme/fabrics.c#L99).
@@ -113,6 +114,12 @@ func (c *connectorNVMe) Transport() TransportType {
 
 // Version returns the version of the NVMe CLI.
 func (c *connectorNVMe) Version() (string, error) {
+	return nvmeVersion()
+}
+
+// nvmeVersion returns the version of the NVMe CLI. It is shared by all NVMe
+// connectors regardless of their transport.
+func nvmeVersion() (string, error) {
 	// Detect and record the version of the NVMe CLI.
 	out, err := shared.RunCommand(context.Background(), "nvme", "version")
 	if err != nil {
@@ -142,7 +149,13 @@ func (c *connectorNVMe) LoadModules() error {
 // Getting the NQN from /etc/nvme/hostnqn would require the nvme-cli
 // package to be installed on the host.
 func (c *connectorNVMe) QualifiedName() (string, error) {
-	return "nqn.2014-08.org.nvmexpress:uuid:" + c.serverUUID, nil
+	return nvmeQualifiedName(c.serverUUID)
+}
+
+// nvmeQualifiedName returns a custom host NQN generated from the server UUID.
+// It is shared by all NVMe connectors regardless of their transport.
+func nvmeQualifiedName(serverUUID string) (string, error) {
+	return "nqn.2014-08.org.nvmexpress:uuid:" + serverUUID, nil
 }
 
 // Connect establishes a connection with the target on the given address.
@@ -178,6 +191,12 @@ func (c *connectorNVMe) Connect(ctx context.Context, targetQN string, targetAddr
 
 // Disconnect terminates a connection with the target.
 func (c *connectorNVMe) Disconnect(targetQN string) error {
+	return nvmeDisconnect(c, targetQN)
+}
+
+// nvmeDisconnect terminates a connection with the target. It is shared by all
+// NVMe connectors regardless of their transport.
+func nvmeDisconnect(c Connector, targetQN string) error {
 	// Find an existing NVMe session.
 	session, err := c.findSession(targetQN)
 	if err != nil {
@@ -216,6 +235,15 @@ func (c *connectorNVMe) Disconnect(targetQN string) error {
 // found the function determines addresses of the active connections by checking
 // "/sys/class/nvme", and returns a non-nil result (except if an error occurs).
 func (c *connectorNVMe) findSession(targetQN string) (*session, error) {
+	return nvmeFindSession(targetQN, c.Transport())
+}
+
+// nvmeFindSession implements the session lookup shared by all NVMe connectors.
+// The transport determines how the active connection addresses are parsed from
+// the controller's "address" sysfs file: TCP addresses carry a port number
+// (trsvcid), while Fibre Channel addresses are the target's FC node/port name
+// pair and have no port.
+func nvmeFindSession(targetQN string, transport TransportType) (*session, error) {
 	// Base path for NVMe sessions/subsystems.
 	subsysBasePath := "/sys/class/nvme-subsystem"
 
@@ -295,8 +323,9 @@ func (c *connectorNVMe) findSession(targetQN string) (*session, error) {
 		}
 
 		// Extract the addresses from the file.
-		// The "address" file contains one line per connection,
-		// each in format "traddr=<ip>,trsvcid=<port>,...".
+		// The "address" file contains one line per connection. For TCP each line
+		// has the format "traddr=<ip>,trsvcid=<port>,...", while for Fibre Channel
+		// it has the format "traddr=nn-<wwnn>:pn-<wwpn>,host_traddr=...,...".
 		for line := range bytes.SplitSeq(bytes.TrimSpace(fileBytes), []byte{'\n'}) {
 			parts := strings.Split(string(bytes.TrimSpace(line)), ",")
 
@@ -307,6 +336,13 @@ func (c *connectorNVMe) findSession(targetQN string) (*session, error) {
 					transportAddr = addr
 					break
 				}
+			}
+
+			if transport == TransportFC {
+				// FC addresses carry no port. The transport address already
+				// uniquely identifies the target's FC node/port name pair.
+				session.addresses = append(session.addresses, transportAddr)
+				continue
 			}
 
 			transportServiceID := NVMeDefaultTransportPort
