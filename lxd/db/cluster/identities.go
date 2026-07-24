@@ -114,15 +114,34 @@ func (i IdentityType) Value() (driver.Value, error) {
 	return idType.Code(), nil
 }
 
-// ActiveType returns the active version of the identity type.
+// ActiveType returns the active version of a pending identity type.
+// It returns an error for types that have no pending variant.
 func (i IdentityType) ActiveType() (IdentityType, error) {
 	switch i {
 	case api.IdentityTypeCertificateClientPending:
 		return api.IdentityTypeCertificateClient, nil
 	case api.IdentityTypeCertificateClusterLinkPending:
 		return api.IdentityTypeCertificateClusterLink, nil
+	case api.IdentityTypeBearerTokenClientPending:
+		return api.IdentityTypeBearerTokenClient, nil
+	case api.IdentityTypeBearerTokenDevLXDPending:
+		return api.IdentityTypeBearerTokenDevLXD, nil
 	default:
 		return "", fmt.Errorf("Identities of type %q cannot be activated", i)
+	}
+}
+
+// PendingType returns the pending version of an active bearer identity type. A bearer identity is demoted to its
+// pending type when it has no usable token, either before any token has been issued or after its token is revoked.
+// It returns an error for types that have no pending variant (including the initial UI identity, which is exempt).
+func (i IdentityType) PendingType() (IdentityType, error) {
+	switch i {
+	case api.IdentityTypeBearerTokenClient:
+		return api.IdentityTypeBearerTokenClientPending, nil
+	case api.IdentityTypeBearerTokenDevLXD:
+		return api.IdentityTypeBearerTokenDevLXDPending, nil
+	default:
+		return "", fmt.Errorf("Identities of type %q cannot be made pending", i)
 	}
 }
 
@@ -332,6 +351,27 @@ WHERE id = ? AND auth_method = ?`
 	return nil
 }
 
+// SetIdentityType updates only the type of the identity with the given ID. It is used to promote a bearer identity
+// to its active type when a token is issued, and to demote it to its pending type when the token is revoked. Only the
+// type column is written so that other metadata (such as a token expiry set in the same transaction) is preserved.
+func SetIdentityType(ctx context.Context, tx *sql.Tx, identityID int64, identityType IdentityType) error {
+	res, err := tx.ExecContext(ctx, `UPDATE identities SET type = ? WHERE id = ?`, identityType, identityID)
+	if err != nil {
+		return fmt.Errorf("Failed setting identity type: %w", err)
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("Failed checking identity type update: %w", err)
+	}
+
+	if rowsAffected != 1 {
+		return fmt.Errorf("Failed setting identity type: Expected to update 1 row, updated %d", rowsAffected)
+	}
+
+	return nil
+}
+
 // ToAPI converts an [IdentitiesRow] to an [api.Identity], executing database queries as necessary.
 func (i *IdentitiesRow) ToAPI(idToGroups map[int64][]string, idToCertificates map[int64][]string) (*api.Identity, error) {
 	if idToGroups == nil {
@@ -467,9 +507,11 @@ func ActivateTLSIdentity(ctx context.Context, tx *sql.Tx, identifier uuid.UUID, 
 	return query.UpdateByPrimaryKey(ctx, tx, ident)
 }
 
-var pendingIdentityTypes = func() (result []int64) {
+// pendingTLSIdentityTypes returns the type codes of all pending identity types whose authentication method is TLS.
+// These are the only pending identities that carry a token secret in their metadata and can be activated with one.
+var pendingTLSIdentityTypes = func() (result []int64) {
 	for _, t := range identity.Types() {
-		if t.IsPending() {
+		if t.IsPending() && t.AuthenticationMethod() == api.AuthenticationMethodTLS {
 			result = append(result, t.Code())
 		}
 	}
@@ -481,7 +523,7 @@ var pendingIdentityTypes = func() (result []int64) {
 func GetPendingTLSIdentityByTokenSecret(ctx context.Context, tx *sql.Tx, secret string) (*IdentitiesRow, error) {
 	clause := fmt.Sprintf(`
 	WHERE identities.type IN %s
-	AND json_extract(identities.metadata, '$.secret') = ?`, query.IntParams(pendingIdentityTypes()...))
+	AND json_extract(identities.metadata, '$.secret') = ?`, query.IntParams(pendingTLSIdentityTypes()...))
 
 	ident, err := query.SelectOne[IdentitiesRow](ctx, tx, clause, secret)
 	if err != nil {
