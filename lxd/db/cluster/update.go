@@ -132,6 +132,40 @@ var updates = map[int]schema.Update{
 	86: updateFromV85,
 	87: updateFromV86,
 	88: updateFromV87,
+	89: updateFromV88,
+}
+
+// updateFromV88 converts bearer identities that have no signing key to their pending type. A bearer identity has no
+// usable token when it has no signing key, either because none has been issued yet or because the most recent one was
+// revoked, and this is now reflected by a distinct pending identity type. Identities that still hold a signing key keep
+// their active type, even if the issued token has already expired.
+func updateFromV88(ctx context.Context, tx *sql.Tx) error {
+	// Type codes: DevLXD token bearer 9 -> DevLXD token bearer (pending) 15, client token bearer 10 -> client token
+	// bearer (pending) 14. The initial UI token bearer (type 11) has no pending variant and is left untouched.
+	// In the secrets table, identity entities have entity_type code 24 and bearer signing keys have type code 2.
+	_, err := tx.ExecContext(ctx, `
+UPDATE identities
+SET type = 15
+WHERE type = 9
+	AND NOT EXISTS (
+		SELECT 1 FROM secrets
+		WHERE secrets.entity_type = 24
+			AND secrets.entity_id = identities.id
+			AND secrets.type = 2
+	);
+
+UPDATE identities
+SET type = 14
+WHERE type = 10
+	AND NOT EXISTS (
+		SELECT 1 FROM secrets
+		WHERE secrets.entity_type = 24
+			AND secrets.entity_id = identities.id
+			AND secrets.type = 2
+	);
+`)
+
+	return err
 }
 
 func updateFromV87(ctx context.Context, tx *sql.Tx) error {
