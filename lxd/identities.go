@@ -412,8 +412,20 @@ func identitiesBearerPost(d *Daemon, r *http.Request) response.Response {
 		return response.BadRequest(fmt.Errorf("Identities of type %q cannot be created via the bearer API", req.Type))
 	}
 
+	if idType.IsPending() {
+		return response.BadRequest(fmt.Errorf("Identities of type %q cannot be created directly, they are created by requesting a token-bearing identity", req.Type))
+	}
+
 	if req.Type == api.IdentityTypeBearerTokenInitialUI && requestor.Protocol != request.ProtocolUnix {
 		return response.Forbidden(errors.New("Initial UI identities may only be created via unix socket"))
+	}
+
+	// Client and DevLXD bearer identities begin life pending, as no token has been issued for them yet. They are
+	// promoted to their active type when a token is first issued. The initial UI identity has no pending variant and
+	// is stored with the requested type.
+	identityType := dbCluster.IdentityType(req.Type)
+	if pendingType, err := identityType.PendingType(); err == nil {
+		identityType = pendingType
 	}
 
 	newIdentityID := uuid.New()
@@ -421,7 +433,7 @@ func identitiesBearerPost(d *Daemon, r *http.Request) response.Response {
 		// Create the identity.
 		id, err := query.Create(ctx, tx.Tx(), dbCluster.IdentitiesRow{
 			AuthMethod: api.AuthenticationMethodBearer,
-			Type:       dbCluster.IdentityType(req.Type),
+			Type:       identityType,
 			Identifier: newIdentityID.String(),
 			Name:       req.Name,
 		})
@@ -521,6 +533,11 @@ func identityBearerTokenPost(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
+	idType, err := identity.New(string(id.Type))
+	if err != nil {
+		return response.SmartError(err)
+	}
+
 	s := d.State()
 
 	var secret []byte
@@ -531,7 +548,23 @@ func identityBearerTokenPost(d *Daemon, r *http.Request) response.Response {
 		}
 
 		// Record the expiry alongside the new signing key so that it can be reported when the identity is listed.
-		return dbCluster.SetBearerIdentityTokenExpiry(ctx, tx.Tx(), id.ID, expiresAt)
+		err = dbCluster.SetBearerIdentityTokenExpiry(ctx, tx.Tx(), id.ID, expiresAt)
+		if err != nil {
+			return err
+		}
+
+		// Promote a pending identity to its active type now that it has a usable token. Re-issuing a token for an
+		// already active identity leaves the type unchanged.
+		if idType.IsPending() {
+			activeType, err := id.Type.ActiveType()
+			if err != nil {
+				return err
+			}
+
+			return dbCluster.SetIdentityType(ctx, tx.Tx(), id.ID, activeType)
+		}
+
+		return nil
 	})
 	if err != nil {
 		return response.SmartError(err)
@@ -539,7 +572,7 @@ func identityBearerTokenPost(d *Daemon, r *http.Request) response.Response {
 
 	var token string
 	switch id.Type {
-	case api.IdentityTypeBearerTokenClient, api.IdentityTypeBearerTokenInitialUI:
+	case api.IdentityTypeBearerTokenClient, api.IdentityTypeBearerTokenClientPending, api.IdentityTypeBearerTokenInitialUI:
 		var serverCertFingerprint string
 
 		// When creating LXD bearer tokens, include the server certificate fingerprint.
@@ -549,7 +582,7 @@ func identityBearerTokenPost(d *Daemon, r *http.Request) response.Response {
 		}
 
 		token, err = encryption.GetClientBearerToken(secret, id.Identifier, s.GlobalConfig.ClusterUUID(), expiresAt, serverCertFingerprint)
-	case api.IdentityTypeBearerTokenDevLXD:
+	case api.IdentityTypeBearerTokenDevLXD, api.IdentityTypeBearerTokenDevLXDPending:
 		token, err = encryption.GetDevLXDBearerToken(secret, id.Identifier, s.GlobalConfig.ClusterUUID(), expiresAt)
 	default:
 		err = api.StatusErrorf(http.StatusBadRequest, "Token cannot be issued for identity of type %q", id.Type)
@@ -612,7 +645,18 @@ func identityBearerTokenDelete(d *Daemon, r *http.Request) response.Response {
 		}
 
 		// Clear the recorded expiry so that the revoked token is no longer reported when the identity is listed.
-		return dbCluster.SetBearerIdentityTokenExpiry(ctx, tx.Tx(), id.ID, time.Time{})
+		err = dbCluster.SetBearerIdentityTokenExpiry(ctx, tx.Tx(), id.ID, time.Time{})
+		if err != nil {
+			return err
+		}
+
+		// Demote the identity to its pending type now that it has no usable token. The initial UI identity has no
+		// pending variant and keeps its type.
+		if pendingType, err := id.Type.PendingType(); err == nil {
+			return dbCluster.SetIdentityType(ctx, tx.Tx(), id.ID, pendingType)
+		}
+
+		return nil
 	})
 	if err != nil {
 		return response.SmartError(err)
