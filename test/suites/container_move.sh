@@ -13,6 +13,8 @@ test_container_move() {
   lxc project create "${project}"
   if [ "${lxd_backend}" = "pure" ]; then
     configure_pure_pool "${pool2}"
+  elif [ "${lxd_backend}" = "powerstore" ]; then
+    configure_powerstore_pool "${pool2}"
   else
     lxc storage create "${pool2}" "${lxd_backend}"
   fi

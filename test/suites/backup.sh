@@ -4,7 +4,7 @@ test_storage_volume_recover() {
   poolDriver="$(storage_backend "${LXD_DIR}")"
 
   if [ "${poolDriver}" = "pure" ]; then
-    export TEST_UNMET_REQUIREMENT="pure driver does not support recovery"
+    export TEST_UNMET_REQUIREMENT="${poolDriver} driver does not support recovery"
     return 0
   fi
 
@@ -1099,7 +1099,7 @@ test_backup_volume_expiry() {
 test_backup_export_import_recover() {
   lxd_backend=$(storage_backend "$LXD_DIR")
 
-  if [ "$lxd_backend" = "pure" ]; then
+  if [ "$lxd_backend" = "pure" ] || [ "$lxd_backend" = "powerstore" ]; then
     echo "==> SKIP: Storage driver does not support recovery"
     return
   fi
