@@ -289,7 +289,7 @@ readonly test_group_standalone_storage=(
     "storage_driver_cephfs"
     "storage_driver_dir"
     "storage_driver_zfs"
-    "storage_driver_pure"
+    "storage_driver_remote"
     "storage_pools"
     "storage_buckets"
     "storage_volume_import"

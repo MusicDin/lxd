@@ -1,9 +1,12 @@
-test_storage_driver_pure() {
+# test_storage_driver_remote exercises the storage drivers that are backed by a remote appliance.
+# Those drivers cannot create a pool with a plain "lxc storage create", so each of them provides
+# a configure_<driver>_pool helper in its test backend file that supplies the connection details.
+test_storage_driver_remote() {
   local lxd_backend
 
   lxd_backend=$(storage_backend "${LXD_DIR}")
-  if [ "${lxd_backend}" != "pure" ]; then
-    export TEST_UNMET_REQUIREMENT="pure specific test, not for ${lxd_backend}"
+  if [ "${lxd_backend}" != "pure" ] && [ "${lxd_backend}" != "powerstore" ]; then
+    export TEST_UNMET_REQUIREMENT="remote storage driver specific test, not for ${lxd_backend}"
     return
   fi
 
@@ -20,8 +23,8 @@ test_storage_driver_pure() {
     # Create 2 storage pools.
     poolName1="lxdtest-$(basename "${LXD_DIR}")-pool1"
     poolName2="lxdtest-$(basename "${LXD_DIR}")-pool2"
-    configure_pure_pool "${poolName1}"
-    configure_pure_pool "${poolName2}"
+    "configure_${lxd_backend}_pool" "${poolName1}"
+    "configure_${lxd_backend}_pool" "${poolName2}"
 
     # Configure default volume size for pools.
     lxc storage set "${poolName1}" volume.size=25MiB
