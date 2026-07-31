@@ -51,6 +51,10 @@ available_storage_backends() {
         backends="$backends pure"
     fi
 
+    if [ -n "${POWERSTORE_GATEWAY:-}" ] && [ -n "${POWERSTORE_PASSWORD:-}" ]; then
+        backends="$backends powerstore"
+    fi
+
     storage_backends="btrfs zfs"
 
     if uname -r | grep -- '-kvm$' >/dev/null; then
