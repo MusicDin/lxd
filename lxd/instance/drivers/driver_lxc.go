@@ -7450,6 +7450,51 @@ func (d *lxc) Metrics(hostInterfaces []net.Interface) (*metrics.MetricSet, error
 	return out, nil
 }
 
+// Bitmaps returns no bitmaps, as containers have none.
+func (d *lxc) Bitmaps() ([]api.InstanceBitmap, error) {
+	return []api.InstanceBitmap{}, nil
+}
+
+// DeleteBitmap is not supported for containers.
+func (d *lxc) DeleteBitmap(bitmapName string) error {
+	return api.StatusErrorf(http.StatusBadRequest, "Dirty bitmaps are not supported for containers")
+}
+
+// DeleteBitmaps does nothing, as containers have no bitmaps.
+func (d *lxc) DeleteBitmaps() error {
+	return nil
+}
+
+// DeleteVolumeBitmaps does nothing, as containers have no bitmaps.
+func (d *lxc) DeleteVolumeBitmaps(deviceName string) error {
+	return nil
+}
+
+// RemoveVolumeMetadataImage does nothing, as containers have no bitmaps.
+func (d *lxc) RemoveVolumeMetadataImage(volumeUUID string) error {
+	return nil
+}
+
+// RemoveAllMetadataImages does nothing, as containers have no bitmaps.
+func (d *lxc) RemoveAllMetadataImages() error {
+	return nil
+}
+
+// CreateSnapshotBitmaps is not supported for containers.
+func (d *lxc) CreateSnapshotBitmaps(snapshots map[string]string, bitmapName string, bitmapUUID string) ([]string, error) {
+	return nil, api.StatusErrorf(http.StatusBadRequest, "Dirty bitmaps are not supported for containers")
+}
+
+// CommitDiskOverlays does nothing, as containers have no disk overlays.
+func (d *lxc) CommitDiskOverlays(deviceNames []string) error {
+	return nil
+}
+
+// RemoveSnapshotMetadataImages does nothing, as containers have no bitmaps.
+func (d *lxc) RemoveSnapshotMetadataImages(snapshots map[string]string) error {
+	return nil
+}
+
 func (d *lxc) getFSStats() (*metrics.MetricSet, error) {
 	type mountInfo struct {
 		Mountpoint string
