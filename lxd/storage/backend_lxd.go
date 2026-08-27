@@ -3473,6 +3473,9 @@ func (b *lxdBackend) GetInstanceNBD(inst instance.Instance, writable bool, reuse
 		return nil, nil, api.StatusErrorf(http.StatusBadRequest, "NBD export is only supported for virtual machines")
 	}
 
+	lockName := nbdInstanceLockName(inst.Project().Name, inst.Name())
+	lockDesc := fmt.Sprintf("instance %q", inst.Name())
+
 	if writable {
 		if inst.IsRunning() {
 			return nil, nil, api.StatusErrorf(http.StatusBadRequest, "Writable NBD requires the instance to be stopped")
@@ -3492,7 +3495,9 @@ func (b *lxdBackend) GetInstanceNBD(inst instance.Instance, writable bool, reuse
 			return nil, nil, err
 		}
 
-		return b.connectOfflineNBD(vol, true)
+		return nbdLockedSession(lockName, lockDesc, func() (net.Conn, func(), error) {
+			return b.connectOfflineNBD(vol, true)
+		})
 	}
 
 	if !inst.IsRunning() {
@@ -3504,7 +3509,14 @@ func (b *lxdBackend) GetInstanceNBD(inst instance.Instance, writable bool, reuse
 		return nil, nil, err
 	}
 
-	return inst.ConnectNBD(rootDiskName, reuse)
+	// Additional connections attach to the running session, which already holds the lock.
+	if reuse {
+		return inst.ConnectNBD(rootDiskName, true)
+	}
+
+	return nbdLockedSession(lockName, lockDesc, func() (net.Conn, func(), error) {
+		return inst.ConnectNBD(rootDiskName, false)
+	})
 }
 
 // GetInstanceAllDisksNBD returns a single read-only NBD connection exporting every block disk of a running
@@ -3527,7 +3539,14 @@ func (b *lxdBackend) GetInstanceAllDisksNBD(inst instance.Instance, reuse bool) 
 		return nil, nil, api.StatusErrorf(http.StatusBadRequest, "Instance is not running")
 	}
 
-	return inst.ConnectNBDAllDisks(reuse)
+	// Additional connections attach to the running session, which already holds the lock.
+	if reuse {
+		return inst.ConnectNBDAllDisks(true)
+	}
+
+	return nbdLockedSession(nbdInstanceLockName(inst.Project().Name, inst.Name()), fmt.Sprintf("instance %q", inst.Name()), func() (net.Conn, func(), error) {
+		return inst.ConnectNBDAllDisks(false)
+	})
 }
 
 // GetCustomVolumeNBD returns an NBD connection to a custom block volume. A read-only export goes through the
@@ -3588,7 +3607,9 @@ func (b *lxdBackend) GetCustomVolumeNBD(projectName string, volName string, writ
 		volStorageName := project.StorageVolume(projectName, volName)
 		vol := b.GetVolume(drivers.VolumeTypeCustom, drivers.ContentTypeBlock, volStorageName, dbVol.Config)
 
-		return b.connectOfflineNBD(vol, true)
+		return nbdLockedSession(nbdVolumeLockName(b.name, projectName, volName), fmt.Sprintf("volume %q", b.name+"/"+volName), func() (net.Conn, func(), error) {
+			return b.connectOfflineNBD(vol, true)
+		})
 	}
 
 	inst, deviceName, err := InstanceByVolumeName(b.state, b.name, projectName, volName, cluster.StoragePoolVolumeTypeCustom)
@@ -3609,7 +3630,15 @@ func (b *lxdBackend) GetCustomVolumeNBD(projectName string, volName string, writ
 		return nil, nil, api.StatusErrorf(http.StatusBadRequest, "Volume must be attached to a running virtual machine")
 	}
 
-	return inst.ConnectNBD(deviceName, reuse)
+	// Additional connections attach to the running session, which already holds the lock.
+	if reuse {
+		return inst.ConnectNBD(deviceName, true)
+	}
+
+	// The session is served by the instance's QEMU process, which runs one NBD server at a time.
+	return nbdLockedSession(nbdInstanceLockName(inst.Project().Name, inst.Name()), fmt.Sprintf("instance %q", inst.Name()), func() (net.Conn, func(), error) {
+		return inst.ConnectNBD(deviceName, false)
+	})
 }
 
 // nbdSocketPath returns the qemu-nbd socket path for a volume. The volume name is encoded so that a snapshot
