@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -530,4 +531,386 @@ func (d *qemu) pruneMetadataImages(disks []bitmapDisk) error {
 	}
 
 	return nil
+}
+
+// bitmapEntry is a bitmap found on one volume.
+type bitmapEntry struct {
+	qemuName    string
+	volume      api.InstanceBitmapVolume
+	granularity int64
+	recording   bool
+}
+
+// groupBitmaps groups the bitmaps found on the volumes by UUID and name, sorted by name. A bitmap whose name has no
+// UUID prefix is left out, as it is either the copy of a bitmap named after the bitmap alone, which a snapshot
+// metadata image stores next to the copy named after the UUID and the bitmap, or a bitmap LXD did not create.
+func groupBitmaps(entries []bitmapEntry) []api.InstanceBitmap {
+	byName := make(map[string]*api.InstanceBitmap)
+	for _, entry := range entries {
+		bitmapUUID, bitmapName, ok := parseQEMUBitmapName(entry.qemuName)
+		if !ok {
+			continue
+		}
+
+		bitmap, found := byName[entry.qemuName]
+		if !found {
+			bitmap = &api.InstanceBitmap{Name: bitmapName, UUID: bitmapUUID}
+			byName[entry.qemuName] = bitmap
+		}
+
+		volume := entry.volume
+		volume.Granularity = entry.granularity
+		volume.Recording = entry.recording
+		bitmap.Volumes = append(bitmap.Volumes, volume)
+	}
+
+	bitmaps := make([]api.InstanceBitmap, 0, len(byName))
+	for _, bitmap := range byName {
+		slices.SortFunc(bitmap.Volumes, func(a api.InstanceBitmapVolume, b api.InstanceBitmapVolume) int {
+			return strings.Compare(a.Device, b.Device)
+		})
+
+		bitmaps = append(bitmaps, *bitmap)
+	}
+
+	slices.SortFunc(bitmaps, func(a api.InstanceBitmap, b api.InstanceBitmap) int {
+		return strings.Compare(a.Name+qemuBitmapUUIDSeparator+a.UUID, b.Name+qemuBitmapUUIDSeparator+b.UUID)
+	})
+
+	return bitmaps
+}
+
+// Bitmaps returns the bitmaps of the block volumes of the instance, grouped by name with one entry per volume. On a
+// running instance they are read from its QEMU process, on a stopped instance from the volume metadata images on its
+// config volume, and on an instance snapshot from the snapshot metadata images on its config volume snapshot.
+func (d *qemu) Bitmaps() ([]api.InstanceBitmap, error) {
+	if d.IsSnapshot() {
+		return d.snapshotBitmaps()
+	}
+
+	disks, err := d.disksSupportingBitmaps()
+	if err != nil {
+		return nil, err
+	}
+
+	entries := []bitmapEntry{}
+	if d.IsRunning() {
+		monitor, err := qmp.Connect(d.monitorPath(), qemuSerialChardevName, d.getMonitorEventHandler())
+		if err != nil {
+			return nil, err
+		}
+
+		nodeNames, err := monitor.QueryNamedBlockNodes()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, disk := range disks {
+			if !slices.Contains(nodeNames, disk.nodeName) {
+				continue
+			}
+
+			bitmaps, err := monitor.QueryNodeDirtyBitmaps(disk.nodeName)
+			if err != nil {
+				return nil, fmt.Errorf("Failed querying bitmaps of disk %q: %w", disk.deviceName, err)
+			}
+
+			for _, bitmap := range bitmaps {
+				entries = append(entries, bitmapEntry{qemuName: bitmap.Name, volume: disk.volume, granularity: int64(bitmap.Granularity), recording: bitmap.Recording})
+			}
+		}
+
+		return groupBitmaps(entries), nil
+	}
+
+	err = d.withConfigVolume(func() error {
+		for _, disk := range disks {
+			path := d.volumeMetadataImagePath(disk.volume.UUID)
+			if !shared.PathExists(path) {
+				continue
+			}
+
+			bitmaps, err := storagePools.Qcow2Bitmaps(path)
+			if err != nil {
+				return err
+			}
+
+			for _, bitmap := range bitmaps {
+				entries = append(entries, bitmapEntry{qemuName: bitmap.Name, volume: disk.volume, granularity: bitmap.Granularity, recording: bitmap.Recording})
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return groupBitmaps(entries), nil
+}
+
+// snapshotBitmaps returns the bitmaps stored in the snapshot metadata images of the instance snapshot.
+func (d *qemu) snapshotBitmaps() ([]api.InstanceBitmap, error) {
+	entries := []bitmapEntry{}
+	err := d.withConfigVolume(func() error {
+		images, err := d.snapshotMetadataImages()
+		if err != nil {
+			return err
+		}
+
+		if len(images) == 0 {
+			return nil
+		}
+
+		volumes, err := d.snapshotVolumes()
+		if err != nil {
+			return err
+		}
+
+		for _, image := range images {
+			volume, ok := volumes[image.deviceName]
+			if !ok {
+				d.logger.Warn("Skipping metadata image of a volume whose disk device the snapshot does not record", logger.Ctx{"device": image.deviceName, "volumeUUID": image.volumeUUID})
+				continue
+			}
+
+			volume.UUID = image.volumeUUID
+
+			bitmaps, err := storagePools.Qcow2Bitmaps(image.path)
+			if err != nil {
+				return err
+			}
+
+			for _, bitmap := range bitmaps {
+				entries = append(entries, bitmapEntry{qemuName: bitmap.Name, volume: volume, granularity: bitmap.Granularity, recording: bitmap.Recording})
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return groupBitmaps(entries), nil
+}
+
+// removeNodeBitmaps deletes the bitmaps of a block node whose names match, and returns how many it deleted.
+func (d *qemu) removeNodeBitmaps(monitor *qmp.Monitor, disk bitmapDisk, match func(qemuName string) bool) (int, error) {
+	bitmaps, err := monitor.QueryNodeDirtyBitmaps(disk.nodeName)
+	if err != nil {
+		return 0, fmt.Errorf("Failed querying bitmaps of disk %q: %w", disk.deviceName, err)
+	}
+
+	removed := 0
+	for _, bitmap := range bitmaps {
+		if !match(bitmap.Name) {
+			continue
+		}
+
+		err = monitor.RemoveDirtyBitmap(disk.nodeName, bitmap.Name)
+		if err != nil {
+			return removed, fmt.Errorf("Failed deleting bitmap %q of disk %q: %w", bitmap.Name, disk.deviceName, err)
+		}
+
+		removed++
+	}
+
+	return removed, nil
+}
+
+// removeImageBitmaps deletes the bitmaps of a metadata image whose names match, and returns how many it deleted.
+// An image that does not exist has no bitmaps.
+func (d *qemu) removeImageBitmaps(path string, match func(qemuName string) bool) (int, error) {
+	if !shared.PathExists(path) {
+		return 0, nil
+	}
+
+	bitmaps, err := storagePools.Qcow2Bitmaps(path)
+	if err != nil {
+		return 0, err
+	}
+
+	removed := 0
+	for _, bitmap := range bitmaps {
+		if !match(bitmap.Name) {
+			continue
+		}
+
+		err = storagePools.Qcow2RemoveBitmap(path, bitmap.Name)
+		if err != nil {
+			return removed, err
+		}
+
+		removed++
+	}
+
+	return removed, nil
+}
+
+// DeleteBitmap deletes the named bitmap from every block volume of the instance, from the QEMU process of a running
+// instance and from the volume metadata images of a stopped one. The snapshot metadata images keep their copies, as
+// a snapshot is never modified.
+func (d *qemu) DeleteBitmap(bitmapName string) error {
+	if d.IsSnapshot() {
+		return api.StatusErrorf(http.StatusBadRequest, "Bitmaps cannot be deleted from a snapshot")
+	}
+
+	disks, err := d.disksSupportingBitmaps()
+	if err != nil {
+		return err
+	}
+
+	match := func(qemuName string) bool {
+		_, name, ok := parseQEMUBitmapName(qemuName)
+		return ok && name == bitmapName
+	}
+
+	removed := 0
+	if d.IsRunning() {
+		monitor, err := qmp.Connect(d.monitorPath(), qemuSerialChardevName, d.getMonitorEventHandler())
+		if err != nil {
+			return err
+		}
+
+		nodeNames, err := monitor.QueryNamedBlockNodes()
+		if err != nil {
+			return err
+		}
+
+		for _, disk := range disks {
+			if !slices.Contains(nodeNames, disk.nodeName) {
+				continue
+			}
+
+			n, err := d.removeNodeBitmaps(monitor, disk, match)
+			if err != nil {
+				return err
+			}
+
+			removed += n
+		}
+	} else {
+		err = d.withConfigVolume(func() error {
+			for _, disk := range disks {
+				n, err := d.removeImageBitmaps(d.volumeMetadataImagePath(disk.volume.UUID), match)
+				if err != nil {
+					return err
+				}
+
+				removed += n
+			}
+
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	if removed == 0 {
+		return api.StatusErrorf(http.StatusNotFound, "Bitmap not found")
+	}
+
+	return nil
+}
+
+// DeleteVolumeBitmaps deletes every bitmap of the volume attached through the disk device, from the block node of a
+// running instance and from the volume metadata image on the config volume. It runs before the volume is written by
+// something other than the instance's own QEMU process, or once another instance can write to it.
+func (d *qemu) DeleteVolumeBitmaps(deviceName string) error {
+	devConf, ok := d.ExpandedDevices()[deviceName]
+	if !ok {
+		return fmt.Errorf("Disk device %q not found", deviceName)
+	}
+
+	rootDiskName, _, err := d.getRootDiskDevice()
+	if err != nil {
+		return fmt.Errorf("Failed getting root disk: %w", err)
+	}
+
+	volume, err := d.diskVolume(deviceName, devConf, deviceName == rootDiskName, make(map[string]storagePools.Pool))
+	if err != nil {
+		return err
+	}
+
+	if volume == nil {
+		return nil
+	}
+
+	if d.IsRunning() {
+		monitor, err := qmp.Connect(d.monitorPath(), qemuSerialChardevName, d.getMonitorEventHandler())
+		if err != nil {
+			return err
+		}
+
+		nodeNames, err := monitor.QueryNamedBlockNodes()
+		if err != nil {
+			return err
+		}
+
+		disk := bitmapDisk{deviceName: deviceName, nodeName: blockNodeName(deviceName), volume: *volume}
+		if slices.Contains(nodeNames, disk.nodeName) {
+			_, err = d.removeNodeBitmaps(monitor, disk, func(string) bool { return true })
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return d.RemoveVolumeMetadataImage(volume.UUID)
+}
+
+// DeleteBitmaps deletes every bitmap of every block volume of the instance and every metadata image on its config
+// volume.
+func (d *qemu) DeleteBitmaps() error {
+	if d.IsRunning() {
+		disks, err := d.disksSupportingBitmaps()
+		if err != nil {
+			return err
+		}
+
+		monitor, err := qmp.Connect(d.monitorPath(), qemuSerialChardevName, d.getMonitorEventHandler())
+		if err != nil {
+			return err
+		}
+
+		nodeNames, err := monitor.QueryNamedBlockNodes()
+		if err != nil {
+			return err
+		}
+
+		for _, disk := range disks {
+			if !slices.Contains(nodeNames, disk.nodeName) {
+				continue
+			}
+
+			_, err = d.removeNodeBitmaps(monitor, disk, func(string) bool { return true })
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return d.RemoveAllMetadataImages()
+}
+
+// RemoveVolumeMetadataImage deletes the metadata image of the volume of the given UUID from the config volume.
+func (d *qemu) RemoveVolumeMetadataImage(volumeUUID string) error {
+	return d.withConfigVolume(func() error {
+		err := os.Remove(d.volumeMetadataImagePath(volumeUUID))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+
+		return nil
+	})
+}
+
+// RemoveAllMetadataImages deletes every metadata image from the config volume. None of them matches the volumes of an
+// instance that was created by a copy, a refresh, an import or a move, or that was restored from a snapshot.
+func (d *qemu) RemoveAllMetadataImages() error {
+	return d.withConfigVolume(func() error {
+		return os.RemoveAll(d.metadataImagesDir())
+	})
 }

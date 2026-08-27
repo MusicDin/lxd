@@ -858,6 +858,7 @@ type BlockDirtyInfo struct {
 	Name        string `json:"name"`
 	Count       int64  `json:"count"`
 	Granularity int    `json:"granularity"`
+	Recording   bool   `json:"recording"`
 	Busy        bool   `json:"busy"`
 }
 
