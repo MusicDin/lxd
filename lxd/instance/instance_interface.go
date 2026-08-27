@@ -187,6 +187,37 @@ type Instance interface {
 	DeferTemplateApply(trigger TemplateTrigger) error
 
 	Metrics(hostInterfaces []net.Interface) (*metrics.MetricSet, error)
+
+	// Dirty bitmaps of the block volumes of a virtual machine. Bitmaps lists them, grouped by name, for an instance
+	// or an instance snapshot. DeleteBitmap removes one bitmap from every volume, DeleteDiskBitmap one bitmap from
+	// the volume attached through a disk device, DeleteVolumeBitmaps every bitmap of that volume together with its
+	// volume metadata image, and DeleteBitmaps every bitmap of every volume together with every metadata image.
+	Bitmaps() ([]api.InstanceBitmap, error)
+	DeleteBitmap(bitmapName string) error
+	DeleteDiskBitmap(deviceName string, bitmapName string) error
+	DeleteVolumeBitmaps(deviceName string) error
+	DeleteBitmaps() error
+
+	// Metadata images, the qcow2 images on the config volume that store the bitmaps of the block volumes.
+	// RemoveVolumeMetadataImage deletes the image of the volume of the given UUID and
+	// RemoveAllMetadataImages every image. CommitDiskOverlays commits the overlays that a failed commit left on
+	// the given disk devices.
+	RemoveVolumeMetadataImage(volumeUUID string) error
+	RemoveAllMetadataImages() error
+	CommitDiskOverlays(deviceNames []string) error
+
+	// Snapshot with a bitmap. CreateSnapshotBitmaps creates the bitmap of a snapshot on the volumes attached through
+	// the given disk devices and writes the bitmaps of each volume into its volume metadata image on the config
+	// volume, recorded in the snapshot bitmap file of the snapshot of the given instance snapshot UUID. It adds an
+	// overlay to each volume and returns the devices that got one, which CommitDiskOverlays commits after the
+	// storage snapshots. RemoveSnapshotBitmapFile deletes the snapshot bitmap file of the named snapshot from the
+	// config volume once the config volume snapshot includes it.
+	CreateSnapshotBitmaps(snapshotUUID string, deviceNames []string, bitmapName string) ([]string, error)
+	RemoveSnapshotBitmapFile(snapshotName string) error
+
+	// SnapshotMetadataImages returns the snapshot metadata images of the volume snapshots of an instance snapshot,
+	// keyed by the disk device each volume was attached through. The images are on the config volume snapshot.
+	SnapshotMetadataImages() (map[string]SnapshotMetadataImage, error)
 }
 
 // SnapshotMetadataImage describes the snapshot metadata image of a volume snapshot of an instance snapshot, the
