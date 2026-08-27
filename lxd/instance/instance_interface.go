@@ -187,6 +187,29 @@ type Instance interface {
 	DeferTemplateApply(trigger TemplateTrigger) error
 
 	Metrics(hostInterfaces []net.Interface) (*metrics.MetricSet, error)
+
+	// Dirty bitmaps of the block volumes of a virtual machine. Bitmaps lists them, grouped by name, for an instance
+	// or an instance snapshot. DeleteBitmap deletes one bitmap from every volume, DeleteBitmaps every bitmap of every
+	// volume and DeleteVolumeBitmaps every bitmap of the volume attached through a disk device.
+	Bitmaps() ([]api.InstanceBitmap, error)
+	DeleteBitmap(bitmapName string) error
+	DeleteBitmaps() error
+	DeleteVolumeBitmaps(deviceName string) error
+
+	// Metadata images, the qcow2 images on the config volume that store the bitmaps of a volume while the instance
+	// is stopped and the bitmaps of a snapshot. RemoveVolumeMetadataImage deletes the image of the volume of the
+	// given UUID and RemoveAllMetadataImages every image.
+	RemoveVolumeMetadataImage(volumeUUID string) error
+	RemoveAllMetadataImages() error
+
+	// Snapshot with a bitmap. CreateSnapshotBitmaps creates the bitmap of a snapshot on the volumes attached through
+	// the given disk devices, mapped to the UUIDs of their snapshots, and copies the bitmaps of each volume into the
+	// metadata image of its snapshot on the config volume. It adds an overlay to each volume and returns the devices
+	// that got one, which CommitDiskOverlays commits after the storage snapshots. RemoveSnapshotMetadataImages
+	// deletes the snapshot metadata images from the config volume once the config volume snapshot includes them.
+	CreateSnapshotBitmaps(snapshots map[string]string, bitmapName string, bitmapUUID string) ([]string, error)
+	CommitDiskOverlays(deviceNames []string) error
+	RemoveSnapshotMetadataImages(snapshots map[string]string) error
 }
 
 // Container interface is for container specific functions.
