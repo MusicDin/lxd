@@ -5,14 +5,17 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/canonical/lxd/client"
 	"github.com/canonical/lxd/lxc/config"
@@ -603,4 +606,102 @@ func entityNameFromURL(urlStr string) (string, error) {
 	}
 
 	return name, nil
+}
+
+// nbdListen opens the local listener of an NBD proxy command. An address that starts with a slash is a unix
+// socket path, anything else is a TCP address, and an empty address picks a loopback port.
+func nbdListen(address string) (net.Listener, error) {
+	if address == "" {
+		address = "127.0.0.1:0"
+	}
+
+	network := "tcp"
+	if strings.HasPrefix(address, "/") {
+		network = "unix"
+	}
+
+	listener, err := net.Listen(network, address)
+	if err != nil {
+		return nil, fmt.Errorf("Failed listening for connection: %w", err)
+	}
+
+	return listener, nil
+}
+
+// nbdProxy forwards the NBD client accepted on listener to the server side connection obtained from connect, and
+// returns once that client disconnects. An interrupt ends the run cleanly through closing the listener, which also
+// unlinks a unix socket file.
+func nbdProxy(listener net.Listener, connect func() (net.Conn, error)) error {
+	chSignal := make(chan os.Signal, 1)
+	signal.Notify(chSignal, os.Interrupt)
+	defer signal.Stop(chSignal)
+
+	interrupted := make(chan struct{})
+	done := make(chan struct{})
+	defer close(done)
+
+	go func() {
+		select {
+		case <-chSignal:
+			close(interrupted)
+			_ = listener.Close()
+		case <-done:
+		}
+	}()
+
+	nConn, err := listener.Accept()
+	if err != nil {
+		select {
+		case <-interrupted:
+			return nil
+		default:
+		}
+
+		return fmt.Errorf("Failed accepting incoming connection: %w", err)
+	}
+
+	// Nothing further is accepted, so closing the listener now keeps a second client from queueing in the listen
+	// backlog and hanging.
+	_ = listener.Close()
+
+	conn, err := connect()
+	if err != nil {
+		_ = nConn.Close()
+		return err
+	}
+
+	nbdRelay(nConn, conn)
+
+	return nil
+}
+
+// nbdRelay copies data between the local client and the server side connection in both directions. A finished
+// direction half closes its destination, so that replies still in flight keep flowing the other way, and both
+// connections are closed fully only after both directions have returned.
+func nbdRelay(client net.Conn, server net.Conn) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	relay := func(dst net.Conn, src net.Conn) {
+		defer wg.Done()
+
+		_, _ = io.Copy(dst, src)
+
+		// A transport without a write half close is closed fully instead, otherwise the copy in the
+		// other direction would never return. TCP, unix and TLS connections all have one.
+		c, ok := dst.(interface{ CloseWrite() error })
+		if ok {
+			_ = c.CloseWrite()
+		} else {
+			_ = dst.Close()
+		}
+	}
+
+	go relay(server, client)
+	go relay(client, server)
+
+	wg.Wait()
+
+	_ = client.Close()
+	_ = server.Close()
 }
