@@ -153,6 +153,9 @@ For help with any of those, simply call them with --help.`)
 	if features.IsEnabled(features.ChangedBlockTracking) {
 		bitmapCmd := cmdBitmap{global: &globalCmd}
 		app.AddCommand(bitmapCmd.command())
+
+		nbdCmd := cmdNBD{global: &globalCmd}
+		app.AddCommand(nbdCmd.command())
 	}
 
 	// cluster sub-command
@@ -222,6 +225,12 @@ For help with any of those, simply call them with --help.`)
 	// move sub-command
 	moveCmd := cmdMove{global: &globalCmd}
 	app.AddCommand(moveCmd.command())
+
+	// nbd sub-command, gated behind the changed_block_tracking feature preview
+	if features.IsEnabled(features.ChangedBlockTracking) {
+		nbdCmd := cmdNBD{global: &globalCmd}
+		app.AddCommand(nbdCmd.command())
+	}
 
 	// network sub-command
 	networkCmd := cmdNetwork{global: &globalCmd}
