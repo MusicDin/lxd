@@ -1860,6 +1860,34 @@ func (g *cmdGlobal) cmpStoragePoolVolumeProfiles(poolName string, volumeName str
 	return results, cobra.ShellCompDirectiveNoFileComp
 }
 
+// cmpInstanceBitmaps provides shell completion for the dirty bitmaps of an instance or of an instance snapshot.
+// It takes an instance name, or an instance snapshot name, and returns a list of bitmap names, along with a shell
+// completion directive.
+func (g *cmdGlobal) cmpInstanceBitmaps(instanceName string) ([]string, cobra.ShellCompDirective) {
+	// Parse remote
+	resources, err := g.ParseServers(instanceName)
+	if err != nil || len(resources) == 0 {
+		return nil, cobra.ShellCompDirectiveError
+	}
+
+	resource := resources[0]
+	client := resource.server
+
+	var bitmaps []string
+	instName, snapName, isSnapshot := api.GetParentAndSnapshotName(resource.name)
+	if isSnapshot {
+		bitmaps, err = client.GetInstanceSnapshotBitmapNames(instName, snapName)
+	} else {
+		bitmaps, err = client.GetInstanceBitmapNames(instName)
+	}
+
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
+
+	return bitmaps, cobra.ShellCompDirectiveNoFileComp
+}
+
 // cmpStoragePoolVolumeSnapshots provides shell completion for storage pool volume snapshots.
 // It takes a storage pool name and volume name, returns a list of storage pool volume snapshots, along with a shell completion directive.
 func (g *cmdGlobal) cmpStoragePoolVolumeSnapshots(poolName string, volumeName string) ([]string, cobra.ShellCompDirective) {
