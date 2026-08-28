@@ -171,6 +171,15 @@ type InstanceServer interface {
 	CreateInstanceTemplateFile(instanceName string, templateName string, content io.ReadSeeker) (err error)
 	DeleteInstanceTemplateFile(name string, templateName string) (err error)
 
+	// Instance bitmap functions ("storage_volume_block_tracking" API extension)
+	GetInstanceBitmapNames(instanceName string) (names []string, err error)
+	GetInstanceBitmaps(instanceName string) (bitmaps []api.InstanceBitmap, err error)
+	GetInstanceBitmap(instanceName string, bitmapName string) (bitmap *api.InstanceBitmap, err error)
+	DeleteInstanceBitmap(instanceName string, bitmapName string) (err error)
+	GetInstanceSnapshotBitmapNames(instanceName string, snapshotName string) (names []string, err error)
+	GetInstanceSnapshotBitmaps(instanceName string, snapshotName string) (bitmaps []api.InstanceBitmap, err error)
+	GetInstanceSnapshotBitmap(instanceName string, snapshotName string, bitmapName string) (bitmap *api.InstanceBitmap, err error)
+
 	// Event handling functions
 	GetEvents() (listener *EventListener, err error)
 	GetEventsAllProjects() (listener *EventListener, err error)
