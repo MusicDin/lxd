@@ -156,6 +156,8 @@ const (
 	ImageRegistryUpdate
 	ImageRegistryDelete
 	ImageRegistryRename
+	InstanceNBDExport
+	VolumeNBDImport
 
 	// upperBound is used only to enforce consistency in the package on init.
 	// Make sure it's always the last item in this list.
@@ -428,6 +430,10 @@ func (t Type) Description() string {
 		return "Deleting image registry"
 	case ImageRegistryRename:
 		return "Renaming image registry"
+	case InstanceNBDExport:
+		return "Exporting instance snapshot over NBD"
+	case VolumeNBDImport:
+		return "Importing storage volume over NBD"
 
 	// It should never be possible to reach the default clause.
 	// See the init function.
@@ -461,7 +467,8 @@ func (t Type) EntityType() entity.Type {
 		return entity.TypeStorageBucket
 
 	// Volume operations.
-	case VolumeMigrate, VolumeMove, VolumeSnapshotCreate, CustomVolumeBackupCreate, VolumeCopy, VolumeUpdate, VolumeDelete:
+	case VolumeMigrate, VolumeMove, VolumeSnapshotCreate, CustomVolumeBackupCreate, VolumeCopy, VolumeUpdate, VolumeDelete,
+		VolumeNBDImport:
 		return entity.TypeStorageVolume
 
 	// Volume snapshot operations
@@ -472,7 +479,7 @@ func (t Type) EntityType() entity.Type {
 	case BackupCreate, ConsoleShow, InstanceFreeze, InstanceUpdate, InstanceUnfreeze,
 		InstanceStart, InstanceStop, InstanceRestart, InstanceRename, InstanceMigrate, InstanceLiveMigrate,
 		InstanceDelete, InstanceRebuild, SnapshotRestore, CommandExec, SnapshotCreate, InstanceCopy,
-		ReplicatorRunInstanceForward, ReplicatorSnapshotInstance:
+		ReplicatorRunInstanceForward, ReplicatorSnapshotInstance, InstanceNBDExport:
 		return entity.TypeInstance
 
 	// Instance backup operations.
@@ -566,6 +573,8 @@ func (t Type) ConflictAction() ConflictAction {
 		return ConflictActionFail // Enforces cluster-wide evacuation exclusivity when used with a shared ConflictReference; this prevents evacuation race conditions.
 	case ReplicatorRun:
 		return ConflictActionFail // Prevents concurrent runs of the same replicator; the replicator URL is used as the per-replicator conflict reference.
+	case InstanceNBDExport, VolumeNBDImport:
+		return ConflictActionFail // A volume session takes the NBD lock name of the volume as its conflict reference, which extends that lock across the cluster.
 	}
 
 	return ConflictActionNone
