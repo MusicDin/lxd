@@ -7495,6 +7495,11 @@ func (d *lxc) RemoveSnapshotMetadataImages(snapshots map[string]string) error {
 	return nil
 }
 
+// SnapshotMetadataImages returns no metadata images, as containers have no bitmaps.
+func (d *lxc) SnapshotMetadataImages() (map[string]instance.SnapshotMetadataImage, error) {
+	return map[string]instance.SnapshotMetadataImage{}, nil
+}
+
 func (d *lxc) getFSStats() (*metrics.MetricSet, error) {
 	type mountInfo struct {
 		Mountpoint string

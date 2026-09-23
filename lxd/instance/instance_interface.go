@@ -210,6 +210,22 @@ type Instance interface {
 	CreateSnapshotBitmaps(snapshots map[string]string, bitmapName string, bitmapUUID string) ([]string, error)
 	CommitDiskOverlays(deviceNames []string) error
 	RemoveSnapshotMetadataImages(snapshots map[string]string) error
+
+	// SnapshotMetadataImages returns the metadata images of the volume snapshots that an instance snapshot records,
+	// keyed by the disk device each volume was attached through. The images are on the config volume snapshot.
+	SnapshotMetadataImages() (map[string]SnapshotMetadataImage, error)
+}
+
+// SnapshotMetadataImage describes the metadata image of a volume snapshot recorded by an instance snapshot.
+type SnapshotMetadataImage struct {
+	// Path of the image on the mounted config volume snapshot.
+	Path string
+
+	// UUID of the volume.
+	VolumeUUID string
+
+	// UUID of the volume snapshot.
+	SnapshotUUID string
 }
 
 // Container interface is for container specific functions.

@@ -20,6 +20,7 @@ import (
 	dbCluster "github.com/canonical/lxd/lxd/db/cluster"
 	"github.com/canonical/lxd/lxd/db/warningtype"
 	"github.com/canonical/lxd/lxd/device/filters"
+	"github.com/canonical/lxd/lxd/instance"
 	"github.com/canonical/lxd/lxd/instance/drivers/qmp"
 	"github.com/canonical/lxd/lxd/project"
 	storagePools "github.com/canonical/lxd/lxd/storage"
@@ -506,6 +507,38 @@ func (d *qemu) snapshotVolumes() (map[string]api.InstanceBitmapVolume, error) {
 	}
 
 	return volumes, nil
+}
+
+// SnapshotMetadataImages returns the metadata images of the volume snapshots that the instance snapshot records,
+// keyed by the disk device each volume was attached through. The images are on the config volume snapshot, which
+// the caller mounts to use them.
+func (d *qemu) SnapshotMetadataImages() (map[string]instance.SnapshotMetadataImage, error) {
+	if !d.IsSnapshot() {
+		return nil, errors.New("Instance must be a snapshot")
+	}
+
+	images := map[string]instance.SnapshotMetadataImage{}
+	err := d.withConfigVolume(func() error {
+		found, err := d.snapshotMetadataImages()
+		if err != nil {
+			return err
+		}
+
+		for _, image := range found {
+			images[image.deviceName] = instance.SnapshotMetadataImage{
+				Path:         image.path,
+				VolumeUUID:   image.volumeUUID,
+				SnapshotUUID: image.snapshotUUID,
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return images, nil
 }
 
 // pruneMetadataImages deletes from the metadata images directory every file that is not the metadata image or the
