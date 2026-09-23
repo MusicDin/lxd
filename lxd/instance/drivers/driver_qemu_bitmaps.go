@@ -1183,3 +1183,205 @@ func (d *qemu) RemoveSnapshotMetadataImages(snapshots map[string]string) error {
 		return nil
 	})
 }
+
+// persistBitmaps commits every overlay left uncommitted and copies the bitmaps of every disk that supports them into
+// the metadata image of its volume, so that they are recreated at the next start. The guest must be paused, as a
+// write after the copy is not recorded. The metadata image of a volume without bitmaps is deleted, so that a copy
+// from an earlier stop is not reloaded.
+func (d *qemu) persistBitmaps(monitor *qmp.Monitor) error {
+	nodeNames, err := monitor.QueryNamedBlockNodes()
+	if err != nil {
+		return err
+	}
+
+	disks, err := d.disksSupportingBitmaps()
+	if err != nil {
+		return err
+	}
+
+	var errs []error
+	for _, disk := range disks {
+		if !slices.Contains(nodeNames, disk.nodeName) {
+			continue
+		}
+
+		// The bitmaps record the committed writes, so the overlay is committed before they are copied.
+		if slices.Contains(nodeNames, overlayNodeName(disk.deviceName)) {
+			err := d.commitOverlay(monitor, disk)
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
+
+		bitmaps, err := monitor.QueryNodeDirtyBitmaps(disk.nodeName)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("Failed querying bitmaps of disk %q: %w", disk.deviceName, err))
+			continue
+		}
+
+		metadataImagePath := d.volumeMetadataImagePath(disk.volume.UUID)
+		if len(bitmaps) == 0 {
+			err = os.Remove(metadataImagePath)
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("Failed removing metadata image of disk %q: %w", disk.deviceName, err))
+			}
+
+			continue
+		}
+
+		size, err := monitor.BlockNodeSize(disk.nodeName)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("Failed getting size of disk %q: %w", disk.deviceName, err))
+			continue
+		}
+
+		metadataImageNode := metadataImageNodeName(disk.deviceName)
+		closeMetadataImage, err := d.createQcow2Node(monitor, metadataImageNode, metadataImagePath, size)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("Failed creating metadata image of disk %q: %w", disk.deviceName, err))
+			continue
+		}
+
+		// The copies keep recording once reloaded, so they are not disabled. A bitmap LXD did not create is not kept.
+		actions := make([]qmp.TransactionAction, 0, len(bitmaps)*2)
+		for _, bitmap := range bitmaps {
+			_, _, ok := parseQEMUBitmapName(bitmap.Name)
+			if !ok {
+				continue
+			}
+
+			actions = append(actions, qmp.BlockDirtyBitmapAddAction(metadataImageNode, bitmap.Name, bitmap.Granularity, true, false), qmp.BlockDirtyBitmapMergeAction(metadataImageNode, bitmap.Name, disk.nodeName, bitmap.Name))
+		}
+
+		if len(actions) > 0 {
+			err = monitor.RunTransaction(actions)
+		}
+
+		// QEMU writes the bitmaps into the metadata image when its node is removed.
+		closeMetadataImage()
+
+		if err != nil {
+			_ = os.Remove(metadataImagePath)
+			errs = append(errs, fmt.Errorf("Failed persisting bitmaps of disk %q: %w", disk.deviceName, err))
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// persistAndQuit pauses the guest, persists the bitmaps and asks QEMU to quit. A failure to persist is logged,
+// as it must not keep the process from ending.
+func (d *qemu) persistAndQuit(monitor *qmp.Monitor) error {
+	err := monitor.Pause()
+	if err != nil {
+		return fmt.Errorf("Failed pausing instance: %w", err)
+	}
+
+	err = d.persistBitmaps(monitor)
+	if err != nil {
+		d.logger.Error("Failed persisting bitmaps", logger.Ctx{"err": err})
+	}
+
+	return monitor.Quit()
+}
+
+// restoreBitmaps recreates on every disk that supports bitmaps the bitmaps stored in the metadata image of its volume
+// and commits an overlay left uncommitted by an earlier stop. It runs before the guest starts, so that every write is
+// recorded. The metadata image of a volume is deleted once read, so that a start after a crash does not reload
+// bitmaps that missed writes, and a disk whose image cannot be reloaded starts without bitmaps. An overlay that
+// cannot be added back to its disk fails the start, because the guest would otherwise run without the writes stored
+// in it.
+func (d *qemu) restoreBitmaps(monitor *qmp.Monitor) error {
+	nodeNames, err := monitor.QueryNamedBlockNodes()
+	if err != nil {
+		return err
+	}
+
+	disks, err := d.disksSupportingBitmaps()
+	if err != nil {
+		return err
+	}
+
+	err = d.pruneMetadataImages(disks)
+	if err != nil {
+		return fmt.Errorf("Failed pruning metadata images: %w", err)
+	}
+
+	for _, disk := range disks {
+		if !slices.Contains(nodeNames, disk.nodeName) {
+			continue
+		}
+
+		metadataImagePath := d.volumeMetadataImagePath(disk.volume.UUID)
+		if shared.PathExists(metadataImagePath) {
+			err := d.reloadBitmaps(monitor, disk, metadataImagePath)
+			if err != nil {
+				d.logger.Warn("Failed reloading persisted bitmaps, the disk starts without bitmaps", logger.Ctx{"device": disk.deviceName, "err": err})
+			}
+
+			err = os.Remove(metadataImagePath)
+			if err != nil {
+				return fmt.Errorf("Failed removing metadata image of disk %q: %w", disk.deviceName, err)
+			}
+		}
+
+		// The bitmaps are reloaded first, so that they record the committed writes.
+		overlayPath := d.overlayPath(disk.volume.UUID)
+		if !shared.PathExists(overlayPath) {
+			continue
+		}
+
+		overlayNode := overlayNodeName(disk.deviceName)
+		removeOverlay, err := d.openQcow2Node(monitor, overlayNode, overlayPath, false)
+		if err != nil {
+			return fmt.Errorf("Failed adding overlay back to disk %q: %w", disk.deviceName, err)
+		}
+
+		err = monitor.BlockDevSnapshot(disk.nodeName, overlayNode)
+		if err != nil {
+			removeOverlay()
+			return fmt.Errorf("Failed adding overlay back to disk %q: %w", disk.deviceName, err)
+		}
+
+		// The guest writes to the overlay until a commit succeeds.
+		err = d.commitOverlay(monitor, disk)
+		if err != nil {
+			d.logger.Error("Failed committing overlay", logger.Ctx{"device": disk.deviceName, "err": err})
+		}
+	}
+
+	return nil
+}
+
+// reloadBitmaps creates on a disk every bitmap stored in the metadata image of its volume and merges the stored copy
+// into it, in one transaction.
+func (d *qemu) reloadBitmaps(monitor *qmp.Monitor, disk bitmapDisk, metadataImagePath string) error {
+	metadataImageNode := metadataImageNodeName(disk.deviceName)
+	closeMetadataImage, err := d.openQcow2Node(monitor, metadataImageNode, metadataImagePath, true)
+	if err != nil {
+		return err
+	}
+
+	defer closeMetadataImage()
+
+	bitmaps, err := monitor.QueryNodeDirtyBitmaps(metadataImageNode)
+	if err != nil {
+		return fmt.Errorf("Failed querying bitmaps of metadata image: %w", err)
+	}
+
+	if len(bitmaps) == 0 {
+		return nil
+	}
+
+	actions := make([]qmp.TransactionAction, 0, len(bitmaps)*2)
+	for _, bitmap := range bitmaps {
+		actions = append(actions, qmp.BlockDirtyBitmapAddAction(disk.nodeName, bitmap.Name, bitmap.Granularity, false, false), qmp.BlockDirtyBitmapMergeAction(disk.nodeName, bitmap.Name, metadataImageNode, bitmap.Name))
+	}
+
+	err = monitor.RunTransaction(actions)
+	if err != nil {
+		return fmt.Errorf("Failed recreating bitmaps: %w", err)
+	}
+
+	return nil
+}
