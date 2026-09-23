@@ -1380,6 +1380,65 @@ func InstanceDiskBlockSize(pool Pool, inst instance.Instance, progressReporter i
 	return blockDiskSize, nil
 }
 
+// Qcow2Bitmap describes a bitmap stored in a qcow2 image.
+type Qcow2Bitmap struct {
+	// Name of the bitmap.
+	Name string
+
+	// Size in bytes of the block represented by one bit of the bitmap.
+	Granularity int64
+
+	// Whether the bitmap records writes once it is loaded.
+	Recording bool
+}
+
+// Qcow2Bitmaps returns the bitmaps stored in the qcow2 image at path. A bitmap with the "auto" flag records writes
+// once it is loaded, and one without it is disabled.
+func Qcow2Bitmaps(path string) ([]Qcow2Bitmap, error) {
+	output, err := shared.RunCommand(context.TODO(), "qemu-img", "info", "--output=json", "-f", "qcow2", path)
+	if err != nil {
+		return nil, fmt.Errorf("Failed reading bitmaps of %q: %w", path, err)
+	}
+
+	var info struct {
+		FormatSpecific struct {
+			Data struct {
+				Bitmaps []struct {
+					Name        string   `json:"name"`
+					Granularity int64    `json:"granularity"`
+					Flags       []string `json:"flags"`
+				} `json:"bitmaps"`
+			} `json:"data"`
+		} `json:"format-specific"`
+	}
+
+	err = json.Unmarshal([]byte(output), &info)
+	if err != nil {
+		return nil, fmt.Errorf("Failed parsing bitmaps of %q: %w", path, err)
+	}
+
+	bitmaps := make([]Qcow2Bitmap, 0, len(info.FormatSpecific.Data.Bitmaps))
+	for _, bitmap := range info.FormatSpecific.Data.Bitmaps {
+		bitmaps = append(bitmaps, Qcow2Bitmap{
+			Name:        bitmap.Name,
+			Granularity: bitmap.Granularity,
+			Recording:   slices.Contains(bitmap.Flags, "auto"),
+		})
+	}
+
+	return bitmaps, nil
+}
+
+// Qcow2RemoveBitmap removes the named bitmap from the qcow2 image at path.
+func Qcow2RemoveBitmap(path string, bitmapName string) error {
+	_, err := shared.RunCommand(context.TODO(), "qemu-img", "bitmap", "-f", "qcow2", "--remove", path, bitmapName)
+	if err != nil {
+		return fmt.Errorf("Failed removing bitmap %q from %q: %w", bitmapName, path, err)
+	}
+
+	return nil
+}
+
 // ComparableSnapshot is used when comparing snapshots on different pools to see whether they differ.
 type ComparableSnapshot struct {
 	// Name of the snapshot (without the parent name).
