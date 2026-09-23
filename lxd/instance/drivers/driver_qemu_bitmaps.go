@@ -6,12 +6,21 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 
+	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
 
+	dbCluster "github.com/canonical/lxd/lxd/db/cluster"
+	"github.com/canonical/lxd/lxd/device/filters"
 	"github.com/canonical/lxd/lxd/instance/drivers/qmp"
+	"github.com/canonical/lxd/lxd/project"
+	storagePools "github.com/canonical/lxd/lxd/storage"
+	storageDrivers "github.com/canonical/lxd/lxd/storage/drivers"
 	"github.com/canonical/lxd/shared"
+	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/logger"
 	"github.com/canonical/lxd/shared/revert"
 )
@@ -176,4 +185,349 @@ func (d *qemu) addOverlay(monitor *qmp.Monitor, overlayNode string, size int64) 
 	}
 
 	return removeOverlay, nil
+}
+
+// qemuMetadataImagesDir is the directory on the instance config volume that stores the metadata images, the qcow2
+// images that store the bitmaps of the block volumes of the instance. The images are named after the UUID of their
+// volume and, for the metadata image of a snapshot, the UUID of the volume snapshot. A snapshot metadata image is
+// created on the config volume before the storage snapshot, so that the config volume snapshot includes it, and
+// removed from the config volume afterwards.
+const qemuMetadataImagesDir = "metadata_images"
+
+// qemuMetadataImageSuffix is the file name suffix of the metadata images.
+const qemuMetadataImageSuffix = ".qcow2"
+
+// qemuOverlaySuffix is the file name suffix of the overlay of a volume, which is stored next to its metadata image.
+const qemuOverlaySuffix = ".overlay.qcow2"
+
+// qemuBitmapUUIDSeparator separates the UUID of a bitmap from its name in the name QEMU knows the bitmap by.
+const qemuBitmapUUIDSeparator = "/"
+
+// qemuBitmapName returns the name QEMU knows a bitmap by, the name of the bitmap prefixed with the UUID generated
+// when it was created. A snapshot of the same name created later gets a bitmap of another UUID, so the UUID tells
+// the two apart.
+func qemuBitmapName(bitmapUUID string, bitmapName string) string {
+	return bitmapUUID + qemuBitmapUUIDSeparator + bitmapName
+}
+
+// parseQEMUBitmapName returns the UUID and the name of a bitmap from the name QEMU knows it by. It returns false
+// for a bitmap that LXD did not create, whose name has no UUID prefix.
+func parseQEMUBitmapName(name string) (bitmapUUID string, bitmapName string, ok bool) {
+	bitmapUUID, bitmapName, found := strings.Cut(name, qemuBitmapUUIDSeparator)
+	if !found || bitmapName == "" || uuid.Validate(bitmapUUID) != nil {
+		return "", "", false
+	}
+
+	return bitmapUUID, bitmapName, true
+}
+
+// metadataImagesDir returns the directory on the instance config volume that stores the metadata images.
+func (d *qemu) metadataImagesDir() string {
+	return filepath.Join(d.Path(), qemuMetadataImagesDir)
+}
+
+// volumeMetadataImagePath returns the metadata image that stores the bitmaps of a volume while the instance is
+// stopped.
+func (d *qemu) volumeMetadataImagePath(volumeUUID string) string {
+	return filepath.Join(d.metadataImagesDir(), volumeUUID+qemuMetadataImageSuffix)
+}
+
+// overlayPath returns the overlay that the guest's writes to a volume go to while a snapshot with a bitmap is
+// created. It stays on the config volume until it is committed into the volume.
+func (d *qemu) overlayPath(volumeUUID string) string {
+	return filepath.Join(d.metadataImagesDir(), volumeUUID+qemuOverlaySuffix)
+}
+
+// snapshotMetadataImagePath returns the metadata image that stores the bitmaps of a volume as they were when the
+// volume snapshot of the given UUID was created.
+func (d *qemu) snapshotMetadataImagePath(volumeUUID string, snapshotUUID string) string {
+	return filepath.Join(d.metadataImagesDir(), volumeUUID+"."+snapshotUUID+qemuMetadataImageSuffix)
+}
+
+// parseSnapshotMetadataImageName returns the UUIDs of the volume and of the volume snapshot that a snapshot
+// metadata image is named after. It returns false for any other file of the metadata images directory.
+func parseSnapshotMetadataImageName(fileName string) (volumeUUID string, snapshotUUID string, ok bool) {
+	name, found := strings.CutSuffix(fileName, qemuMetadataImageSuffix)
+	if !found {
+		return "", "", false
+	}
+
+	volumeUUID, snapshotUUID, found = strings.Cut(name, ".")
+	if !found || uuid.Validate(volumeUUID) != nil || uuid.Validate(snapshotUUID) != nil {
+		return "", "", false
+	}
+
+	return volumeUUID, snapshotUUID, true
+}
+
+// withConfigVolume runs task with the config volume of the instance, or of the instance snapshot, mounted. The
+// config volume stores the metadata images and is otherwise mounted only while the instance runs.
+func (d *qemu) withConfigVolume(task func() error) error {
+	pool, err := d.getStoragePool()
+	if err != nil {
+		return err
+	}
+
+	if d.IsSnapshot() {
+		_, err = pool.MountInstanceSnapshot(d, nil)
+		if err != nil {
+			return err
+		}
+
+		defer func() {
+			err := pool.UnmountInstanceSnapshot(d, nil)
+			if err != nil {
+				d.logger.Warn("Failed unmounting config volume of snapshot", logger.Ctx{"err": err})
+			}
+		}()
+
+		return task()
+	}
+
+	_, err = pool.MountInstance(d, nil)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		err := pool.UnmountInstance(d, nil)
+		if err != nil && !errors.Is(err, storageDrivers.ErrInUse) {
+			d.logger.Warn("Failed unmounting config volume", logger.Ctx{"err": err})
+		}
+	}()
+
+	return task()
+}
+
+// bitmapDisk describes a disk device whose volume supports bitmaps, which is the root disk or a custom block volume
+// that is not shared, as the bitmaps of the instance's QEMU process record every write to such a volume.
+type bitmapDisk struct {
+	deviceName string
+	nodeName   string
+	volume     api.InstanceBitmapVolume
+}
+
+// diskVolume returns the volume attached through a disk device, or nil for a disk device whose volume does not
+// support bitmaps. pools caches the storage pools by name across calls.
+func (d *qemu) diskVolume(deviceName string, devConf map[string]string, isRootDisk bool, pools map[string]storagePools.Pool) (*api.InstanceBitmapVolume, error) {
+	// A custom volume attached through a disk device without a path is a block volume, and the root disk of a
+	// virtual machine is one as well. Any other disk device has no volume that a bitmap can be exported with.
+	if !isRootDisk && !filters.IsCustomVolumeBlockDisk(devConf) {
+		return nil, nil
+	}
+
+	// A disk device can attach the root volume of another virtual machine or a snapshot, and neither is written by
+	// this instance alone. A read-only disk is never written.
+	if !isRootDisk && (devConf["source.type"] != "" && devConf["source.type"] != dbCluster.StoragePoolVolumeTypeNameCustom) {
+		return nil, nil
+	}
+
+	if devConf["source.snapshot"] != "" || shared.IsTrue(devConf["readonly"]) {
+		return nil, nil
+	}
+
+	poolName := devConf["pool"]
+	pool, ok := pools[poolName]
+	if !ok {
+		var err error
+		pool, err = storagePools.LoadByName(d.state, poolName)
+		if err != nil {
+			return nil, fmt.Errorf("Failed loading storage pool %q: %w", poolName, err)
+		}
+
+		pools[poolName] = pool
+	}
+
+	volType := storageDrivers.VolumeTypeCustom
+	volName := devConf["source"]
+	volProject := project.StorageVolumeProjectFromRecord(&d.project, dbCluster.StoragePoolVolumeTypeCustom)
+	if isRootDisk {
+		volType = storageDrivers.VolumeTypeVM
+		volName = d.name
+		volProject = d.project.Name
+	}
+
+	dbVol, err := storagePools.VolumeDBGet(pool, volProject, volName, volType)
+	if err != nil {
+		return nil, fmt.Errorf("Failed loading volume %q of disk %q: %w", volName, deviceName, err)
+	}
+
+	if dbVol.ContentType != dbCluster.StoragePoolVolumeContentTypeNameBlock {
+		return nil, nil
+	}
+
+	// Several instances can write to a shared volume, so a bitmap of one QEMU process does not record every
+	// write to it.
+	if shared.IsTrue(dbVol.Config["security.shared"]) {
+		return nil, nil
+	}
+
+	return &api.InstanceBitmapVolume{
+		Pool:   pool.Name(),
+		Type:   dbVol.Type,
+		Name:   dbVol.Name,
+		UUID:   dbVol.Config["volatile.uuid"],
+		Device: deviceName,
+	}, nil
+}
+
+// disksSupportingBitmaps returns the disk devices whose volumes support bitmaps, sorted by device name.
+func (d *qemu) disksSupportingBitmaps() ([]bitmapDisk, error) {
+	rootDiskName, _, err := d.getRootDiskDevice()
+	if err != nil {
+		return nil, fmt.Errorf("Failed getting root disk: %w", err)
+	}
+
+	pools := make(map[string]storagePools.Pool)
+	disks := []bitmapDisk{}
+	for deviceName, devConf := range d.ExpandedDevices() {
+		if !filters.IsDisk(devConf) {
+			continue
+		}
+
+		volume, err := d.diskVolume(deviceName, devConf, deviceName == rootDiskName, pools)
+		if err != nil {
+			return nil, err
+		}
+
+		if volume == nil {
+			d.logger.Debug("Skipping disk whose volume does not support bitmaps", logger.Ctx{"device": deviceName})
+			continue
+		}
+
+		disks = append(disks, bitmapDisk{deviceName: deviceName, nodeName: blockNodeName(deviceName), volume: *volume})
+	}
+
+	slices.SortFunc(disks, func(a bitmapDisk, b bitmapDisk) int { return strings.Compare(a.deviceName, b.deviceName) })
+
+	return disks, nil
+}
+
+// snapshotMetadataImage is the metadata image of a volume snapshot, found on the config volume snapshot of an
+// instance snapshot.
+type snapshotMetadataImage struct {
+	path         string
+	deviceName   string
+	volumeUUID   string
+	snapshotUUID string
+}
+
+// snapshotMetadataImages returns the metadata images of the volume snapshots that the instance snapshot records,
+// which are the root volume snapshot and the attached volume snapshots, with the disk device each volume was
+// attached through. The config volume snapshot must be mounted.
+func (d *qemu) snapshotMetadataImages() ([]snapshotMetadataImage, error) {
+	pool, err := d.getStoragePool()
+	if err != nil {
+		return nil, err
+	}
+
+	dbVol, err := storagePools.VolumeDBGet(pool, d.project.Name, d.name, storageDrivers.VolumeTypeVM)
+	if err != nil {
+		return nil, err
+	}
+
+	rootDiskName, _, err := d.getRootDiskDevice()
+	if err != nil {
+		return nil, fmt.Errorf("Failed getting root disk: %w", err)
+	}
+
+	attachedVolumes, err := parseVolatileAttachedVolumes(d)
+	if err != nil {
+		return nil, err
+	}
+
+	devices := map[string]string{dbVol.Config["volatile.uuid"]: rootDiskName}
+	for deviceName, snapshotUUID := range attachedVolumes {
+		devices[snapshotUUID] = deviceName
+	}
+
+	entries, err := os.ReadDir(d.metadataImagesDir())
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	images := []snapshotMetadataImage{}
+	for _, entry := range entries {
+		volumeUUID, snapshotUUID, ok := parseSnapshotMetadataImageName(entry.Name())
+		if !ok {
+			continue
+		}
+
+		deviceName, ok := devices[snapshotUUID]
+		if !ok {
+			continue
+		}
+
+		images = append(images, snapshotMetadataImage{
+			path:         filepath.Join(d.metadataImagesDir(), entry.Name()),
+			deviceName:   deviceName,
+			volumeUUID:   volumeUUID,
+			snapshotUUID: snapshotUUID,
+		})
+	}
+
+	slices.SortFunc(images, func(a snapshotMetadataImage, b snapshotMetadataImage) int { return strings.Compare(a.deviceName, b.deviceName) })
+
+	return images, nil
+}
+
+// snapshotVolumes returns the volumes of the instance snapshot by disk device, with the pool, type and name they had
+// when the snapshot was created, as the devices of the snapshot record them.
+func (d *qemu) snapshotVolumes() (map[string]api.InstanceBitmapVolume, error) {
+	rootDiskName, rootDiskConf, err := d.getRootDiskDevice()
+	if err != nil {
+		return nil, fmt.Errorf("Failed getting root disk: %w", err)
+	}
+
+	parentName, _, _ := api.GetParentAndSnapshotName(d.name)
+	volumes := map[string]api.InstanceBitmapVolume{
+		rootDiskName: {Pool: rootDiskConf["pool"], Type: dbCluster.StoragePoolVolumeTypeNameVM, Name: parentName, Device: rootDiskName},
+	}
+
+	for deviceName, devConf := range d.ExpandedDevices() {
+		if !filters.IsCustomVolumeBlockDisk(devConf) {
+			continue
+		}
+
+		volumes[deviceName] = api.InstanceBitmapVolume{Pool: devConf["pool"], Type: dbCluster.StoragePoolVolumeTypeNameCustom, Name: devConf["source"], Device: deviceName}
+	}
+
+	return volumes, nil
+}
+
+// pruneMetadataImages deletes from the metadata images directory every file that is not the metadata image or the
+// overlay of a volume attached through one of the given disks. A snapshot metadata image left on the config volume
+// by a failed snapshot and the metadata image of a detached volume are removed this way.
+func (d *qemu) pruneMetadataImages(disks []bitmapDisk) error {
+	entries, err := os.ReadDir(d.metadataImagesDir())
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+
+		return err
+	}
+
+	keep := make([]string, 0, len(disks)*2)
+	for _, disk := range disks {
+		keep = append(keep, filepath.Base(d.volumeMetadataImagePath(disk.volume.UUID)), filepath.Base(d.overlayPath(disk.volume.UUID)))
+	}
+
+	for _, entry := range entries {
+		if slices.Contains(keep, entry.Name()) {
+			continue
+		}
+
+		d.logger.Debug("Removing metadata image", logger.Ctx{"file": entry.Name()})
+		err := os.RemoveAll(filepath.Join(d.metadataImagesDir(), entry.Name()))
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
