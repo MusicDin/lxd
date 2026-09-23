@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -114,6 +115,10 @@ const qemuDeviceNameMaxLength = 31
 
 // qemuMigrationNBDExportName is the name of the disk device export by the migration NBD server.
 const qemuMigrationNBDExportName = "lxd_root"
+
+// guestShutdownTargets maps an instance to the target of a guest initiated shutdown whose QEMU process LXD ends
+// after persisting the bitmaps. The quit raises a second shutdown event, which finishes the stop with that target.
+var guestShutdownTargets sync.Map
 
 // qemuSparseUSBPorts is the amount of sparse USB ports for VMs.
 // 4 are reserved, and the other 4 can be used for any USB device.
@@ -441,6 +446,36 @@ func (d *qemu) getMonitorEventHandler() func(event string, data map[string]any) 
 				d.logger.Debug("Instance stopped", logger.Ctx{"target": target, "reason": data["reason"]})
 			}
 
+			// QEMU pauses on a guest initiated shutdown or reset instead of exiting, so that the bitmaps of its disks
+			// are persisted first. The quit sent afterwards raises a second event, which ends the process with the
+			// target of the first.
+			key := project.Instance(instProject.Name, instanceName)
+			guest, _ := data["guest"].(bool)
+			if guest {
+				monitor, err := qmp.Connect(d.monitorPath(), qemuSerialChardevName, d.getMonitorEventHandler())
+				if err == nil {
+					guestShutdownTargets.Store(key, target)
+					err = d.persistAndQuit(monitor)
+					if err == nil {
+						return
+					}
+
+					guestShutdownTargets.Delete(key)
+				}
+
+				d.logger.Warn("Failed ending the VM process after a guest shutdown, killing it", logger.Ctx{"err": err})
+				err = d.forceStop()
+				if err != nil {
+					d.logger.Error("Failed killing the VM process after a guest shutdown", logger.Ctx{"err": err})
+					return
+				}
+			} else {
+				storedTarget, ok := guestShutdownTargets.LoadAndDelete(key)
+				if ok {
+					target, _ = storedTarget.(string)
+				}
+			}
+
 			err = d.onStop(context.Background(), target)
 			if err != nil {
 				d.logger.Error("Failed cleanly stopping instance", logger.Ctx{"err": err})
@@ -695,6 +730,13 @@ func (d *qemu) onStop(ctx context.Context, target string) error {
 		}
 	}
 
+	// An overlay file left on the config volume contains guest writes that the volume lacks. It is committed once
+	// the devices have released the volumes, and stays for the next start when that fails.
+	err = d.commitAllOverlayFiles()
+	if err != nil {
+		d.logger.Error("Failed committing overlay files", logger.Ctx{"err": err})
+	}
+
 	// Unload the apparmor profile
 	err = apparmor.InstanceUnload(d.state.OS, d)
 	if err != nil {
@@ -781,34 +823,52 @@ func (d *qemu) Shutdown(ctx context.Context, timeout time.Duration) error {
 	// to the powerdown request.
 	op.SetInstanceInitiated(true)
 
-	// Send the system_powerdown command.
-	err = monitor.Powerdown()
-	if err != nil {
-		if err == qmp.ErrMonitorDisconnect {
-			op.Done(nil)
-			return nil
+	// A guest that already powered off is paused by QEMU until LXD persists the bitmaps and ends the process.
+	runState, err := monitor.Status()
+	if err == nil && runState == "shutdown" {
+		err = d.persistAndQuit(monitor)
+		if err != nil {
+			op.Done(err)
+			return err
+		}
+	} else {
+		// An overlay left by a failed commit contains the guest's latest writes to the disk. It is committed before
+		// the guest powers off, because QEMU pauses with the overlay otherwise and the overlay file is committed
+		// after it quits.
+		err = d.commitAllOverlays(monitor)
+		if err != nil {
+			d.logger.Error("Failed committing overlays before shutdown", logger.Ctx{"err": err})
 		}
 
-		op.Done(err)
-		return err
-	}
+		// Send the system_powerdown command.
+		err = monitor.Powerdown()
+		if err != nil {
+			if err == qmp.ErrMonitorDisconnect {
+				op.Done(nil)
+				return nil
+			}
 
-	// Wait 500ms for the first event to be received by the guest.
-	time.Sleep(500 * time.Millisecond)
-
-	// Send a second system_powerdown command (required to get Windows to shutdown).
-	err = monitor.Powerdown()
-	if err != nil {
-		if err == qmp.ErrMonitorDisconnect {
-			op.Done(nil)
-			return nil
+			op.Done(err)
+			return err
 		}
 
-		op.Done(err)
-		return err
-	}
+		// Wait 500ms for the first event to be received by the guest.
+		time.Sleep(500 * time.Millisecond)
 
-	d.logger.Debug("Shutdown request sent to instance")
+		// Send a second system_powerdown command (required to get Windows to shutdown).
+		err = monitor.Powerdown()
+		if err != nil {
+			if err == qmp.ErrMonitorDisconnect {
+				op.Done(nil)
+				return nil
+			}
+
+			op.Done(err)
+			return err
+		}
+
+		d.logger.Debug("Shutdown request sent to instance")
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -1242,6 +1302,22 @@ func (d *qemu) start(ctx context.Context, stateful bool, op *operationlock.Insta
 	}
 
 	revert.Add(func() { _ = d.unmount() })
+
+	// The metadata images of detached volumes and the snapshot metadata images left by a failed snapshot are of no
+	// use to the instance.
+	if d.metadataImagesEnabled() {
+		disks, err := d.disksSupportingBitmaps()
+		if err != nil {
+			op.Done(err)
+			return err
+		}
+
+		err = d.pruneMetadataImages(disks)
+		if err != nil {
+			op.Done(err)
+			return fmt.Errorf("Failed pruning metadata images: %w", err)
+		}
+	}
 
 	// Define a set of files to open and pass their file descriptors to QEMU command.
 	fdFiles := make([]*os.File, 0)
@@ -1913,8 +1989,15 @@ func (d *qemu) start(ctx context.Context, stateful bool, op *operationlock.Insta
 	// This ensures that if the guest initiates a reboot that the SHUTDOWN event is generated instead with the
 	// reason set to "guest-reset" so that the event handler returned from getMonitorEventHandler() can restart
 	// the guest instead.
+	// A guest initiated shutdown pauses QEMU instead of ending it while the bitmaps of the disks are stored in
+	// their volume metadata images, so that the SHUTDOWN handler persists the bitmaps before the process quits.
+	shutdownAction := "poweroff"
+	if d.metadataImagesEnabled() {
+		shutdownAction = "pause"
+	}
+
 	actions := map[string]string{
-		"shutdown": "poweroff",
+		"shutdown": shutdownAction,
 		"reboot":   "shutdown", // Do not reset on reboot. Let LXD handle reboots.
 		"panic":    "pause",    // Pause on panics to allow investigation.
 	}
@@ -1923,6 +2006,15 @@ func (d *qemu) start(ctx context.Context, stateful bool, op *operationlock.Insta
 	if err != nil {
 		op.Done(err)
 		return fmt.Errorf("Failed setting reboot action: %w", err)
+	}
+
+	// An overlay file left by an earlier stop contains guest writes that the volume lacks, so it is added back to its
+	// disk and committed before the guest can read. The bitmaps of the disks were restored by the monitor hooks, so
+	// they record the committed writes.
+	err = d.addOverlays(monitor)
+	if err != nil {
+		op.Done(err)
+		return err
 	}
 
 	// Restore the state.
@@ -2798,6 +2890,26 @@ func (d *qemu) deviceDetachBlockDevice(deviceName string) error {
 		return err
 	}
 
+	// An overlay left by a failed commit contains the guest's latest writes to the disk.
+	err = d.CommitDiskOverlays([]string{deviceName})
+	if err != nil {
+		return err
+	}
+
+	// The bitmaps of the volume are written into its volume metadata image when the store node is removed, so the
+	// writes the disk node recorded are merged into the store node first.
+	disk, err := d.bitmapDisk(deviceName)
+	if err != nil {
+		return err
+	}
+
+	if disk != nil {
+		err = d.persistBitmaps(monitor, []bitmapDisk{*disk})
+		if err != nil {
+			d.logger.Error("Failed persisting bitmaps before detach", logger.Ctx{"device": deviceName, "err": err})
+		}
+	}
+
 	blockDevName := qemuDeviceNameOrID(qemuDeviceNamePrefix, deviceName, "", qemuDeviceNameMaxLength)
 
 	err = monitor.RemoveFDFromFDSet(blockDevName)
@@ -2827,6 +2939,27 @@ func (d *qemu) deviceDetachBlockDevice(deviceName string) error {
 			time.Sleep(time.Second * 2)
 			continue
 		}
+	}
+
+	// The store node of a disk whose bitmaps are stored in its volume metadata image is removed last, which writes
+	// the bitmaps of the volume into the image. A disk without bitmaps, such as a shared volume, has no store node.
+	nodeNames, err := monitor.QueryNamedBlockNodes()
+	if err != nil {
+		return err
+	}
+
+	if !slices.Contains(nodeNames, storeNodeName(deviceName)) {
+		return nil
+	}
+
+	err = monitor.RemoveBlockDevice(storeNodeName(deviceName))
+	if err != nil {
+		return err
+	}
+
+	err = monitor.RemoveFDFromFDSet(storeNodeName(deviceName))
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -4752,6 +4885,27 @@ func (d *qemu) addDriveConfig(busAllocate busAllocator, bootIndexes map[string]i
 			return fmt.Errorf("Failed adding block device for disk device %q: %w", driveConf.DevName, err)
 		}
 
+		// The bitmaps of a volume that supports them are stored in its volume metadata image, which the store node
+		// of the disk opens, and the bitmaps that load there get their disk bitmaps before the guest runs.
+		disk, err := d.bitmapDisk(driveConf.DevName)
+		if err != nil {
+			return err
+		}
+
+		if disk != nil && d.metadataImagesEnabled() {
+			removeStore, err := d.addStoreNode(m, *disk)
+			if err != nil {
+				return fmt.Errorf("Failed adding volume metadata image for disk device %q: %w", driveConf.DevName, err)
+			}
+
+			reverter.Add(removeStore)
+
+			err = d.restoreBitmaps(m, *disk)
+			if err != nil {
+				return err
+			}
+		}
+
 		if driveConf.Limits != nil {
 			qemuDevID, ok := qemuDev["id"].(string)
 			if !ok {
@@ -5608,8 +5762,15 @@ func (d *qemu) Stop(ctx context.Context, stateful bool) error {
 			return err
 		}
 	} else {
-		// Request the VM stop immediately.
-		err = monitor.Quit()
+		// An overlay left by a failed commit contains the guest's latest writes to the disk, and the bitmaps of the
+		// volumes record the committed writes before they are persisted.
+		err = d.commitAllOverlays(monitor)
+		if err != nil {
+			d.logger.Error("Failed committing overlays before stop", logger.Ctx{"err": err})
+		}
+
+		// Persist the bitmaps and request the VM stop immediately.
+		err = d.persistAndQuit(monitor)
 		if err != nil {
 			d.logger.Warn("Failed sending monitor quit command, forcing stop", logger.Ctx{"err": err})
 			err = d.forceStop()
@@ -8963,6 +9124,9 @@ func (d *qemu) statusCode() api.StatusCode {
 		}
 
 		return api.Running
+	case "shutdown":
+		// The guest powered off and QEMU stays paused until LXD persists the bitmaps and ends the process.
+		return api.Stopping
 	case "inmigrate", "postmigrate", "finish-migrate", "save-vm", "suspended", "paused":
 		return api.Frozen
 	default:

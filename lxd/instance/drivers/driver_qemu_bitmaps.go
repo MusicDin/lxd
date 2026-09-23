@@ -601,6 +601,105 @@ func (d *qemu) removeBitmapPair(monitor *qmp.Monitor, disk bitmapDisk, pair bitm
 	return nil
 }
 
+// restoreBitmaps creates on the disk node the disk bitmap of every bitmap that loaded on the store node of the disk,
+// so that the pair records the writes from now on. It runs before the guest runs. A bitmap that loaded inconsistent,
+// because the process that had it loaded did not write it back, missed writes and gets no disk bitmap. It stays on
+// the store node until the next snapshot with a bitmap removes it.
+func (d *qemu) restoreBitmaps(monitor *qmp.Monitor, disk bitmapDisk) error {
+	storeBitmaps, err := monitor.QueryNodeDirtyBitmaps(disk.storeNodeName())
+	if err != nil {
+		return fmt.Errorf("Failed querying bitmaps of the volume metadata image of disk %q: %w", disk.deviceName, err)
+	}
+
+	actions := make([]qmp.TransactionAction, 0, len(storeBitmaps))
+	for _, bitmap := range storeBitmaps {
+		if bitmap.Inconsistent {
+			d.logger.Warn("Bitmap missed writes and is not restored", logger.Ctx{"device": disk.deviceName, "bitmap": bitmap.Name})
+			continue
+		}
+
+		actions = append(actions, qmp.BlockDirtyBitmapAddAction(disk.nodeName(), bitmap.Name, bitmap.Granularity, false, false))
+	}
+
+	if len(actions) == 0 {
+		return nil
+	}
+
+	err = monitor.RunTransaction(actions)
+	if err != nil {
+		return fmt.Errorf("Failed restoring bitmaps of disk %q: %w", disk.deviceName, err)
+	}
+
+	return nil
+}
+
+// persistBitmaps merges the disk bitmap of every pair of the given disks into its store bitmap, so that the store
+// holds every write the disk node recorded. QEMU writes the store into the volume metadata image when the store
+// node closes, and the guest must not write between the merge and the close, as such a write is not recorded. A
+// pair whose merge fails has its store bitmap removed, so that the image does not present a bitmap that lacks
+// writes. A disk without both nodes is skipped.
+func (d *qemu) persistBitmaps(monitor *qmp.Monitor, disks []bitmapDisk) error {
+	nodeNames, err := monitor.QueryNamedBlockNodes()
+	if err != nil {
+		return err
+	}
+
+	var errs []error
+	for _, disk := range disks {
+		if !slices.Contains(nodeNames, disk.nodeName()) || !slices.Contains(nodeNames, disk.storeNodeName()) {
+			continue
+		}
+
+		pairs, err := d.queryBitmapPairs(monitor, disk)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+
+		for _, pair := range pairs {
+			if pair.disk == nil || pair.store == nil {
+				continue
+			}
+
+			err = monitor.BlockDirtyBitmapMerge(disk.storeNodeName(), pair.name, []qmp.BlockDirtyBitmapSource{{Node: disk.nodeName(), Name: pair.name}})
+			if err == nil {
+				continue
+			}
+
+			d.logger.Error("Failed persisting bitmap, removing it", logger.Ctx{"device": disk.deviceName, "bitmap": pair.name, "err": err})
+			err = monitor.RemoveDirtyBitmap(disk.storeNodeName(), pair.name)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("Failed removing bitmap %q of the volume metadata image of disk %q: %w", pair.name, disk.deviceName, err))
+			}
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// persistAndQuit pauses the guest, persists the bitmaps of every disk and asks QEMU to quit, which closes the store
+// nodes and writes the images. When the store of a disk cannot be made to hold every write, the process is left for
+// the caller to kill, so that the image keeps its bitmaps marked in use instead of presenting bitmaps that lack
+// writes.
+func (d *qemu) persistAndQuit(monitor *qmp.Monitor) error {
+	err := monitor.Pause()
+	if err != nil {
+		return fmt.Errorf("Failed pausing instance: %w", err)
+	}
+
+	disks, err := d.disksSupportingBitmaps()
+	if err != nil {
+		return err
+	}
+
+	err = d.persistBitmaps(monitor, disks)
+	if err != nil {
+		return fmt.Errorf("Failed persisting bitmaps: %w", err)
+	}
+
+	return monitor.Quit()
+}
+
 // refreshStoreNode replaces the store node of a disk of the running instance when the disk node no longer has the
 // size of the store node, because the volume was resized. The store node is removed, the volume metadata image is
 // created again at the size of the disk node and the store node is added again, without bitmaps. A disk without a
