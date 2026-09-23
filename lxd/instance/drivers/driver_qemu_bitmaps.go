@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -10,18 +11,23 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
 
+	"github.com/canonical/lxd/lxd/db"
 	dbCluster "github.com/canonical/lxd/lxd/db/cluster"
+	"github.com/canonical/lxd/lxd/db/warningtype"
 	"github.com/canonical/lxd/lxd/device/filters"
 	"github.com/canonical/lxd/lxd/instance/drivers/qmp"
 	"github.com/canonical/lxd/lxd/project"
 	storagePools "github.com/canonical/lxd/lxd/storage"
 	storageDrivers "github.com/canonical/lxd/lxd/storage/drivers"
+	"github.com/canonical/lxd/lxd/warnings"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
+	"github.com/canonical/lxd/shared/entity"
 	"github.com/canonical/lxd/shared/logger"
 	"github.com/canonical/lxd/shared/revert"
 )
@@ -471,7 +477,9 @@ func (d *qemu) snapshotMetadataImages() ([]snapshotMetadataImage, error) {
 		})
 	}
 
-	slices.SortFunc(images, func(a snapshotMetadataImage, b snapshotMetadataImage) int { return strings.Compare(a.deviceName, b.deviceName) })
+	slices.SortFunc(images, func(a snapshotMetadataImage, b snapshotMetadataImage) int {
+		return strings.Compare(a.deviceName, b.deviceName)
+	})
 
 	return images, nil
 }
@@ -912,5 +920,266 @@ func (d *qemu) RemoveVolumeMetadataImage(volumeUUID string) error {
 func (d *qemu) RemoveAllMetadataImages() error {
 	return d.withConfigVolume(func() error {
 		return os.RemoveAll(d.metadataImagesDir())
+	})
+}
+
+// commitOverlay commits the overlay of a disk device into its volume, removes the overlay node and deletes the
+// overlay file. The commit is retried, because the guest writes to the overlay until it succeeds.
+func (d *qemu) commitOverlay(monitor *qmp.Monitor, disk bitmapDisk) error {
+	overlayNode := overlayNodeName(disk.deviceName)
+
+	var err error
+	for attempt := range 3 {
+		if attempt > 0 {
+			time.Sleep(time.Second)
+		}
+
+		err = monitor.BlockCommit(overlayNode)
+		if err == nil {
+			break
+		}
+
+		d.logger.Warn("Failed committing overlay", logger.Ctx{"device": disk.deviceName, "attempt": attempt + 1, "err": err})
+	}
+
+	if err != nil {
+		// Until a commit succeeds the volume lacks the guest's writes, so every storage snapshot, copy and backup
+		// of it is inconsistent.
+		_ = d.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
+			return tx.UpsertWarning(ctx, d.node, d.project.Name, entity.TypeInstance, d.ID(), warningtype.InstanceDiskOverlayNotCommitted, fmt.Sprintf("The volume of disk %q lacks the writes of the guest since the last snapshot with a bitmap", disk.deviceName))
+		})
+
+		return fmt.Errorf("Failed committing overlay of disk %q: %w", disk.deviceName, err)
+	}
+
+	d.removeQcow2Node(monitor, overlayNode)
+
+	err = os.Remove(d.overlayPath(disk.volume.UUID))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("Failed removing overlay of disk %q: %w", disk.deviceName, err)
+	}
+
+	d.resolveOverlayWarning(monitor)
+
+	return nil
+}
+
+// resolveOverlayWarning resolves the warning of a failed commit once no disk of the instance has an overlay.
+func (d *qemu) resolveOverlayWarning(monitor *qmp.Monitor) {
+	nodeNames, err := monitor.QueryNamedBlockNodes()
+	if err != nil {
+		return
+	}
+
+	for deviceName := range d.expandedDevices {
+		if slices.Contains(nodeNames, overlayNodeName(deviceName)) {
+			return
+		}
+	}
+
+	_ = warnings.ResolveWarningsByNodeAndProjectAndTypeAndEntity(d.state.DB.Cluster, d.node, d.project.Name, warningtype.InstanceDiskOverlayNotCommitted, entity.TypeInstance, d.ID())
+}
+
+// CreateSnapshotBitmaps creates the bitmap of a snapshot on the volumes attached through the given disk devices and
+// copies every bitmap those volumes have into the metadata images of their snapshots, all in one QEMU transaction.
+// snapshots maps each disk device to the UUID of the volume snapshot about to be created. The metadata image of a
+// snapshot is created on the config volume before the storage snapshot, so that the config volume snapshot includes
+// it. The transaction also adds an overlay to each of the volumes, so that the storage snapshots taken afterwards
+// match the instant the bitmap was created at, and the guest writes to the overlays until CommitDiskOverlays commits
+// them. A disk device whose volume does not support bitmaps is skipped, and the devices that got an overlay are
+// returned.
+func (d *qemu) CreateSnapshotBitmaps(snapshots map[string]string, bitmapName string, bitmapUUID string) ([]string, error) {
+	if !d.IsRunning() {
+		return nil, api.StatusErrorf(http.StatusBadRequest, "Instance is not running")
+	}
+
+	monitor, err := qmp.Connect(d.monitorPath(), qemuSerialChardevName, d.getMonitorEventHandler())
+	if err != nil {
+		return nil, err
+	}
+
+	nodeNames, err := monitor.QueryNamedBlockNodes()
+	if err != nil {
+		return nil, err
+	}
+
+	disks, err := d.disksSupportingBitmaps()
+	if err != nil {
+		return nil, err
+	}
+
+	type snapshotDisk struct {
+		bitmapDisk
+		snapshotUUID string
+		bitmaps      []qmp.BlockDirtyInfo
+	}
+
+	selected := make([]snapshotDisk, 0, len(snapshots))
+	for _, disk := range disks {
+		snapshotUUID, ok := snapshots[disk.deviceName]
+		if !ok || !slices.Contains(nodeNames, disk.nodeName) {
+			continue
+		}
+
+		// An overlay left by a failed commit is committed before a new overlay is added.
+		if slices.Contains(nodeNames, overlayNodeName(disk.deviceName)) {
+			err = d.commitOverlay(monitor, disk)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		bitmaps, err := monitor.QueryNodeDirtyBitmaps(disk.nodeName)
+		if err != nil {
+			return nil, fmt.Errorf("Failed querying bitmaps of disk %q: %w", disk.deviceName, err)
+		}
+
+		// The name of a bitmap identifies it in the API, so a volume gets one bitmap of a name at a time.
+		for _, bitmap := range bitmaps {
+			_, name, ok := parseQEMUBitmapName(bitmap.Name)
+			if ok && name == bitmapName {
+				return nil, api.StatusErrorf(http.StatusConflict, "Bitmap %q already exists on disk %q", bitmapName, disk.deviceName)
+			}
+		}
+
+		selected = append(selected, snapshotDisk{bitmapDisk: disk, snapshotUUID: snapshotUUID, bitmaps: bitmaps})
+	}
+
+	revert := revert.New()
+	defer revert.Fail()
+
+	qemuName := qemuBitmapName(bitmapUUID, bitmapName)
+	deviceNames := make([]string, 0, len(selected))
+	closeMetadataImages := make([]func(), 0, len(selected))
+	actions := make([]qmp.TransactionAction, 0, len(selected)*2)
+	for _, disk := range selected {
+		size, err := monitor.BlockNodeSize(disk.nodeName)
+		if err != nil {
+			return nil, fmt.Errorf("Failed getting size of disk %q: %w", disk.deviceName, err)
+		}
+
+		overlayNode := overlayNodeName(disk.deviceName)
+		overlayPath := d.overlayPath(disk.volume.UUID)
+		removeOverlay, err := d.createQcow2Node(monitor, overlayNode, overlayPath, size)
+		if err != nil {
+			return nil, fmt.Errorf("Failed creating overlay of disk %q: %w", disk.deviceName, err)
+		}
+
+		revert.Add(func() {
+			removeOverlay()
+			_ = os.Remove(overlayPath)
+		})
+
+		// The metadata image is created at the size of the disk, as a bitmap is only merged between nodes of one size.
+		metadataImageNode := metadataImageNodeName(disk.deviceName)
+		metadataImagePath := d.snapshotMetadataImagePath(disk.volume.UUID, disk.snapshotUUID)
+		closeMetadataImage, err := d.createQcow2Node(monitor, metadataImageNode, metadataImagePath, size)
+		if err != nil {
+			return nil, fmt.Errorf("Failed creating metadata image of disk %q: %w", disk.deviceName, err)
+		}
+
+		revert.Add(func() {
+			closeMetadataImage()
+			_ = os.Remove(metadataImagePath)
+		})
+
+		closeMetadataImages = append(closeMetadataImages, closeMetadataImage)
+		deviceNames = append(deviceNames, disk.deviceName)
+
+		// The new bitmap is created on the disk node rather than on the overlay, so that it records the writes
+		// committed from the overlay.
+		actions = append(actions, qmp.BlockDevSnapshotAction(disk.nodeName, overlayNode), qmp.BlockDirtyBitmapAddAction(disk.nodeName, qemuName, 0, false, false))
+
+		// Each bitmap is copied under the name QEMU knows it by and under the name of the bitmap alone, so that a
+		// client of the snapshot export selects it with or without its UUID. The copies are disabled, as they
+		// represent the instant of the snapshot.
+		for _, bitmap := range disk.bitmaps {
+			_, name, ok := parseQEMUBitmapName(bitmap.Name)
+			if !ok {
+				continue
+			}
+
+			for _, copyName := range []string{bitmap.Name, name} {
+				actions = append(actions, qmp.BlockDirtyBitmapAddAction(metadataImageNode, copyName, bitmap.Granularity, true, true), qmp.BlockDirtyBitmapMergeAction(metadataImageNode, copyName, disk.nodeName, bitmap.Name))
+			}
+		}
+	}
+
+	if len(actions) == 0 {
+		return deviceNames, nil
+	}
+
+	err = monitor.RunTransaction(actions)
+	if err != nil {
+		return nil, fmt.Errorf("Failed creating bitmaps: %w", err)
+	}
+
+	// From here on the guest writes to the overlays, which only a commit may remove.
+	revert.Success()
+
+	// QEMU writes the bitmaps into a metadata image when its node is removed.
+	for _, closeMetadataImage := range closeMetadataImages {
+		closeMetadataImage()
+	}
+
+	return deviceNames, nil
+}
+
+// CommitDiskOverlays commits the overlays of the given disk devices into their volumes. A device without an overlay
+// node is skipped. After a failed commit the guest writes to the overlay until the next snapshot with a bitmap, stop,
+// start or detach of the device commits it.
+func (d *qemu) CommitDiskOverlays(deviceNames []string) error {
+	monitor, err := qmp.Connect(d.monitorPath(), qemuSerialChardevName, d.getMonitorEventHandler())
+	if err != nil {
+		return err
+	}
+
+	nodeNames, err := monitor.QueryNamedBlockNodes()
+	if err != nil {
+		return err
+	}
+
+	disks, err := d.disksSupportingBitmaps()
+	if err != nil {
+		return err
+	}
+
+	var errs []error
+	for _, disk := range disks {
+		if !slices.Contains(deviceNames, disk.deviceName) || !slices.Contains(nodeNames, overlayNodeName(disk.deviceName)) {
+			continue
+		}
+
+		err := d.commitOverlay(monitor, disk)
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// RemoveSnapshotMetadataImages deletes from the config volume the metadata images of the volume snapshots that
+// snapshots maps the disk devices to. The config volume snapshot keeps its copies.
+func (d *qemu) RemoveSnapshotMetadataImages(snapshots map[string]string) error {
+	disks, err := d.disksSupportingBitmaps()
+	if err != nil {
+		return err
+	}
+
+	return d.withConfigVolume(func() error {
+		for _, disk := range disks {
+			snapshotUUID, ok := snapshots[disk.deviceName]
+			if !ok {
+				continue
+			}
+
+			err := os.Remove(d.snapshotMetadataImagePath(disk.volume.UUID, snapshotUUID))
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+		}
+
+		return nil
 	})
 }
