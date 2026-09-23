@@ -1380,6 +1380,199 @@ func InstanceDiskBlockSize(pool Pool, inst instance.Instance, progressReporter i
 	return blockDiskSize, nil
 }
 
+// qcow2ImageOpts returns the image options that open the metadata image at path without its data file, for the
+// qemu-img commands that read or change only the metadata of the image. The data file recorded in the image is a
+// temporary file that no longer exists, so a null block driver stands in for it.
+func qcow2ImageOpts(path string) string {
+	return "driver=qcow2,file.filename=" + qcow2EscapeOpt(path) + ",data-file.driver=null-co"
+}
+
+// qcow2EscapeOpt escapes a value for use in a qemu-img option string, where a comma separates options.
+func qcow2EscapeOpt(value string) string {
+	return strings.ReplaceAll(value, ",", ",,")
+}
+
+// Qcow2Create creates an empty qcow2 image of the given virtual size at path, replacing any existing file.
+func Qcow2Create(path string, size int64) error {
+	err := os.Remove(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	_, err = shared.RunCommand(context.TODO(), "qemu-img", "create", "-f", "qcow2", path, strconv.FormatInt(size, 10))
+	if err != nil {
+		// A failed creation can leave a partially written file behind.
+		_ = os.Remove(path)
+		return fmt.Errorf("Failed creating image %q: %w", path, err)
+	}
+
+	return nil
+}
+
+// Qcow2CreateMetadataImage creates a metadata image of the given virtual size at path, replacing any existing
+// file. The image stores bitmaps only. It is created with an external data file, so that it can be opened with a
+// null block device in place of the volume whose bitmaps it stores, and without data_file_raw, so that no table is
+// preallocated for the data. The data file is a temporary file, because qemu-img opens and truncates the data file
+// it is given and must not open the volume itself. The clusters are 64 KiB, as every bitmap data cluster is
+// written whole and a small cluster keeps a bitmap with few set bits small.
+func Qcow2CreateMetadataImage(path string, size int64) error {
+	err := os.Remove(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	dataFile := path + ".data"
+	defer func() { _ = os.Remove(dataFile) }()
+
+	_, err = shared.RunCommand(context.TODO(), "qemu-img", "create", "-f", "raw", dataFile, strconv.FormatInt(size, 10))
+	if err != nil {
+		return fmt.Errorf("Failed creating temporary data file %q: %w", dataFile, err)
+	}
+
+	options := "data_file=" + qcow2EscapeOpt(dataFile) + ",cluster_size=64K"
+	_, err = shared.RunCommand(context.TODO(), "qemu-img", "create", "-f", "qcow2", "-o", options, path, strconv.FormatInt(size, 10))
+	if err != nil {
+		// A failed creation can leave a partially written file behind.
+		_ = os.Remove(path)
+		return fmt.Errorf("Failed creating metadata image %q: %w", path, err)
+	}
+
+	return nil
+}
+
+// Qcow2Bitmap describes a bitmap stored in a qcow2 image.
+type Qcow2Bitmap struct {
+	// Name of the bitmap.
+	Name string
+
+	// Size in bytes of the block represented by one bit of the bitmap.
+	Granularity int64
+
+	// Whether the bitmap recorded every write since it was created. A bitmap with the "in-use" flag was loaded by a
+	// QEMU process that did not write it back, so it missed writes.
+	Valid bool
+}
+
+// qcow2Info is the part of the output of qemu-img info that describes a qcow2 image.
+type qcow2Info struct {
+	VirtualSize    int64 `json:"virtual-size"`
+	FormatSpecific struct {
+		Data struct {
+			Bitmaps []struct {
+				Name        string   `json:"name"`
+				Granularity int64    `json:"granularity"`
+				Flags       []string `json:"flags"`
+			} `json:"bitmaps"`
+		} `json:"data"`
+	} `json:"format-specific"`
+}
+
+// bitmaps returns the bitmaps of the image.
+func (info *qcow2Info) bitmaps() []Qcow2Bitmap {
+	bitmaps := make([]Qcow2Bitmap, 0, len(info.FormatSpecific.Data.Bitmaps))
+	for _, bitmap := range info.FormatSpecific.Data.Bitmaps {
+		bitmaps = append(bitmaps, Qcow2Bitmap{
+			Name:        bitmap.Name,
+			Granularity: bitmap.Granularity,
+			Valid:       !slices.Contains(bitmap.Flags, "in-use"),
+		})
+	}
+
+	return bitmaps
+}
+
+// qcow2ImageInfo reads the image at path with qemu-img info, opened with the given qemu-img arguments.
+func qcow2ImageInfo(path string, imageArgs ...string) (*qcow2Info, error) {
+	output, err := shared.RunCommand(context.TODO(), "qemu-img", append([]string{"info", "--output=json"}, imageArgs...)...)
+	if err != nil {
+		return nil, fmt.Errorf("Failed reading image %q: %w", path, err)
+	}
+
+	var info qcow2Info
+	err = json.Unmarshal([]byte(output), &info)
+	if err != nil {
+		return nil, fmt.Errorf("Failed parsing image %q: %w", path, err)
+	}
+
+	return &info, nil
+}
+
+// Qcow2VirtualSize returns the virtual size of the metadata image at path.
+func Qcow2VirtualSize(path string) (int64, error) {
+	info, err := qcow2ImageInfo(path, "--image-opts", qcow2ImageOpts(path))
+	if err != nil {
+		return 0, err
+	}
+
+	return info.VirtualSize, nil
+}
+
+// Qcow2Bitmaps returns the bitmaps stored in the metadata image at path.
+func Qcow2Bitmaps(path string) ([]Qcow2Bitmap, error) {
+	info, err := qcow2ImageInfo(path, "--image-opts", qcow2ImageOpts(path))
+	if err != nil {
+		return nil, err
+	}
+
+	return info.bitmaps(), nil
+}
+
+// Qcow2OverlayBitmaps returns the bitmaps stored in the overlay at path, a qcow2 image without a data file.
+func Qcow2OverlayBitmaps(path string) ([]Qcow2Bitmap, error) {
+	info, err := qcow2ImageInfo(path, "-f", "qcow2", path)
+	if err != nil {
+		return nil, err
+	}
+
+	return info.bitmaps(), nil
+}
+
+// Qcow2RemoveBitmap removes the named bitmap from the metadata image at path.
+func Qcow2RemoveBitmap(path string, bitmapName string) error {
+	_, err := shared.RunCommand(context.TODO(), "qemu-img", "bitmap", "--remove", "--image-opts", qcow2ImageOpts(path), bitmapName)
+	if err != nil {
+		return fmt.Errorf("Failed removing bitmap %q from %q: %w", bitmapName, path, err)
+	}
+
+	return nil
+}
+
+// Qcow2MergeBitmap merges the named bitmap of the overlay at overlayPath into the named bitmap of the metadata image
+// at imagePath. A merge sets the bits set in the source and clears none. Both images must have the same virtual
+// size, and neither bitmap may be in use.
+func Qcow2MergeBitmap(imagePath string, bitmapName string, overlayPath string, overlayBitmapName string) error {
+	_, err := shared.RunCommand(context.TODO(), "qemu-img", "bitmap", "--merge", overlayBitmapName, "-b", overlayPath, "-F", "qcow2", "--image-opts", qcow2ImageOpts(imagePath), bitmapName)
+	if err != nil {
+		return fmt.Errorf("Failed merging bitmap %q of %q into bitmap %q of %q: %w", overlayBitmapName, overlayPath, bitmapName, imagePath, err)
+	}
+
+	return nil
+}
+
+// Qcow2Commit commits the overlay at overlayPath into the block volume at devicePath. The overlay has no backing
+// file of its own, so the volume is given as its backing file.
+func Qcow2Commit(overlayPath string, devicePath string) error {
+	info, err := os.Stat(devicePath)
+	if err != nil {
+		return err
+	}
+
+	backingDriver := "file"
+	if shared.IsBlockdev(info.Mode()) {
+		backingDriver = "host_device"
+	}
+
+	options := "driver=qcow2,file.filename=" + qcow2EscapeOpt(overlayPath) +
+		",backing.driver=" + backingDriver + ",backing.filename=" + qcow2EscapeOpt(devicePath)
+
+	_, err = shared.RunCommand(context.TODO(), "qemu-img", "commit", "--image-opts", options)
+	if err != nil {
+		return fmt.Errorf("Failed committing overlay %q: %w", overlayPath, err)
+	}
+
+	return nil
+}
+
 // ComparableSnapshot is used when comparing snapshots on different pools to see whether they differ.
 type ComparableSnapshot struct {
 	// Name of the snapshot (without the parent name).
