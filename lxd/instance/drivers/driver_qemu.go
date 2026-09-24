@@ -2851,6 +2851,15 @@ func (d *qemu) deviceDetachBlockDevice(deviceName string) error {
 		return err
 	}
 
+	// A snapshot with a bitmap holds the NBD lock of the instance until the overlays of its disks are committed, and
+	// that commit writes into the block node this detach removes.
+	unlock, err := storagePools.LockInstanceNBD(d.state, d)
+	if err != nil {
+		return err
+	}
+
+	defer unlock()
+
 	// An overlay left by a failed commit contains the guest's latest writes to the disk.
 	err = d.CommitDiskOverlays([]string{deviceName})
 	if err != nil {
@@ -7147,6 +7156,21 @@ func (d *qemu) MigrateSend(ctx context.Context, args instance.MigrateSendArgs, p
 	// Setup a new operation.
 	op, err := operationlock.CreateWaitGet(d.Project().Name, d.Name(), operationlock.ActionMigrate, nil, false, true)
 	if err != nil {
+		return err
+	}
+
+	// A snapshot with a bitmap and an NBD export change the volumes that the migration transfers.
+	unlockNBD, err := storagePools.LockInstanceNBD(d.state, d)
+	if err != nil {
+		op.Done(err)
+		return err
+	}
+
+	defer unlockNBD()
+
+	err = storagePools.CommitInstanceDiskOverlays(d)
+	if err != nil {
+		op.Done(err)
 		return err
 	}
 
