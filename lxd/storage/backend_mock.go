@@ -262,7 +262,7 @@ func (b *mockBackend) UnmountInstance(inst instance.Instance, progressReporter i
 }
 
 // CreateInstanceSnapshot ...
-func (b *mockBackend) CreateInstanceSnapshot(i instance.Instance, src instance.Instance, progressReporter ioprogress.ProgressReporter) error {
+func (b *mockBackend) CreateInstanceSnapshot(i instance.Instance, src instance.Instance, snapshotUUID string, progressReporter ioprogress.ProgressReporter) error {
 	return nil
 }
 
@@ -402,7 +402,7 @@ func (b *mockBackend) ImportCustomVolume(projectName string, poolVol *backupConf
 }
 
 // CreateCustomVolumeSnapshot ...
-func (b *mockBackend) CreateCustomVolumeSnapshot(ctx context.Context, projectName string, volName string, newSnapshotName string, newDescription string, newExpiryDate *time.Time, progressReporter ioprogress.ProgressReporter) (*uuid.UUID, error) {
+func (b *mockBackend) CreateCustomVolumeSnapshot(ctx context.Context, projectName string, volName string, newSnapshotName string, newDescription string, newExpiryDate *time.Time, newSnapshotUUID string, progressReporter ioprogress.ProgressReporter) (*uuid.UUID, error) {
 	return nil, nil
 }
 

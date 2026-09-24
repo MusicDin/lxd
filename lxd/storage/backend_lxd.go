@@ -3795,8 +3795,9 @@ func (b *lxdBackend) UnmountInstance(inst instance.Instance, progressReporter io
 	return err
 }
 
-// CreateInstanceSnapshot creates a snapshot of an instance volume.
-func (b *lxdBackend) CreateInstanceSnapshot(inst instance.Instance, src instance.Instance, progressReporter ioprogress.ProgressReporter) error {
+// CreateInstanceSnapshot creates a snapshot of an instance volume. The snapshot volume gets the given UUID, or a new one when it is
+// empty.
+func (b *lxdBackend) CreateInstanceSnapshot(inst instance.Instance, src instance.Instance, snapshotUUID string, progressReporter ioprogress.ProgressReporter) error {
 	l := b.logger.AddContext(logger.Ctx{"project": inst.Project().Name, "instance": inst.Name(), "src": src.Name()})
 	l.Debug("CreateInstanceSnapshot started")
 	defer l.Debug("CreateInstanceSnapshot finished")
@@ -3836,6 +3837,9 @@ func (b *lxdBackend) CreateInstanceSnapshot(inst instance.Instance, src instance
 
 	// Get the volume.
 	vol := b.GetNewVolume(volType, contentType, volStorageName, srcDBVol.Config)
+	if snapshotUUID != "" {
+		vol.Config()["volatile.uuid"] = snapshotUUID
+	}
 
 	// Set the parent volume's UUID.
 	vol.SetParentUUID(parentUUID)
@@ -6457,7 +6461,7 @@ func (b *lxdBackend) ImportCustomVolume(projectName string, poolVol *backupConfi
 // CreateCustomVolumeSnapshot creates a snapshot of a custom volume.
 // A new UUID is generated for the snapshot and returned upon success.
 // The UUID is used to fill "volatile.attached_volumes" for multi-volume snapshot and restore functionality.
-func (b *lxdBackend) CreateCustomVolumeSnapshot(ctx context.Context, projectName string, volName string, newSnapshotName string, newDescription string, newExpiryDate *time.Time, progressReporter ioprogress.ProgressReporter) (*uuid.UUID, error) {
+func (b *lxdBackend) CreateCustomVolumeSnapshot(ctx context.Context, projectName string, volName string, newSnapshotName string, newDescription string, newExpiryDate *time.Time, newSnapshotUUID string, progressReporter ioprogress.ProgressReporter) (*uuid.UUID, error) {
 	l := b.logger.AddContext(logger.Ctx{"project": projectName, "volName": volName, "newSnapshotName": newSnapshotName, "newDescription": newDescription})
 
 	// Avoid logging a nil *time.Time, whose String method panics on a nil receiver.
@@ -6527,6 +6531,9 @@ func (b *lxdBackend) CreateCustomVolumeSnapshot(ctx context.Context, projectName
 	// Get the volume name on storage.
 	volStorageName := project.StorageVolume(projectName, fullSnapshotName)
 	vol := b.GetNewVolume(drivers.VolumeTypeCustom, contentType, volStorageName, parentVol.Config)
+	if newSnapshotUUID != "" {
+		vol.Config()["volatile.uuid"] = newSnapshotUUID
+	}
 
 	// Set the parent volume's UUID.
 	vol.SetParentUUID(parentUUID)

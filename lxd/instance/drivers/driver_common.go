@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1075,8 +1076,10 @@ func (d *common) sharedAttachedVolumes(inst instance.Instance, attachedVolumes m
 // backup.yaml, and reverts on error. The snapshot is marked stateful when
 // stateful is true. When diskVolumesMode is set to [api.DiskVolumesModeAllExclusive],
 // the instance's attached exclusive volumes are included in a crash-consistent
-// snapshot.
-func (d *common) snapshotCommon(ctx context.Context, inst instance.Instance, name string, expiry *time.Time, stateful bool, diskVolumesMode string, progressReporter ioprogress.ProgressReporter) error {
+// snapshot. When bitmapUUID is set, a bitmap named after the snapshot and of
+// that UUID is created on every block volume of the snapshot, and the bitmaps
+// each volume has are copied into the metadata image of its snapshot.
+func (d *common) snapshotCommon(ctx context.Context, inst instance.Instance, name string, expiry *time.Time, stateful bool, diskVolumesMode string, bitmapUUID string, progressReporter ioprogress.ProgressReporter) (err error) {
 	revert := revert.New()
 	defer revert.Fail()
 
@@ -1183,8 +1186,59 @@ func (d *common) snapshotCommon(ctx context.Context, inst instance.Instance, nam
 		}()
 	}
 
+	// Pick the UUIDs of the volume snapshots up front, as the metadata images of the snapshot are named after them.
+	rootSnapshotUUID := uuid.New().String()
+	attachedSnapshotUUIDs := make(map[string]string, len(snapshottableVolumes))
+	for deviceName := range snapshottableVolumes {
+		attachedSnapshotUUIDs[deviceName] = uuid.New().String()
+	}
+
+	// Create the bitmap of the snapshot before the storage snapshots, which then match the instant it was created
+	// at, as the guest writes to the overlays of the block volumes until they are committed afterwards.
+	if bitmapUUID != "" {
+		rootDiskName, _, err := d.getRootDiskDevice()
+		if err != nil {
+			return fmt.Errorf("Failed getting root disk: %w", err)
+		}
+
+		snapshots := map[string]string{rootDiskName: rootSnapshotUUID}
+		maps.Copy(snapshots, attachedSnapshotUUIDs)
+
+		overlayDevices, err := inst.CreateSnapshotBitmaps(snapshots, name, bitmapUUID)
+		if err != nil {
+			return err
+		}
+
+		// After a failed commit the guest writes to the overlay until the next snapshot with a bitmap, stop, start
+		// or detach commits it. The snapshot is kept, and the operation fails with the error that names the disk,
+		// as the volume lacks the guest's writes until then. The config volume snapshot has its copies of the
+		// snapshot metadata images by then.
+		defer func() {
+			commitErr := inst.CommitDiskOverlays(overlayDevices)
+			if commitErr != nil {
+				d.logger.Error("Failed committing disk overlays after snapshot", logger.Ctx{"snapshot": snap.Name(), "err": commitErr})
+				if err == nil {
+					err = commitErr
+				}
+			}
+
+			removeErr := inst.RemoveSnapshotMetadataImages(snapshots)
+			if removeErr != nil {
+				d.logger.Warn("Failed removing snapshot metadata images after snapshot", logger.Ctx{"snapshot": snap.Name(), "err": removeErr})
+			}
+		}()
+
+		// The bitmap has no snapshot to pair with once the snapshot is reverted.
+		revert.Add(func() {
+			err := inst.DeleteBitmap(name)
+			if err != nil {
+				d.logger.Warn("Failed deleting bitmap during revert", logger.Ctx{"bitmap": name, "err": err})
+			}
+		})
+	}
+
 	// Snapshot root disk.
-	err = pool.CreateInstanceSnapshot(snap, inst, progressReporter)
+	err = pool.CreateInstanceSnapshot(snap, inst, rootSnapshotUUID, progressReporter)
 	if err != nil {
 		return fmt.Errorf("Failed creating instance root volume snapshot: %w", err)
 	}
@@ -1227,7 +1281,7 @@ func (d *common) snapshotCommon(ctx context.Context, inst instance.Instance, nam
 			}
 
 			expiry := snap.ExpiryDate() // Attached volume snapshots inherit the expiry date of the instance snapshot.
-			snapshotUUID, err := pool.CreateCustomVolumeSnapshot(ctx, volume.Project, volume.Name, snapshotName, description, &expiry, progressReporter)
+			snapshotUUID, err := pool.CreateCustomVolumeSnapshot(ctx, volume.Project, volume.Name, snapshotName, description, &expiry, attachedSnapshotUUIDs[deviceName], progressReporter)
 			if err != nil {
 				return fmt.Errorf("Failed creating attached volume %q snapshot %q in storage pool %q: %w", volume.Name, snapshotName, volume.Pool, err)
 			}

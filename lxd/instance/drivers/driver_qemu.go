@@ -1617,7 +1617,7 @@ func (d *qemu) start(ctx context.Context, stateful bool, op *operationlock.Insta
 	}
 
 	if snapName != "" && expiry != nil {
-		err := d.snapshot(ctx, snapName, expiry, false, api.DiskVolumesModeRoot, progressReporter)
+		err := d.snapshot(ctx, snapName, expiry, false, api.DiskVolumesModeRoot, "", progressReporter)
 		if err != nil {
 			err = fmt.Errorf("Failed taking startup snapshot: %w", err)
 			op.Done(err)
@@ -5746,8 +5746,9 @@ func (d *qemu) IsPrivileged() bool {
 	return false
 }
 
-// snapshot creates a snapshot of the instance.
-func (d *qemu) snapshot(ctx context.Context, name string, expiry *time.Time, stateful bool, diskVolumesMode string, progressReporter ioprogress.ProgressReporter) error {
+// snapshot creates a snapshot of the instance. When bitmapUUID is set, a bitmap named after the snapshot and of that
+// UUID is created on every block volume of the snapshot.
+func (d *qemu) snapshot(ctx context.Context, name string, expiry *time.Time, stateful bool, diskVolumesMode string, bitmapUUID string, progressReporter ioprogress.ProgressReporter) error {
 	var err error
 	var monitor *qmp.Monitor
 
@@ -5777,7 +5778,7 @@ func (d *qemu) snapshot(ctx context.Context, name string, expiry *time.Time, sta
 	}
 
 	// Create the snapshot.
-	err = d.snapshotCommon(ctx, d, name, expiry, stateful, diskVolumesMode, progressReporter)
+	err = d.snapshotCommon(ctx, d, name, expiry, stateful, diskVolumesMode, bitmapUUID, progressReporter)
 	if err != nil {
 		return err
 	}
@@ -5800,7 +5801,7 @@ func (d *qemu) snapshot(ctx context.Context, name string, expiry *time.Time, sta
 }
 
 // Snapshot takes a new snapshot.
-func (d *qemu) Snapshot(ctx context.Context, name string, expiry *time.Time, stateful bool, diskVolumesMode string, progressReporter ioprogress.ProgressReporter) error {
+func (d *qemu) Snapshot(ctx context.Context, name string, expiry *time.Time, stateful bool, diskVolumesMode string, bitmapUUID string, progressReporter ioprogress.ProgressReporter) error {
 	unlock, err := d.updateBackupFileLock(context.Background())
 	if err != nil {
 		return err
@@ -5808,7 +5809,7 @@ func (d *qemu) Snapshot(ctx context.Context, name string, expiry *time.Time, sta
 
 	defer unlock()
 
-	return d.snapshot(ctx, name, expiry, stateful, diskVolumesMode, progressReporter)
+	return d.snapshot(ctx, name, expiry, stateful, diskVolumesMode, bitmapUUID, progressReporter)
 }
 
 // Restore restores an instance snapshot.

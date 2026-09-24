@@ -530,7 +530,7 @@ func autoCreateInstanceSnapshots(ctx context.Context, s *state.State, instances 
 		}
 
 		// Don't track progress for automated snapshot creation
-		err = inst.Snapshot(ctx, snapshotName, nil, false, api.DiskVolumesModeRoot, nil)
+		err = inst.Snapshot(ctx, snapshotName, nil, false, api.DiskVolumesModeRoot, "", nil)
 		if err != nil {
 			l.Error("Error creating snapshot", logger.Ctx{"snapshot": snapshotName, "err": err})
 			return err

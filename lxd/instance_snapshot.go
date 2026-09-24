@@ -9,11 +9,14 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"github.com/canonical/lxd/lxd/auth"
 	"github.com/canonical/lxd/lxd/db"
 	"github.com/canonical/lxd/lxd/db/cluster"
 	"github.com/canonical/lxd/lxd/db/operationtype"
 	"github.com/canonical/lxd/lxd/instance"
+	"github.com/canonical/lxd/lxd/instance/instancetype"
 	"github.com/canonical/lxd/lxd/operations"
 	"github.com/canonical/lxd/lxd/project/limits"
 	"github.com/canonical/lxd/lxd/request"
@@ -24,6 +27,7 @@ import (
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
 	"github.com/canonical/lxd/shared/entity"
+	"github.com/canonical/lxd/shared/features"
 	"github.com/canonical/lxd/shared/validate"
 	"github.com/canonical/lxd/shared/version"
 )
@@ -334,8 +338,38 @@ func instanceSnapshotsPost(d *Daemon, r *http.Request) response.Response {
 		return response.BadRequest(fmt.Errorf("Invalid snapshot name: %w", err))
 	}
 
+	metadata := map[string]any{
+		api.MetadataEntityURL: api.NewURL().Path(version.APIVersion, "instances", name, "snapshots", req.Name).Project(projectName).String(),
+	}
+
+	// The bitmap is named after the snapshot, and its UUID tells it apart from the bitmap of a later snapshot of
+	// the same name.
+	bitmapUUID := ""
+	if req.Bitmap {
+		if !features.IsEnabled(features.ChangedBlockTracking) {
+			return response.BadRequest(errors.New("A snapshot with a bitmap requires the changed_block_tracking feature preview"))
+		}
+
+		if inst.Type() != instancetype.VM || !inst.IsRunning() {
+			return response.BadRequest(errors.New("A snapshot with a bitmap requires a running virtual machine"))
+		}
+
+		bitmapUUID = uuid.New().String()
+		metadata["bitmap_uuid"] = bitmapUUID
+	}
+
 	snapshot := func(ctx context.Context, op *operations.Operation) error {
-		return inst.Snapshot(ctx, req.Name, req.ExpiresAt, req.Stateful, req.DiskVolumesMode, op)
+		if bitmapUUID != "" {
+			// Adding and committing the disk overlays must not overlap a stop or a start of the instance.
+			unlock, err := storagePools.LockInstanceNBD(s, inst)
+			if err != nil {
+				return err
+			}
+
+			defer unlock()
+		}
+
+		return inst.Snapshot(ctx, req.Name, req.ExpiresAt, req.Stateful, req.DiskVolumesMode, bitmapUUID, op)
 	}
 
 	instanceURL := api.NewURL().Path(version.APIVersion, "instances", name).Project(projectName)
@@ -345,9 +379,7 @@ func instanceSnapshotsPost(d *Daemon, r *http.Request) response.Response {
 		Type:        operationtype.SnapshotCreate,
 		Class:       operationtype.OperationClassTask,
 		RunHook:     snapshot,
-		Metadata: map[string]any{
-			api.MetadataEntityURL: api.NewURL().Path(version.APIVersion, "instances", name, "snapshots", req.Name).Project(projectName).String(),
-		},
+		Metadata:    metadata,
 	}
 
 	op, err := operations.ScheduleUserOperationFromRequest(s, r, args)
