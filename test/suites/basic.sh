@@ -979,7 +979,7 @@ test_duplicate_detection() {
   lxc delete bar
 
   lxc snapshot foo snap0
-  [ "$(! "${_LXC}" snapshot foo snap0 2>&1 1>/dev/null)" = 'Error: Failed creating instance snapshot record "snap0": Snapshot "foo/snap0" already exists' ]
+  [ "$(! "${_LXC}" snapshot foo snap0 2>&1 1>/dev/null)" = 'Error: Snapshot "snap0" already exists' ]
   lxc snapshot foo snap1
   [ "$(! "${_LXC}" rename foo/snap1 foo/snap0 2>&1 1>/dev/null)" = 'Error: Name "foo/snap0" already in use' ]
   lxc delete foo

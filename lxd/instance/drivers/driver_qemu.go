@@ -448,11 +448,18 @@ func (d *qemu) getMonitorEventHandler() func(event string, data map[string]any) 
 
 			// QEMU pauses on a guest initiated shutdown or reset instead of exiting, so that the overlays of its disks
 			// are committed and their bitmaps persisted first. The quit sent afterwards raises a second event, which
-			// ends the process with the target of the first.
+			// ends the process with the target of the first. The stop operation is set up before the quit, so that a
+			// snapshot with a bitmap commits the overlays of the disks first, and the stop hook picks it up.
 			key := project.Instance(instProject.Name, instanceName)
 			guest, _ := data["guest"].(bool)
 			if guest {
-				monitor, err := qmp.Connect(d.monitorPath(), qemuSerialChardevName, d.getMonitorEventHandler())
+				var op *operationlock.InstanceOperation
+				var monitor *qmp.Monitor
+				op, err = d.onStopOperationSetup(target)
+				if err == nil {
+					monitor, err = qmp.Connect(d.monitorPath(), qemuSerialChardevName, d.getMonitorEventHandler())
+				}
+
 				if err == nil {
 					guestShutdownTargets.Store(key, target)
 					err = d.persistAndQuit(monitor)
@@ -467,6 +474,7 @@ func (d *qemu) getMonitorEventHandler() func(event string, data map[string]any) 
 				err = d.forceStop()
 				if err != nil {
 					d.logger.Error("Failed killing the VM process after a guest shutdown", logger.Ctx{"err": err})
+					op.Done(err)
 					return
 				}
 			} else {
@@ -1673,7 +1681,7 @@ func (d *qemu) start(ctx context.Context, stateful bool, op *operationlock.Insta
 	}
 
 	if snapName != "" && expiry != nil {
-		err := d.snapshot(ctx, snapName, expiry, false, api.DiskVolumesModeRoot, progressReporter)
+		err := d.snapshot(ctx, snapName, expiry, false, api.DiskVolumesModeRoot, false, progressReporter)
 		if err != nil {
 			err = fmt.Errorf("Failed taking startup snapshot: %w", err)
 			op.Done(err)
@@ -5857,8 +5865,9 @@ func (d *qemu) IsPrivileged() bool {
 	return false
 }
 
-// snapshot creates a snapshot of the instance.
-func (d *qemu) snapshot(ctx context.Context, name string, expiry *time.Time, stateful bool, diskVolumesMode string, progressReporter ioprogress.ProgressReporter) error {
+// snapshot creates a snapshot of the instance. When bitmap is set, a bitmap named after the snapshot is created on
+// every block volume of the snapshot.
+func (d *qemu) snapshot(ctx context.Context, name string, expiry *time.Time, stateful bool, diskVolumesMode string, bitmap bool, progressReporter ioprogress.ProgressReporter) error {
 	var err error
 	var monitor *qmp.Monitor
 
@@ -5888,7 +5897,7 @@ func (d *qemu) snapshot(ctx context.Context, name string, expiry *time.Time, sta
 	}
 
 	// Create the snapshot.
-	err = d.snapshotCommon(ctx, d, name, expiry, stateful, diskVolumesMode, progressReporter)
+	err = d.snapshotCommon(ctx, d, name, expiry, stateful, diskVolumesMode, bitmap, progressReporter)
 	if err != nil {
 		return err
 	}
@@ -5911,7 +5920,7 @@ func (d *qemu) snapshot(ctx context.Context, name string, expiry *time.Time, sta
 }
 
 // Snapshot takes a new snapshot.
-func (d *qemu) Snapshot(ctx context.Context, name string, expiry *time.Time, stateful bool, diskVolumesMode string, progressReporter ioprogress.ProgressReporter) error {
+func (d *qemu) Snapshot(ctx context.Context, name string, expiry *time.Time, stateful bool, diskVolumesMode string, bitmap bool, progressReporter ioprogress.ProgressReporter) error {
 	unlock, err := d.updateBackupFileLock(context.Background())
 	if err != nil {
 		return err
@@ -5919,7 +5928,18 @@ func (d *qemu) Snapshot(ctx context.Context, name string, expiry *time.Time, sta
 
 	defer unlock()
 
-	return d.snapshot(ctx, name, expiry, stateful, diskVolumesMode, progressReporter)
+	// A snapshot with a bitmap adds overlays to the disks and commits them before it ends. The operation refuses a
+	// stop, a restart and a migration of the instance until then, and a guest shutdown and the stop hook wait for it.
+	if bitmap {
+		op, err := operationlock.Create(d.Project().Name, d.Name(), operationlock.ActionSnapshot, false, false)
+		if err != nil {
+			return err
+		}
+
+		defer op.Done(nil)
+	}
+
+	return d.snapshot(ctx, name, expiry, stateful, diskVolumesMode, bitmap, progressReporter)
 }
 
 // Restore restores an instance snapshot.
