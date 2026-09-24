@@ -1823,6 +1823,73 @@ func (d *qemu) RemoveAllMetadataImages() error {
 	})
 }
 
+// removeDetachedMetadataImages deletes the volume metadata images of the volumes that were attached through the
+// given removed devices and are no longer attached through any device. A device rename removes and adds the device
+// while the volume stays attached, so the image of its volume is kept. On a stopped instance an overlay left on the
+// volume is committed first, as the overlay is deleted with the image.
+func (d *qemu) removeDetachedMetadataImages(removeDevices deviceConfig.Devices) error {
+	disks, err := d.disksSupportingBitmaps()
+	if err != nil {
+		return err
+	}
+
+	attached := make([]string, 0, len(disks))
+	for _, disk := range disks {
+		attached = append(attached, disk.volume.UUID)
+	}
+
+	detached := []bitmapDisk{}
+	for deviceName, devConf := range removeDevices {
+		if !filters.IsCustomVolumeBlockDisk(devConf) {
+			continue
+		}
+
+		volume, err := d.diskVolume(deviceName, devConf, false, make(map[string]storagePools.Pool))
+		if err != nil {
+			return err
+		}
+
+		if volume == nil || slices.Contains(attached, volume.UUID) {
+			continue
+		}
+
+		detached = append(detached, bitmapDisk{deviceName: deviceName, volume: *volume})
+	}
+
+	if len(detached) == 0 {
+		return nil
+	}
+
+	return d.withInstanceMounted(func(mountInfo *storagePools.MountInfo) error {
+		rootDevicePath := ""
+		if mountInfo != nil {
+			devSource, ok := mountInfo.DevSource.(deviceConfig.DevSourcePath)
+			if ok {
+				rootDevicePath = devSource.Path
+			}
+		}
+
+		for _, disk := range detached {
+			overlayPath := d.overlayPath(disk.volume.UUID)
+			if !d.IsRunning() && shared.PathExists(overlayPath) {
+				err := d.commitOverlayFile(disk, overlayPath, rootDevicePath)
+				if err != nil {
+					return err
+				}
+			}
+
+			for _, path := range []string{d.volumeMetadataImagePath(disk.volume.UUID), overlayPath} {
+				err := os.Remove(path)
+				if err != nil && !errors.Is(err, fs.ErrNotExist) {
+					return fmt.Errorf("Failed removing metadata image of disk %q: %w", disk.deviceName, err)
+				}
+			}
+		}
+
+		return nil
+	})
+}
+
 // CreateSnapshotBitmaps creates the bitmap of a snapshot on the volumes attached through the given disk devices and
 // copies every valid bitmap those volumes have into the snapshot metadata images of their snapshots, all in one QEMU
 // transaction. snapshots maps each disk device to the UUID of the volume snapshot about to be created. The snapshot
