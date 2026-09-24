@@ -1537,6 +1537,15 @@ func (d *disk) applyQuota(remount bool) error {
 		return err
 	}
 
+	// The bitmaps of the root disk and its metadata image have the size the disk had, and a bitmap is only merged
+	// between block nodes of one size.
+	if d.inst.Type() == instancetype.VM {
+		err = d.inst.DeleteVolumeBitmaps(rootDisk)
+		if err != nil {
+			return fmt.Errorf("Failed deleting bitmaps: %w", err)
+		}
+	}
+
 	return nil
 }
 

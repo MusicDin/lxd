@@ -5889,7 +5889,28 @@ func (d *qemu) Rename(ctx context.Context, newName string, applyTemplateTrigger 
 	}
 
 	if d.IsSnapshot() {
+		parentName, _, _ := api.GetParentAndSnapshotName(oldName)
 		_, newSnapName, _ := api.GetParentAndSnapshotName(newName)
+
+		// The bitmaps of the parent are named after its snapshots, so a rename severs the link between a bitmap and
+		// its snapshot. The bitmaps are deleted rather than renamed, as a backup tool references them by name.
+		parent, err := instance.LoadByProjectAndName(d.state, d.project.Name, parentName)
+		if err != nil {
+			return fmt.Errorf("Failed loading parent instance: %w", err)
+		}
+
+		unlock, err := storagePools.LockInstanceNBD(d.state, parent)
+		if err != nil {
+			return err
+		}
+
+		defer unlock()
+
+		err = parent.DeleteBitmaps()
+		if err != nil {
+			return fmt.Errorf("Failed deleting bitmaps: %w", err)
+		}
+
 		err = pool.RenameInstanceSnapshot(d, newSnapName, nil)
 		if err != nil {
 			return fmt.Errorf("Rename instance snapshot: %w", err)
@@ -6278,6 +6299,22 @@ func (d *qemu) Update(ctx context.Context, args db.InstanceArgs, actionType inst
 	}
 
 	isRunning := d.IsRunning()
+
+	// The bitmaps of a detached volume are not kept, as the volume can be written elsewhere before it is attached
+	// again. On a running instance the bitmaps are on the block node, which the detach removes with them, so only
+	// the metadata image of a stopped instance is deleted here.
+	if !isRunning {
+		for deviceName, devConf := range removeDevices {
+			if !filters.IsCustomVolumeBlockDisk(devConf) {
+				continue
+			}
+
+			err = d.deleteDiskBitmaps(deviceName, devConf)
+			if err != nil {
+				return fmt.Errorf("Failed deleting bitmaps of disk %q: %w", deviceName, err)
+			}
+		}
+	}
 
 	// Use the device interface to apply update changes.
 	devlxdEvents, err := d.devicesUpdate(d, removeDevices, addDevices, updateDevices, oldExpandedDevices, isRunning, userRequested)
@@ -8112,6 +8149,15 @@ func (d *qemu) MigrateReceive(ctx context.Context, args instance.MigrateReceiveA
 			if err != nil {
 				return err
 			}
+		}
+
+		// The config volume arrives with the metadata images of the source, whose bitmaps record neither the writes
+		// to the volumes at this location nor their snapshots. A move on a remote pool transfers no data and gets
+		// the same result. A live migration removes them after the start, so that a failed start leaves the images
+		// of a remote pool to the source.
+		err = d.RemoveAllMetadataImages()
+		if err != nil {
+			return fmt.Errorf("Failed removing metadata images: %w", err)
 		}
 
 		for _, op := range snapOps {

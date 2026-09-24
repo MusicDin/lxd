@@ -865,6 +865,12 @@ func (d *qemu) DeleteVolumeBitmaps(deviceName string) error {
 		return fmt.Errorf("Disk device %q not found", deviceName)
 	}
 
+	return d.deleteDiskBitmaps(deviceName, devConf)
+}
+
+// deleteDiskBitmaps deletes every bitmap of the volume attached through the disk device of the given config, which
+// is not required to be in the current devices of the instance.
+func (d *qemu) deleteDiskBitmaps(deviceName string, devConf map[string]string) error {
 	rootDiskName, _, err := d.getRootDiskDevice()
 	if err != nil {
 		return fmt.Errorf("Failed getting root disk: %w", err)
