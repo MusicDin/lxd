@@ -6782,6 +6782,11 @@ func (b *lxdBackend) RenameCustomVolumeSnapshot(ctx context.Context, projectName
 		return err
 	}
 
+	err = NBDExportInUse(b.name, drivers.VolumeTypeCustom, projectName, volName)
+	if err != nil {
+		return err
+	}
+
 	revert := revert.New()
 	defer revert.Fail()
 
@@ -6900,6 +6905,11 @@ func (b *lxdBackend) DeleteCustomVolumeSnapshot(ctx context.Context, projectName
 
 	// Delete the snapshot from the storage device.
 	// Must come before DB VolumeDBDelete so that the volume ID is still available.
+	err = NBDExportInUse(b.name, drivers.VolumeTypeCustom, projectName, volName)
+	if err != nil {
+		return err
+	}
+
 	// The bitmaps created with this volume snapshot have no snapshot to belong to once it is deleted.
 	err = b.deleteAttachedVolumeSnapshotBitmaps(instanceDevices, volume.Config["volatile.uuid"])
 	if err != nil {
