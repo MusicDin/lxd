@@ -2505,6 +2505,68 @@ definitions:
         title: InstanceBackupsPost represents the fields available for a new LXD instance backup.
         type: object
         x-go-package: github.com/canonical/lxd/shared/api
+    InstanceBitmap:
+        description: InstanceBitmap represents a dirty bitmap of the block volumes of an instance
+        properties:
+            name:
+                description: Name of the snapshot the bitmap was created with
+                example: snap0
+                type: string
+                x-go-name: Name
+            uuid:
+                description: UUID generated when the bitmap was created, shared by every volume of the snapshot
+                example: 3d4b4c2c-8a3d-4b4a-9f8e-1c2d3e4f5a6b
+                type: string
+                x-go-name: UUID
+            volumes:
+                description: Volumes the bitmap exists on
+                items:
+                    $ref: '#/definitions/InstanceBitmapVolume'
+                type: array
+                x-go-name: Volumes
+        type: object
+        x-go-package: github.com/canonical/lxd/shared/api
+    InstanceBitmapVolume:
+        description: InstanceBitmapVolume represents one volume a bitmap of an instance exists on
+        properties:
+            device:
+                description: Name of the disk device the volume was attached with when the snapshot was taken
+                example: root
+                type: string
+                x-go-name: Device
+            granularity:
+                description: Size in bytes of the block represented by one bit of the bitmap
+                example: 65536
+                format: int64
+                type: integer
+                x-go-name: Granularity
+            name:
+                description: Name of the volume
+                example: v1
+                type: string
+                x-go-name: Name
+            pool:
+                description: Storage pool of the volume
+                example: default
+                type: string
+                x-go-name: Pool
+            recording:
+                description: Whether the bitmap records writes
+                example: true
+                type: boolean
+                x-go-name: Recording
+            type:
+                description: Type of the volume
+                example: virtual-machine
+                type: string
+                x-go-name: Type
+            uuid:
+                description: UUID of the volume, which does not change on a rename
+                example: 891bd2a3-7d4e-4c5a-9b1f-0e2d3c4b5a6f
+                type: string
+                x-go-name: UUID
+        type: object
+        x-go-package: github.com/canonical/lxd/shared/api
     InstanceConsolePost:
         properties:
             height:
@@ -3079,6 +3141,14 @@ definitions:
         x-go-package: github.com/canonical/lxd/shared/api
     InstanceSnapshotsPost:
         properties:
+            bitmap:
+                description: |-
+                    Whether to create a dirty bitmap named after the snapshot on every block volume of the snapshot
+
+                    API extension: storage_volume_block_tracking
+                example: true
+                type: boolean
+                x-go-name: Bitmap
             disk_volumes_mode:
                 description: |-
                     Which disk volumes to include in instance snapshot. Possible values are "root" or "all-exclusive".
@@ -8270,6 +8340,16 @@ definitions:
         title: StorageVolume represents the fields of a LXD storage volume.
         type: object
         x-go-package: github.com/canonical/lxd/shared/api
+    StorageVolumeNBDPost:
+        description: StorageVolumeNBDPost represents the fields available for an NBD export of a volume
+        properties:
+            writable:
+                description: Whether the volume is exported read-write, for a restore, instead of read-only
+                example: true
+                type: boolean
+                x-go-name: Writable
+        type: object
+        x-go-package: github.com/canonical/lxd/shared/api
     StorageVolumePost:
         description: StorageVolumePost represents the fields required to rename a LXD storage pool volume
         properties:
@@ -13397,6 +13477,164 @@ paths:
             summary: Get the backups
             tags:
                 - instances
+    /1.0/instances/{name}/bitmaps:
+        get:
+            description: Returns a list of bitmaps of the instance (URLs).
+            operationId: instance_bitmaps_get
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of endpoints
+                                example: |-
+                                    [
+                                      "/1.0/instances/foo/bitmaps/snap0",
+                                      "/1.0/instances/foo/bitmaps/snap1"
+                                    ]
+                                items:
+                                    type: string
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the bitmaps
+            tags:
+                - instances
+    /1.0/instances/{name}/bitmaps/{bitmapName}:
+        delete:
+            description: Deletes the bitmap from every volume of the instance. The snapshots of the instance keep their copies.
+            operationId: instance_bitmap_delete
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "404":
+                    $ref: '#/responses/NotFound'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Delete the bitmap
+            tags:
+                - instances
+        get:
+            description: Gets a specific bitmap of the instance.
+            operationId: instance_bitmap_get
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: Bitmap
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                $ref: '#/definitions/InstanceBitmap'
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "404":
+                    $ref: '#/responses/NotFound'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the bitmap
+            tags:
+                - instances
+    /1.0/instances/{name}/bitmaps?recursion=1:
+        get:
+            description: Returns a list of bitmaps of the instance (structs), grouped by name with one entry per volume.
+            operationId: instance_bitmaps_get_recursion1
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of bitmaps
+                                items:
+                                    $ref: '#/definitions/InstanceBitmap'
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the bitmaps
+            tags:
+                - instances
     /1.0/instances/{name}/console:
         delete:
             description: Clears the console log buffer.
@@ -14387,6 +14625,179 @@ paths:
                 "500":
                     $ref: '#/responses/InternalServerError'
             summary: Update snapshot
+            tags:
+                - instances
+    /1.0/instances/{name}/snapshots/{snapshotName}/bitmaps:
+        get:
+            description: Returns a list of bitmaps of the instance snapshot (URLs).
+            operationId: instance_snapshot_bitmaps_get
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of endpoints
+                                example: |-
+                                    [
+                                      "/1.0/instances/foo/snapshots/snap1/bitmaps/snap0"
+                                    ]
+                                items:
+                                    type: string
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the bitmaps
+            tags:
+                - instances
+    /1.0/instances/{name}/snapshots/{snapshotName}/bitmaps/{bitmapName}:
+        get:
+            description: Gets a specific bitmap of the instance snapshot.
+            operationId: instance_snapshot_bitmap_get
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: Bitmap
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                $ref: '#/definitions/InstanceBitmap'
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "404":
+                    $ref: '#/responses/NotFound'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the bitmap
+            tags:
+                - instances
+    /1.0/instances/{name}/snapshots/{snapshotName}/bitmaps?recursion=1:
+        get:
+            description: Returns a list of bitmaps of the instance snapshot (structs), grouped by name with one entry per volume.
+            operationId: instance_snapshot_bitmaps_get_recursion1
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of bitmaps
+                                items:
+                                    $ref: '#/definitions/InstanceBitmap'
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the bitmaps
+            tags:
+                - instances
+    /1.0/instances/{name}/snapshots/{snapshotName}/nbd:
+        get:
+            description: |-
+                Upgrades the request to a read-only NBD connection exporting the block volume snapshots of the instance
+                snapshot, each under an export named after its disk device together with the bitmaps of the snapshot.
+                The instance must be a virtual machine and the snapshot must have been created with a bitmap.
+                The export runs as an operation on the cluster member serving it, which is listed and cancelled through
+                the operations API. Cancelling the operation closes the connection.
+            operationId: instance_snapshot_nbd_get
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+                - description: Comma separated names of the disk devices whose volume snapshots are exported, all of them when empty
+                  example: root,data
+                  in: query
+                  name: devices
+                  type: string
+            produces:
+                - application/json
+                - application/octet-stream
+            responses:
+                "101":
+                    description: Switching protocols to NBD
+                    headers:
+                        Location:
+                            description: URL of the operation representing the export, set when the responding cluster member serves it
+                            type: string
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "404":
+                    $ref: '#/responses/NotFound'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the instance snapshot NBD connection
             tags:
                 - instances
     /1.0/instances/{name}/snapshots?recursion=1:
@@ -20136,6 +20547,55 @@ paths:
                 "500":
                     $ref: '#/responses/InternalServerError'
             summary: Get the storage volume backups
+            tags:
+                - storage
+    /1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}/nbd:
+        post:
+            consumes:
+                - application/json
+            description: |-
+                Upgrades the request to an NBD connection of the storage volume's block device, read-write when the request
+                sets writable, for restoring a backup. The volume must be of type virtual-machine or custom, and the virtual
+                machine whose root volume it is or that it is attached to must be stopped. A read-write export deletes the
+                bitmaps of the volume.
+                The export runs as an operation on the cluster member serving it, which is listed and cancelled through
+                the operations API. Cancelling the operation closes the connection.
+            operationId: storage_pool_volumes_type_nbd_post
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+                - description: Cluster member name
+                  example: lxd01
+                  in: query
+                  name: target
+                  type: string
+                - description: NBD export
+                  in: body
+                  name: nbd
+                  schema:
+                    $ref: '#/definitions/StorageVolumeNBDPost'
+            produces:
+                - application/json
+                - application/octet-stream
+            responses:
+                "101":
+                    description: Switching protocols to NBD
+                    headers:
+                        Location:
+                            description: URL of the operation representing the export, set when the responding cluster member serves it
+                            type: string
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "404":
+                    $ref: '#/responses/NotFound'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Export the storage volume over NBD
             tags:
                 - storage
     /1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}/snapshots:
