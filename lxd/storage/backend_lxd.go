@@ -3255,6 +3255,11 @@ func (b *lxdBackend) UpdateInstance(ctx context.Context, inst instance.Instance,
 				return err
 			}
 
+			err = inst.CommitDiskOverlays([]string{rootDiskName})
+			if err != nil {
+				return err
+			}
+
 			err = inst.DeleteVolumeBitmaps(rootDiskName)
 			if err != nil {
 				return fmt.Errorf("Failed deleting bitmaps: %w", err)
@@ -6004,6 +6009,11 @@ func (b *lxdBackend) UpdateCustomVolume(ctx context.Context, projectName string,
 
 				// The bitmaps record the writes of the attached virtual machine only, and another instance can now
 				// write to the volume. An overlay left on the disk is committed before the image is deleted with it.
+				err = b.commitAttachedVolumeDiskOverlays(instanceDevices)
+				if err != nil {
+					return err
+				}
+
 				err = b.deleteAttachedVolumeBitmaps(instanceDevices, "enable security.shared")
 				if err != nil {
 					return err
@@ -6015,6 +6025,11 @@ func (b *lxdBackend) UpdateCustomVolume(ctx context.Context, projectName string,
 		// and created again at the new size by the next start. An overlay left on the disk is committed first.
 		_, sizeChanged := changedConfig["size"]
 		if sizeChanged && curVol.ContentType == cluster.StoragePoolVolumeContentTypeNameBlock {
+			err = b.commitAttachedVolumeDiskOverlays(instanceDevices)
+			if err != nil {
+				return err
+			}
+
 			err = b.deleteAttachedVolumeBitmaps(instanceDevices, "resize the volume")
 			if err != nil {
 				return err
@@ -6073,6 +6088,23 @@ func (b *lxdBackend) UpdateCustomVolume(ctx context.Context, projectName string,
 	b.state.Events.SendLifecycle(projectName, lifecycle.StorageVolumeUpdated.Event(ctx, newVol, string(newVol.Type()), projectName, nil))
 
 	revert.Success()
+	return nil
+}
+
+// commitAttachedVolumeDiskOverlays commits the overlays that a failed commit left on the disks a custom volume is
+// attached through, before the volume metadata image of the volume is deleted together with its overlay.
+func (b *lxdBackend) commitAttachedVolumeDiskOverlays(instanceDevices map[instance.Instance][]string) error {
+	for inst, deviceNames := range instanceDevices {
+		if inst.Type() != instancetype.VM || inst.Location() != b.state.ServerName {
+			continue
+		}
+
+		err := inst.CommitDiskOverlays(deviceNames)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

@@ -1211,6 +1211,15 @@ func (d *common) snapshotCommon(ctx context.Context, inst instance.Instance, nam
 		attachedSnapshotUUIDs[deviceName] = uuid.New().String()
 	}
 
+	// The storage snapshots read the volumes, which lack the guest's writes while an overlay is left uncommitted.
+	// CreateSnapshotBitmaps commits the overlays of the disks it handles.
+	if !bitmap {
+		err = storagePools.CommitInstanceDiskOverlays(inst)
+		if err != nil {
+			return err
+		}
+	}
+
 	// Create the bitmap of the snapshot before the storage snapshots, which then match the instant it was created
 	// at, as the guest writes to the overlays of the block volumes until they are committed afterwards.
 	if bitmap {
