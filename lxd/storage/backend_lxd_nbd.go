@@ -68,18 +68,27 @@ func (b *lxdBackend) nbdVolumeLockMember() string {
 }
 
 // nbdExportRefName returns the name of the reference counter of the snapshot NBD exports served by this member for
-// an instance. volName is a snapshot, or the instance itself for the exports of all its snapshots.
-func nbdExportRefName(poolName string, projectName string, volName string) string {
-	return drivers.OperationLockName("NBDExport", poolName, drivers.VolumeTypeVM, drivers.ContentTypeBlock, project.StorageVolume(projectName, volName))
+// a volume. volName is a snapshot, or the volume itself for the exports of all its snapshots.
+func nbdExportRefName(poolName string, volType drivers.VolumeType, projectName string, volName string) string {
+	return drivers.OperationLockName("NBDExport", poolName, volType, drivers.ContentTypeBlock, project.StorageVolume(projectName, volName))
 }
 
-// nbdExportCount counts an NBD export of the named instance snapshot until the returned function runs. Every client
-// opens its own export of a snapshot, so the exports are counted where an import session takes a lock.
-func nbdExportCount(poolName string, projectName string, snapshotName string) func() {
-	parentName, _, _ := api.GetParentAndSnapshotName(snapshotName)
-	refNames := []string{
-		nbdExportRefName(poolName, projectName, snapshotName),
-		nbdExportRefName(poolName, projectName, parentName),
+// nbdExportRef identifies a volume snapshot that an NBD export serves.
+type nbdExportRef struct {
+	poolName     string
+	volType      drivers.VolumeType
+	projectName  string
+	snapshotName string
+}
+
+// nbdExportCount counts an NBD export of the given volume snapshots, and of their volumes, until the returned
+// function runs. Every client opens its own export of a snapshot, so the exports are counted where an import
+// session takes a lock.
+func nbdExportCount(refs []nbdExportRef) func() {
+	refNames := make([]string, 0, len(refs)*2)
+	for _, ref := range refs {
+		parentName, _, _ := api.GetParentAndSnapshotName(ref.snapshotName)
+		refNames = append(refNames, nbdExportRefName(ref.poolName, ref.volType, ref.projectName, ref.snapshotName), nbdExportRefName(ref.poolName, ref.volType, ref.projectName, parentName))
 	}
 
 	for _, refName := range refNames {
@@ -93,11 +102,11 @@ func nbdExportCount(poolName string, projectName string, snapshotName string) fu
 	}
 }
 
-// NBDExportInUse returns an in use error while this member serves an NBD export of the named instance snapshot.
-// Given an instance, it returns the error while an export of any of its snapshots is served. An export has the
-// volume snapshots and the config volume snapshot of the instance snapshot mounted.
-func NBDExportInUse(poolName string, projectName string, volName string) error {
-	if refcount.Get(nbdExportRefName(poolName, projectName, volName)) == 0 {
+// NBDExportInUse returns an in use error while this member serves an NBD export of the named volume snapshot. Given
+// a volume, it returns the error while an export of any of its snapshots is served. An export has the volume
+// snapshots and the config volume snapshot of the instance snapshot mounted.
+func NBDExportInUse(poolName string, volType drivers.VolumeType, projectName string, volName string) error {
+	if refcount.Get(nbdExportRefName(poolName, volType, projectName, volName)) == 0 {
 		return nil
 	}
 
@@ -563,11 +572,7 @@ func (b *lxdBackend) GetInstanceSnapshotNBD(snapInst instance.Instance, deviceNa
 	defer revert.Fail()
 
 	cleanups := []func(){}
-
-	// A snapshot cannot be deleted or renamed while it is exported.
-	uncount := nbdExportCount(b.name, snapInst.Project().Name, snapInst.Name())
-	revert.Add(uncount)
-	cleanups = append(cleanups, uncount)
+	refs := []nbdExportRef{{poolName: b.name, volType: drivers.VolumeTypeVM, projectName: snapInst.Project().Name, snapshotName: snapInst.Name()}}
 
 	// The metadata images are on the config volume snapshot, which is mounted with the root volume snapshot.
 	mountInfo, err := b.MountInstanceSnapshot(snapInst, nil)
@@ -662,11 +667,17 @@ func (b *lxdBackend) GetInstanceSnapshotNBD(snapInst instance.Instance, deviceNa
 		}
 
 		exports = append(exports, nbdExport{name: deviceName, devPath: devPath, metadataImagePath: image.Path})
+		refs = append(refs, nbdExportRef{poolName: dbSnapVol.Pool, volType: drivers.VolumeTypeCustom, projectName: effectiveProject, snapshotName: dbSnapVol.Name})
 	}
 
 	if len(exports) == 0 {
 		return nil, nil, "", api.StatusErrorf(http.StatusBadRequest, "Snapshot has no volume snapshot to export")
 	}
+
+	// The exported snapshots cannot be deleted or renamed while they are exported.
+	uncount := nbdExportCount(refs)
+	revert.Add(uncount)
+	cleanups = append(cleanups, uncount)
 
 	socketPath := nbdSocketPath(project.Instance(snapInst.Project().Name, snapInst.Name()) + "_" + uuid.New().String())
 	conn, disconnect, err := b.serveSnapshotNBD(socketPath, exports)
