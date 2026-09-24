@@ -95,7 +95,7 @@ type Pool interface {
 	UnmountInstance(inst instance.Instance, progressReporter ioprogress.ProgressReporter) error
 
 	// Instance snapshots.
-	CreateInstanceSnapshot(inst instance.Instance, src instance.Instance, progressReporter ioprogress.ProgressReporter) error
+	CreateInstanceSnapshot(inst instance.Instance, src instance.Instance, snapshotUUID string, progressReporter ioprogress.ProgressReporter) error
 	RenameInstanceSnapshot(inst instance.Instance, newName string, progressReporter ioprogress.ProgressReporter) error
 	DeleteInstanceSnapshot(inst instance.Instance, progressReporter ioprogress.ProgressReporter) error
 	RestoreInstanceSnapshot(ctx context.Context, inst instance.Instance, src instance.Instance, progressReporter ioprogress.ProgressReporter) error
@@ -134,7 +134,7 @@ type Pool interface {
 	CreateCustomVolumeFromTarball(ctx context.Context, projectName string, volName string, srcData *os.File, progressReporter ioprogress.ProgressReporter) error
 
 	// Custom volume snapshots.
-	CreateCustomVolumeSnapshot(ctx context.Context, projectName string, volName string, newSnapshotName string, newDescription string, newExpiryDate *time.Time, progressReporter ioprogress.ProgressReporter) (*uuid.UUID, error)
+	CreateCustomVolumeSnapshot(ctx context.Context, projectName string, volName string, newSnapshotName string, newDescription string, newExpiryDate *time.Time, newSnapshotUUID string, progressReporter ioprogress.ProgressReporter) (*uuid.UUID, error)
 	RenameCustomVolumeSnapshot(ctx context.Context, projectName string, volName string, newSnapshotName string, progressReporter ioprogress.ProgressReporter) error
 	DeleteCustomVolumeSnapshot(ctx context.Context, projectName string, volName string, progressReporter ioprogress.ProgressReporter) error
 	UpdateCustomVolumeSnapshot(ctx context.Context, projectName string, volName string, newDesc string, newConfig map[string]string, newExpiryDate time.Time, progressReporter ioprogress.ProgressReporter) error
