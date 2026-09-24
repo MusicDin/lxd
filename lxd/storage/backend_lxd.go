@@ -3796,8 +3796,9 @@ func (b *lxdBackend) UnmountInstance(inst instance.Instance, progressReporter io
 	return err
 }
 
-// CreateInstanceSnapshot creates a snapshot of an instance volume.
-func (b *lxdBackend) CreateInstanceSnapshot(inst instance.Instance, src instance.Instance, progressReporter ioprogress.ProgressReporter) error {
+// CreateInstanceSnapshot creates a snapshot of an instance volume. The snapshot volume gets the given UUID, or a new one when it is
+// empty.
+func (b *lxdBackend) CreateInstanceSnapshot(inst instance.Instance, src instance.Instance, snapshotUUID string, progressReporter ioprogress.ProgressReporter) error {
 	l := b.logger.AddContext(logger.Ctx{"project": inst.Project().Name, "instance": inst.Name(), "src": src.Name()})
 	l.Debug("CreateInstanceSnapshot started")
 	defer l.Debug("CreateInstanceSnapshot finished")
@@ -3837,6 +3838,9 @@ func (b *lxdBackend) CreateInstanceSnapshot(inst instance.Instance, src instance
 
 	// Get the volume.
 	vol := b.GetNewVolume(volType, contentType, volStorageName, srcDBVol.Config)
+	if snapshotUUID != "" {
+		vol.Config()["volatile.uuid"] = snapshotUUID
+	}
 
 	// Set the parent volume's UUID.
 	vol.SetParentUUID(parentUUID)
