@@ -6,8 +6,11 @@ LXD implements it with QEMU dirty bitmaps that are created with an instance snap
 Each later snapshot with a bitmap gets a copy of every bitmap the volume has, and LXD serves the snapshot to an NBD client through the LXD API together with those copies.
 
 A bitmap is kept across a stop, a reboot and a forced stop of the virtual machine.
-It is deleted when the QEMU process exits without LXD stopping it, for example on a crash or a host power loss, and when a volume is written by something other than the running virtual machine, for example a restore or a read-write NBD export.
+It is deleted when its snapshot is deleted or renamed, when the QEMU process exits without writing it, for example on a crash or a host power loss, and when a volume is written by something other than the running virtual machine, for example a restore or a read-write NBD export.
 After that the next backup must be a full one.
+
+From the first start after the feature preview is enabled, every block disk of a virtual machine is opened through a small qcow2 image on its config volume, which stores the bitmaps of the volume.
+A virtual machine that was running when the preview was enabled gets its images at its next start, and a snapshot with a bitmap is rejected until then.
 
 ## Requirements
 
@@ -16,7 +19,7 @@ After that the next backup must be a full one.
 - A running virtual machine to create a bitmap. The bitmap is created on the root volume and, with `--disk-volumes all-exclusive`, on every attached `custom` volume of {ref}`content type <storage-content-types>` `block`.
 - A volume with `security.shared` enabled does not get a bitmap, because several virtual machines can write to it at once and a bitmap records the writes of one virtual machine only.
 - To write a volume over NBD, the virtual machine whose root volume it is or that it is attached to must be {ref}`stopped <instances-manage-stop>`.
-- The `can_manage_snapshots` entitlement to take a snapshot with a bitmap and to delete a bitmap, `can_view` to list bitmaps, and `can_connect_nbd` on the instance or the storage volume to read a snapshot or write a volume over NBD (see {ref}`permissions-reference`).
+- The `can_manage_snapshots` entitlement to take a snapshot with a bitmap, `can_view` to list bitmaps, and `can_connect_nbd` on the instance or the storage volume to read a snapshot or write a volume over NBD (see {ref}`permissions-reference`).
 - An NBD client on the machine that runs the LXD client, for example `nbdinfo` and `nbdcopy` from `libnbd`, or `qemu-img`.
 
 (storage-block-tracking-bitmaps)=
@@ -40,27 +43,25 @@ Set the `bitmap` field of the snapshot request:
     lxc query --request POST /1.0/instances/<instance_name>/snapshots --data '{"name": "<snapshot_name>", "bitmap": true}'
 
 Set `disk_volumes_mode` to `all-exclusive` to cover the attached block volumes.
-The metadata of the operation carries the UUID of the new bitmap in its `bitmap_uuid` field.
 
 See [`POST /1.0/instances/{name}/snapshots`](swagger:/instances/instance_snapshots_post) for more information.
 ````
 `````
 
-The request is rejected when the instance is not a running virtual machine or when a volume already has a bitmap of that name.
+The request is rejected when the instance is not a running virtual machine or when a snapshot of that name exists.
 
-Every bitmap has a UUID next to its name, which is generated when the bitmap is created.
-A snapshot of the same name that is created later, after the earlier snapshot was renamed or deleted, gets a bitmap of another UUID.
-A backup tool records the UUID with the name, so that it never reads changes recorded by a bitmap other than the one it stored.
+Every bitmap has a UUID next to its name, the UUID of the snapshot it was created with, which is the `volatile.uuid` of the root volume snapshot.
+A snapshot of the same name that is created later, after the earlier snapshot was renamed or deleted, has another UUID.
+A backup tool records the UUID with the name and passes it to the export of the next snapshot, so that it never reads changes recorded by a bitmap other than the one it stored.
 
 ## Manage bitmaps
 
 `````{tabs}
 ````{group-tab} CLI
-Use the following commands to list, show and delete the bitmaps of a virtual machine:
+Use the following commands to list and show the bitmaps of a virtual machine:
 
     lxc bitmap list <instance_name>
     lxc bitmap show <instance_name> <bitmap_name>
-    lxc bitmap delete <instance_name> <bitmap_name>
 
 The list prints one row per bitmap and volume, with the name and the UUID of the bitmap, the disk device, the pool, the type and the name of the volume, the granularity in bytes (the size of the block that one bit covers) and whether the bitmap is recording writes.
 
@@ -69,15 +70,15 @@ Use the following commands to list and show the copies that an instance snapshot
     lxc bitmap list <instance_name>/<snapshot_name>
     lxc bitmap show <instance_name>/<snapshot_name> <bitmap_name>
 
-The copies of a snapshot are not recording, and they cannot be deleted, as a snapshot is never modified.
-Deleting a bitmap removes it from every volume of the virtual machine, and the snapshots keep their copies.
+The copies of a snapshot are not recording, and a snapshot is never modified.
+Deleting a snapshot removes the bitmap of its name from every volume of the virtual machine, and renaming a snapshot removes the bitmaps of its old and new names.
+The snapshots keep their copies.
 ````
 ````{group-tab} API
-Send the following requests to list, show and delete the bitmaps of a virtual machine:
+Send the following requests to list and show the bitmaps of a virtual machine:
 
     lxc query --request GET /1.0/instances/<instance_name>/bitmaps?recursion=1
     lxc query --request GET /1.0/instances/<instance_name>/bitmaps/<bitmap_name>
-    lxc query --request DELETE /1.0/instances/<instance_name>/bitmaps/<bitmap_name>
 
 Send the following requests to list and show the copies that an instance snapshot keeps:
 
@@ -93,8 +94,9 @@ See [`GET /1.0/instances/{name}/bitmaps`](swagger:/instances/instance_bitmaps_ge
 (storage-block-tracking-read)=
 ## Read a snapshot
 
-An instance snapshot that was created with a bitmap is served read-only over NBD together with its copies of the bitmaps, which the export publishes as metadata contexts next to `base:allocation`.
-Each copy is published twice, as `qemu:dirty-bitmap:<bitmap_name>` and as `qemu:dirty-bitmap:<bitmap_uuid>/<bitmap_name>`, so that a backup tool selects it by the name alone or by the UUID it recorded.
+An instance snapshot that was created with a bitmap is served read-only over NBD together with its copies of the bitmaps, which the export publishes as `qemu:dirty-bitmap:<bitmap_name>` metadata contexts next to `base:allocation`.
+The export can be limited to the copy created with one snapshot, given by its UUID.
+No copy is published when no snapshot has that UUID, for example because the snapshot was deleted and created again under the same name, and the backup tool then takes a full backup.
 The virtual machine keeps running and is not affected by the export.
 
 `````{tabs}
@@ -123,6 +125,7 @@ To copy the whole root volume snapshot to a file, use the following command:
     nbdcopy --connections=1 nbd://127.0.0.1:41337/root <file_path>
 
 Add the `--devices` flag with a comma separated list of disk device names to serve a subset of the volumes.
+Add the `--previous-snapshot-uuid` flag with the UUID of the previous snapshot to serve only the copy of the bitmap created with it.
 ````
 ````{group-tab} API
 Send a GET request with the `Upgrade: nbd` header to the NBD endpoint of the instance snapshot:
@@ -131,7 +134,8 @@ Send a GET request with the `Upgrade: nbd` header to the NBD endpoint of the ins
 
 LXD answers with `101 Switching Protocols`, after which the client sends NBD commands over the connection.
 Each volume snapshot is a separate NBD export named after its disk device, which the client selects during the NBD handshake.
-The `devices` query parameter, a comma separated list of disk device names, selects a subset of the volumes.
+The `device` query parameter, repeated once per disk device, selects a subset of the volumes.
+The `previous_snapshot_uuid` query parameter limits the published copies to the one created with the snapshot of that UUID.
 
 See [`GET /1.0/instances/{name}/snapshots/{snapshotName}/nbd`](swagger:/instances/instance_snapshot_nbd_get) for more information.
 ````
@@ -139,8 +143,8 @@ See [`GET /1.0/instances/{name}/snapshots/{snapshotName}/nbd`](swagger:/instance
 
 To take incremental backups, take every snapshot with a bitmap.
 The first snapshot is copied in full, as it has no copy of an earlier bitmap.
-For every later snapshot, read the map of the bitmap created with the previous snapshot from the new snapshot's export, copy the blocks it marks, and delete that bitmap from the virtual machine once the backup is stored.
-The previous snapshot can be deleted at any time, as the new snapshot keeps its own copy of the bitmap.
+For every later snapshot, read the map of the bitmap created with the previous snapshot from the new snapshot's export, with the UUID of the previous snapshot, copy the blocks it marks, and delete the previous snapshot once the backup is stored.
+Deleting the previous snapshot removes its bitmap from the virtual machine, and the new snapshot keeps its own copy of the bitmap.
 
 (storage-block-tracking-restore)=
 ## Write a volume while the virtual machine is stopped
@@ -164,11 +168,11 @@ Then write the backup into the export from a second terminal, with either of the
     qemu-img convert -n -f raw -O raw <file_path> nbd://127.0.0.1:41337
     nbdcopy <file_path> nbd://127.0.0.1:41337
 
-Without `--writable` the volume is served read-only.
+The command requires `--writable`, as a confirmation that the volume is overwritten.
 Start the virtual machine once the client has disconnected.
 ````
 ````{group-tab} API
-Send a POST request with the `Upgrade: nbd` header to the NBD endpoint of the volume, with `writable` set in the body:
+Send a POST request with the `Upgrade: nbd` header to the NBD endpoint of the volume:
 
     POST /1.0/storage-pools/<pool_name>/volumes/<volume_type>/<volume_name>/nbd
 
@@ -178,7 +182,7 @@ See [`POST /1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}/nbd`](swagg
 ````
 `````
 
-The bitmaps of the volume do not record the writes of the export, so a read-write export deletes them.
+The bitmaps of the volume do not record the writes of the export, so they are deleted before the export starts.
 The copies kept by the snapshots are not affected.
 
 (storage-block-tracking-operations)=
@@ -200,10 +204,11 @@ When the `101 Switching Protocols` response comes from the member that serves th
   The copies kept by the snapshots are not affected, and the next backup must be a full one.
 - A restore from a snapshot, a copy, a refresh, an import and a read-write NBD export write a volume while the virtual machine is stopped and delete its bitmaps.
   A restore of an instance snapshot deletes the bitmaps of every volume of the virtual machine.
-- Renaming an instance snapshot deletes the bitmaps of every volume of the virtual machine, as the bitmaps are named after the snapshots.
+- Deleting an instance snapshot removes the bitmap of its name from every volume, and renaming one removes the bitmaps of its old and new names, as the bitmaps are named after the snapshots.
   Renaming a custom volume snapshot does not affect the bitmaps.
-- Deleting a custom volume snapshot that an instance snapshot recorded leaves that instance snapshot without the volume, which its export then skips.
+- Deleting a custom volume snapshot removes the bitmap created with it from that volume, and leaves the instance snapshot that recorded it without the volume, which its export then skips.
 - Resizing a volume deletes its bitmaps, as does detaching a `custom` volume from the virtual machine and enabling `security.shared` on a volume.
+- The image a disk is opened through has 2 MiB clusters, and a discard by the guest that is smaller than a cluster is dropped.
   On a cluster, enabling `security.shared` on a custom volume attached to a virtual machine on another member must target that member.
 - The virtual machine cannot be started, stopped or restarted, and none of its disks detached, while a snapshot with a bitmap is in progress or while one of its volumes is exported over NBD.
 - An instance snapshot cannot be deleted or renamed, and neither can a custom volume snapshot it recorded, while the snapshot is exported over NBD.
