@@ -851,12 +851,20 @@ func (d *common) deleteCommon(ctx context.Context, inst instance.Instance, force
 
 	var parent instance.Instance
 	if isSnapshot {
-		parentName, _, _ := api.GetParentAndSnapshotName(inst.Name())
+		parentName, snapName, _ := api.GetParentAndSnapshotName(inst.Name())
 
 		// Load the parent for backup file refresh.
 		parent, err = instance.LoadByProjectAndName(d.state, d.project.Name, parentName)
 		if err != nil {
 			return fmt.Errorf("Invalid parent: %w", err)
+		}
+
+		// The bitmap named after the snapshot has no snapshot to belong to once the snapshot is deleted.
+		if inst.Type() == instancetype.VM {
+			err = parent.DeleteBitmap(snapName)
+			if err != nil {
+				return fmt.Errorf("Failed deleting bitmap: %w", err)
+			}
 		}
 	}
 
@@ -1092,10 +1100,10 @@ func (d *common) sharedAttachedVolumes(inst instance.Instance, attachedVolumes m
 // backup.yaml, and reverts on error. The snapshot is marked stateful when
 // stateful is true. When diskVolumesMode is set to [api.DiskVolumesModeAllExclusive],
 // the instance's attached exclusive volumes are included in a crash-consistent
-// snapshot. When bitmapUUID is set, a bitmap named after the snapshot and of
-// that UUID is created on every block volume of the snapshot, and the bitmaps
-// each volume has are copied into the metadata image of its snapshot.
-func (d *common) snapshotCommon(ctx context.Context, inst instance.Instance, name string, expiry *time.Time, stateful bool, diskVolumesMode string, bitmapUUID string, progressReporter ioprogress.ProgressReporter) (err error) {
+// snapshot. When bitmap is set, a bitmap named after the snapshot is created
+// on every block volume of the snapshot, and the bitmaps each volume has are
+// copied into the snapshot metadata image of its snapshot.
+func (d *common) snapshotCommon(ctx context.Context, inst instance.Instance, name string, expiry *time.Time, stateful bool, diskVolumesMode string, bitmap bool, progressReporter ioprogress.ProgressReporter) (err error) {
 	revert := revert.New()
 	defer revert.Fail()
 
@@ -1142,6 +1150,16 @@ func (d *common) snapshotCommon(ctx context.Context, inst instance.Instance, nam
 		}
 
 		snapshottableVolumes[deviceName] = volume
+	}
+
+	// The backup metadata of the config volume snapshot lists every instance snapshot with the UUID of its root
+	// volume snapshot, which the bitmaps of the snapshot are looked up by. It is written before the record of this
+	// snapshot exists, because the record has no volume snapshot until the storage snapshot is taken.
+	if bitmap {
+		err = inst.UpdateBackupFile()
+		if err != nil {
+			return fmt.Errorf("Failed updating instance backup file before snapshot: %w", err)
+		}
 	}
 
 	// Setup the arguments.
@@ -1211,7 +1229,7 @@ func (d *common) snapshotCommon(ctx context.Context, inst instance.Instance, nam
 
 	// The storage snapshots read the volumes, which lack the guest's writes while an overlay is left uncommitted.
 	// CreateSnapshotBitmaps commits the overlays of the disks it handles.
-	if bitmapUUID == "" {
+	if !bitmap {
 		err = storagePools.CommitInstanceDiskOverlays(inst)
 		if err != nil {
 			return err
@@ -1220,7 +1238,7 @@ func (d *common) snapshotCommon(ctx context.Context, inst instance.Instance, nam
 
 	// Create the bitmap of the snapshot before the storage snapshots, which then match the instant it was created
 	// at, as the guest writes to the overlays of the block volumes until they are committed afterwards.
-	if bitmapUUID != "" {
+	if bitmap {
 		rootDiskName, _, err := d.getRootDiskDevice()
 		if err != nil {
 			return fmt.Errorf("Failed getting root disk: %w", err)
@@ -1229,7 +1247,7 @@ func (d *common) snapshotCommon(ctx context.Context, inst instance.Instance, nam
 		snapshots := map[string]string{rootDiskName: rootSnapshotUUID}
 		maps.Copy(snapshots, attachedSnapshotUUIDs)
 
-		overlayDevices, err := inst.CreateSnapshotBitmaps(snapshots, name, bitmapUUID)
+		overlayDevices, err := inst.CreateSnapshotBitmaps(snapshots, name)
 		if err != nil {
 			return err
 		}

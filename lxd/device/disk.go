@@ -1537,9 +1537,14 @@ func (d *disk) applyQuota(remount bool) error {
 		return err
 	}
 
-	// The bitmaps of the root disk and its metadata image have the size the disk had, and a bitmap is only merged
-	// between block nodes of one size.
+	// The bitmaps of the root disk and its volume metadata image have the size the disk had, so the image is deleted
+	// and created again at the new size by the next start. An overlay left on the disk is committed first.
 	if d.inst.Type() == instancetype.VM {
+		err = d.inst.CommitDiskOverlays([]string{rootDisk})
+		if err != nil {
+			return err
+		}
+
 		err = d.inst.DeleteVolumeBitmaps(rootDisk)
 		if err != nil {
 			return fmt.Errorf("Failed deleting bitmaps: %w", err)

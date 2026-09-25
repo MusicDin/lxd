@@ -107,7 +107,7 @@ type Instance interface {
 
 	// Snapshots & migration & backups.
 	Restore(ctx context.Context, source Instance, stateful bool, diskVolumesMode string, progressReporter ioprogress.ProgressReporter) error
-	Snapshot(ctx context.Context, name string, expiry *time.Time, stateful bool, diskVolumesMode string, bitmapUUID string, progressReporter ioprogress.ProgressReporter) error
+	Snapshot(ctx context.Context, name string, expiry *time.Time, stateful bool, diskVolumesMode string, bitmap bool, progressReporter ioprogress.ProgressReporter) error
 	Snapshots() ([]Instance, error)
 	Backups() ([]backup.InstanceBackup, error)
 	UpdateBackupFile() error
@@ -189,34 +189,38 @@ type Instance interface {
 	Metrics(hostInterfaces []net.Interface) (*metrics.MetricSet, error)
 
 	// Dirty bitmaps of the block volumes of a virtual machine. Bitmaps lists them, grouped by name, for an instance
-	// or an instance snapshot. DeleteBitmap deletes one bitmap from every volume, DeleteBitmaps every bitmap of every
-	// volume and DeleteVolumeBitmaps every bitmap of the volume attached through a disk device.
+	// or an instance snapshot. DeleteBitmap removes one bitmap from every volume, DeleteDiskBitmap one bitmap from
+	// the volume attached through a disk device, DeleteVolumeBitmaps every bitmap of that volume together with its
+	// volume metadata image, and DeleteBitmaps every bitmap of every volume together with every metadata image.
 	Bitmaps() ([]api.InstanceBitmap, error)
 	DeleteBitmap(bitmapName string) error
-	DeleteBitmaps() error
+	DeleteDiskBitmap(deviceName string, bitmapName string) error
 	DeleteVolumeBitmaps(deviceName string) error
+	DeleteBitmaps() error
 
-	// Metadata images, the qcow2 images on the config volume that store the bitmaps of a volume while the instance
-	// is stopped and the bitmaps of a snapshot. RemoveVolumeMetadataImage deletes the image of the volume of the
-	// given UUID and RemoveAllMetadataImages every image.
+	// Metadata images, the qcow2 images on the config volume that the block volumes are opened through and that
+	// store their bitmaps. RemoveVolumeMetadataImage deletes the image of the volume of the given UUID and
+	// RemoveAllMetadataImages every image. CommitDiskOverlays commits the overlays that a failed commit left on
+	// the given disk devices.
 	RemoveVolumeMetadataImage(volumeUUID string) error
 	RemoveAllMetadataImages() error
+	CommitDiskOverlays(deviceNames []string) error
 
 	// Snapshot with a bitmap. CreateSnapshotBitmaps creates the bitmap of a snapshot on the volumes attached through
 	// the given disk devices, mapped to the UUIDs of their snapshots, and copies the bitmaps of each volume into the
-	// metadata image of its snapshot on the config volume. It adds an overlay to each volume and returns the devices
-	// that got one, which CommitDiskOverlays commits after the storage snapshots. RemoveSnapshotMetadataImages
-	// deletes the snapshot metadata images from the config volume once the config volume snapshot includes them.
-	CreateSnapshotBitmaps(snapshots map[string]string, bitmapName string, bitmapUUID string) ([]string, error)
-	CommitDiskOverlays(deviceNames []string) error
+	// snapshot metadata image of its snapshot on the config volume. It adds an overlay to each volume and returns
+	// the devices that got one, which CommitDiskOverlays commits after the storage snapshots.
+	// RemoveSnapshotMetadataImages deletes the snapshot metadata images from the config volume once the config
+	// volume snapshot includes them.
+	CreateSnapshotBitmaps(snapshots map[string]string, bitmapName string) ([]string, error)
 	RemoveSnapshotMetadataImages(snapshots map[string]string) error
 
-	// SnapshotMetadataImages returns the metadata images of the volume snapshots that an instance snapshot records,
+	// SnapshotMetadataImages returns the snapshot metadata images of the volume snapshots of an instance snapshot,
 	// keyed by the disk device each volume was attached through. The images are on the config volume snapshot.
 	SnapshotMetadataImages() (map[string]SnapshotMetadataImage, error)
 }
 
-// SnapshotMetadataImage describes the metadata image of a volume snapshot recorded by an instance snapshot.
+// SnapshotMetadataImage describes the snapshot metadata image of a volume snapshot of an instance snapshot.
 type SnapshotMetadataImage struct {
 	// Path of the image on the mounted config volume snapshot.
 	Path string
@@ -226,6 +230,12 @@ type SnapshotMetadataImage struct {
 
 	// UUID of the volume snapshot.
 	SnapshotUUID string
+
+	// Pool of the custom volume snapshot, empty for the root volume snapshot.
+	Pool string
+
+	// Name of the custom volume snapshot, empty for the root volume snapshot.
+	VolumeSnapshot string
 }
 
 // Container interface is for container specific functions.

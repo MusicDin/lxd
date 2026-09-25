@@ -9,8 +9,6 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/google/uuid"
-
 	"github.com/canonical/lxd/lxd/auth"
 	"github.com/canonical/lxd/lxd/db"
 	"github.com/canonical/lxd/lxd/db/cluster"
@@ -342,9 +340,19 @@ func instanceSnapshotsPost(d *Daemon, r *http.Request) response.Response {
 		api.MetadataEntityURL: api.NewURL().Path(version.APIVersion, "instances", name, "snapshots", req.Name).Project(projectName).String(),
 	}
 
-	// The bitmap is named after the snapshot, and its UUID tells it apart from the bitmap of a later snapshot of
-	// the same name.
-	bitmapUUID := ""
+	// The snapshot name is checked up front, so that the request is rejected rather than an operation failed.
+	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+		id, _ := tx.GetInstanceSnapshotID(ctx, projectName, name, req.Name)
+		if id > 0 {
+			return api.StatusErrorf(http.StatusConflict, "Snapshot %q already exists", req.Name)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return response.SmartError(err)
+	}
+
 	if req.Bitmap {
 		if !features.IsEnabled(features.ChangedBlockTracking) {
 			return response.BadRequest(errors.New("A snapshot with a bitmap requires the changed_block_tracking feature preview"))
@@ -353,13 +361,10 @@ func instanceSnapshotsPost(d *Daemon, r *http.Request) response.Response {
 		if inst.Type() != instancetype.VM || !inst.IsRunning() {
 			return response.BadRequest(errors.New("A snapshot with a bitmap requires a running virtual machine"))
 		}
-
-		bitmapUUID = uuid.New().String()
-		metadata["bitmap_uuid"] = bitmapUUID
 	}
 
 	snapshot := func(ctx context.Context, op *operations.Operation) error {
-		if bitmapUUID != "" {
+		if req.Bitmap {
 			// Adding and committing the disk overlays must not overlap a stop or a start of the instance.
 			unlock, err := storagePools.LockInstanceNBD(s, inst)
 			if err != nil {
@@ -369,7 +374,7 @@ func instanceSnapshotsPost(d *Daemon, r *http.Request) response.Response {
 			defer unlock()
 		}
 
-		return inst.Snapshot(ctx, req.Name, req.ExpiresAt, req.Stateful, req.DiskVolumesMode, bitmapUUID, op)
+		return inst.Snapshot(ctx, req.Name, req.ExpiresAt, req.Stateful, req.DiskVolumesMode, req.Bitmap, op)
 	}
 
 	instanceURL := api.NewURL().Path(version.APIVersion, "instances", name).Project(projectName)

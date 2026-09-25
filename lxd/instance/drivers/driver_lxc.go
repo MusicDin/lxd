@@ -3293,16 +3293,16 @@ func (d *lxc) snapshot(ctx context.Context, name string, expiry *time.Time, disk
 	// Wait for any file operations to complete to have a more consistent snapshot.
 	d.StopForkFile(false)
 
-	return d.snapshotCommon(ctx, d, name, expiry, false, diskVolumesMode, "", progressReporter)
+	return d.snapshotCommon(ctx, d, name, expiry, false, diskVolumesMode, false, progressReporter)
 }
 
 // Snapshot takes a new snapshot.
-func (d *lxc) Snapshot(ctx context.Context, name string, expiry *time.Time, stateful bool, diskVolumesMode string, bitmapUUID string, progressReporter ioprogress.ProgressReporter) error {
+func (d *lxc) Snapshot(ctx context.Context, name string, expiry *time.Time, stateful bool, diskVolumesMode string, bitmap bool, progressReporter ioprogress.ProgressReporter) error {
 	if stateful {
 		return api.StatusErrorf(http.StatusBadRequest, "Stateful snapshots are not supported for containers")
 	}
 
-	if bitmapUUID != "" {
+	if bitmap {
 		return api.StatusErrorf(http.StatusBadRequest, "Dirty bitmaps are not supported for containers")
 	}
 
@@ -7459,9 +7459,14 @@ func (d *lxc) Bitmaps() ([]api.InstanceBitmap, error) {
 	return []api.InstanceBitmap{}, nil
 }
 
-// DeleteBitmap is not supported for containers.
+// DeleteBitmap does nothing, as containers have no bitmaps.
 func (d *lxc) DeleteBitmap(bitmapName string) error {
-	return api.StatusErrorf(http.StatusBadRequest, "Dirty bitmaps are not supported for containers")
+	return nil
+}
+
+// DeleteDiskBitmap does nothing, as containers have no bitmaps.
+func (d *lxc) DeleteDiskBitmap(deviceName string, bitmapName string) error {
+	return nil
 }
 
 // DeleteBitmaps does nothing, as containers have no bitmaps.
@@ -7485,7 +7490,7 @@ func (d *lxc) RemoveAllMetadataImages() error {
 }
 
 // CreateSnapshotBitmaps is not supported for containers.
-func (d *lxc) CreateSnapshotBitmaps(snapshots map[string]string, bitmapName string, bitmapUUID string) ([]string, error) {
+func (d *lxc) CreateSnapshotBitmaps(snapshots map[string]string, bitmapName string) ([]string, error) {
 	return nil, api.StatusErrorf(http.StatusBadRequest, "Dirty bitmaps are not supported for containers")
 }
 
