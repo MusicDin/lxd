@@ -1457,6 +1457,69 @@ func InstanceByVolumeName(s *state.State, poolName string, projectName string, v
 	return inst, deviceName, nil
 }
 
+// Qcow2ClusterSize is the cluster size of the metadata images. The L2 tables of a metadata image are preallocated,
+// so a small cluster size costs space on the config volume: 1 TiB of volume takes 128 MiB of tables at 64 KiB
+// clusters and 10 MiB at 2 MiB clusters. The bitmap granularity is independent of it.
+const Qcow2ClusterSize = 2 * 1024 * 1024
+
+// qcow2ImageOpts returns the image options that open the metadata image at path without its data file, for the
+// qemu-img commands that read or change only the metadata of the image. The data file recorded in the image is a
+// temporary file that no longer exists, so a null block driver stands in for it.
+func qcow2ImageOpts(path string) string {
+	return "driver=qcow2,file.filename=" + qcow2EscapeOpt(path) + ",data-file.driver=null-co"
+}
+
+// qcow2EscapeOpt escapes a value for use in a qemu-img option string, where a comma separates options.
+func qcow2EscapeOpt(value string) string {
+	return strings.ReplaceAll(value, ",", ",,")
+}
+
+// Qcow2Create creates an empty qcow2 image of the given virtual size at path, replacing any existing file.
+func Qcow2Create(path string, size int64) error {
+	err := os.Remove(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	_, err = shared.RunCommand(context.TODO(), "qemu-img", "create", "-f", "qcow2", path, strconv.FormatInt(size, 10))
+	if err != nil {
+		// A failed creation can leave a partially written file behind.
+		_ = os.Remove(path)
+		return fmt.Errorf("Failed creating image %q: %w", path, err)
+	}
+
+	return nil
+}
+
+// Qcow2CreateMetadataImage creates a metadata image of the given virtual size at path, replacing any existing
+// file. The image stores bitmaps only, as its data file is the block volume it is opened with. The data file is
+// recorded as a temporary sparse file of the volume size, because qemu-img preallocates the tables of the image
+// through the data file and must not open the volume itself.
+func Qcow2CreateMetadataImage(path string, size int64) error {
+	err := os.Remove(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	dataFile := path + ".data"
+	defer func() { _ = os.Remove(dataFile) }()
+
+	_, err = shared.RunCommand(context.TODO(), "qemu-img", "create", "-f", "raw", dataFile, strconv.FormatInt(size, 10))
+	if err != nil {
+		return fmt.Errorf("Failed creating temporary data file %q: %w", dataFile, err)
+	}
+
+	options := "data_file=" + qcow2EscapeOpt(dataFile) + ",data_file_raw=on,cluster_size=" + strconv.Itoa(Qcow2ClusterSize)
+	_, err = shared.RunCommand(context.TODO(), "qemu-img", "create", "-f", "qcow2", "-o", options, path, strconv.FormatInt(size, 10))
+	if err != nil {
+		// A failed creation can leave a partially written file behind.
+		_ = os.Remove(path)
+		return fmt.Errorf("Failed creating metadata image %q: %w", path, err)
+	}
+
+	return nil
+}
+
 // Qcow2Bitmap describes a bitmap stored in a qcow2 image.
 type Qcow2Bitmap struct {
 	// Name of the bitmap.
@@ -1469,29 +1532,53 @@ type Qcow2Bitmap struct {
 	Recording bool
 }
 
-// Qcow2Bitmaps returns the bitmaps stored in the qcow2 image at path. A bitmap with the "auto" flag records writes
-// once it is loaded, and one without it is disabled.
-func Qcow2Bitmaps(path string) ([]Qcow2Bitmap, error) {
-	output, err := shared.RunCommand(context.TODO(), "qemu-img", "info", "--output=json", "-f", "qcow2", path)
+// qcow2Info is the part of the output of qemu-img info that describes a metadata image.
+type qcow2Info struct {
+	VirtualSize    int64 `json:"virtual-size"`
+	FormatSpecific struct {
+		Data struct {
+			Bitmaps []struct {
+				Name        string   `json:"name"`
+				Granularity int64    `json:"granularity"`
+				Flags       []string `json:"flags"`
+			} `json:"bitmaps"`
+		} `json:"data"`
+	} `json:"format-specific"`
+}
+
+// qcow2ImageInfo reads the metadata image at path with qemu-img info.
+func qcow2ImageInfo(path string) (*qcow2Info, error) {
+	output, err := shared.RunCommand(context.TODO(), "qemu-img", "info", "--output=json", "--image-opts", qcow2ImageOpts(path))
 	if err != nil {
-		return nil, fmt.Errorf("Failed reading bitmaps of %q: %w", path, err)
+		return nil, fmt.Errorf("Failed reading metadata image %q: %w", path, err)
 	}
 
-	var info struct {
-		FormatSpecific struct {
-			Data struct {
-				Bitmaps []struct {
-					Name        string   `json:"name"`
-					Granularity int64    `json:"granularity"`
-					Flags       []string `json:"flags"`
-				} `json:"bitmaps"`
-			} `json:"data"`
-		} `json:"format-specific"`
-	}
-
+	var info qcow2Info
 	err = json.Unmarshal([]byte(output), &info)
 	if err != nil {
-		return nil, fmt.Errorf("Failed parsing bitmaps of %q: %w", path, err)
+		return nil, fmt.Errorf("Failed parsing metadata image %q: %w", path, err)
+	}
+
+	return &info, nil
+}
+
+// Qcow2VirtualSize returns the virtual size of the metadata image at path.
+func Qcow2VirtualSize(path string) (int64, error) {
+	info, err := qcow2ImageInfo(path)
+	if err != nil {
+		return 0, err
+	}
+
+	return info.VirtualSize, nil
+}
+
+// Qcow2Bitmaps returns the bitmaps stored in the metadata image at path. A bitmap records writes once it is loaded
+// when it has the "auto" flag and lacks the "in-use" flag. A bitmap without "auto" is disabled, and one with
+// "in-use" was loaded by a QEMU process that did not write it back, so it missed writes.
+func Qcow2Bitmaps(path string) ([]Qcow2Bitmap, error) {
+	info, err := qcow2ImageInfo(path)
+	if err != nil {
+		return nil, err
 	}
 
 	bitmaps := make([]Qcow2Bitmap, 0, len(info.FormatSpecific.Data.Bitmaps))
@@ -1499,18 +1586,44 @@ func Qcow2Bitmaps(path string) ([]Qcow2Bitmap, error) {
 		bitmaps = append(bitmaps, Qcow2Bitmap{
 			Name:        bitmap.Name,
 			Granularity: bitmap.Granularity,
-			Recording:   slices.Contains(bitmap.Flags, "auto"),
+			Recording:   slices.Contains(bitmap.Flags, "auto") && !slices.Contains(bitmap.Flags, "in-use"),
 		})
 	}
 
 	return bitmaps, nil
 }
 
-// Qcow2RemoveBitmap removes the named bitmap from the qcow2 image at path.
+// Qcow2RemoveBitmap removes the named bitmap from the metadata image at path.
 func Qcow2RemoveBitmap(path string, bitmapName string) error {
-	_, err := shared.RunCommand(context.TODO(), "qemu-img", "bitmap", "-f", "qcow2", "--remove", path, bitmapName)
+	_, err := shared.RunCommand(context.TODO(), "qemu-img", "bitmap", "--remove", "--image-opts", qcow2ImageOpts(path), bitmapName)
 	if err != nil {
 		return fmt.Errorf("Failed removing bitmap %q from %q: %w", bitmapName, path, err)
+	}
+
+	return nil
+}
+
+// Qcow2Commit commits the overlay at overlayPath into the block volume at devicePath through the metadata image at
+// imagePath, so that the bitmaps of the image record the committed writes. The overlay has no backing file of its
+// own, so the image is given as its backing file, and the volume as the data file of the image.
+func Qcow2Commit(overlayPath string, imagePath string, devicePath string) error {
+	info, err := os.Stat(devicePath)
+	if err != nil {
+		return err
+	}
+
+	dataDriver := "file"
+	if shared.IsBlockdev(info.Mode()) {
+		dataDriver = "host_device"
+	}
+
+	options := "driver=qcow2,file.filename=" + qcow2EscapeOpt(overlayPath) +
+		",backing.driver=qcow2,backing.file.filename=" + qcow2EscapeOpt(imagePath) +
+		",backing.data-file.driver=" + dataDriver + ",backing.data-file.filename=" + qcow2EscapeOpt(devicePath)
+
+	_, err = shared.RunCommand(context.TODO(), "qemu-img", "commit", "--image-opts", options)
+	if err != nil {
+		return fmt.Errorf("Failed committing overlay %q: %w", overlayPath, err)
 	}
 
 	return nil
@@ -1830,23 +1943,25 @@ func LockInstanceNBD(s *state.State, inst instance.Instance) (func(), error) {
 	return release, nil
 }
 
-// CommitInstanceDiskOverlays commits the overlays that a failed commit left on the disks of a running virtual machine.
-// Until then the volumes lack the guest's writes since the snapshot with a bitmap, so it runs before the volumes are
-// read by a storage snapshot, a copy, a backup or a migration.
+// CommitInstanceDiskOverlays commits the overlays that a failed commit left on the disks of a virtual machine. Until
+// then the volumes lack the guest's writes since the snapshot with a bitmap, so it runs before the volumes are read
+// by a storage snapshot, a copy, a backup or a migration. The overlays of a stopped virtual machine are committed
+// through its volume metadata images.
 func CommitInstanceDiskOverlays(inst instance.Instance) error {
-	if inst.Type() != instancetype.VM || !inst.IsRunning() {
+	if inst.Type() != instancetype.VM {
 		return nil
 	}
 
 	return inst.CommitDiskOverlays(slices.Collect(maps.Keys(inst.ExpandedDevices())))
 }
 
-// CommitCustomVolumeDiskOverlay commits the overlay that a failed commit left on the disk of the running virtual
-// machine a custom volume is attached to, before a storage snapshot of the volume. A volume that is not attached to
-// one virtual machine on this member has no overlay to commit.
+// CommitCustomVolumeDiskOverlay commits the overlay that a failed commit left on the disk of the virtual machine a
+// custom volume is attached to, before the volume is read by a storage snapshot, a copy, a backup or a migration, or
+// written by an NBD export. A volume that is not attached to one virtual machine on this member has no overlay to
+// commit.
 func CommitCustomVolumeDiskOverlay(s *state.State, poolName string, projectName string, volName string) error {
 	inst, deviceName, err := InstanceByVolumeName(s, poolName, projectName, volName, cluster.StoragePoolVolumeTypeCustom)
-	if err != nil || inst.Location() != s.ServerName || !inst.IsRunning() {
+	if err != nil || inst.Location() != s.ServerName {
 		return nil
 	}
 
