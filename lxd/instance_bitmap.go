@@ -29,8 +29,7 @@ var instanceBitmapCmd = APIEndpoint{
 	MetricsType:     entity.TypeInstance,
 	ProjectSpecific: true,
 
-	Get:    APIEndpointAction{Handler: instanceBitmapGet, AccessHandler: allowPermission(entity.TypeInstance, auth.EntitlementCanView, "name")},
-	Delete: APIEndpointAction{Handler: instanceBitmapDelete, AccessHandler: allowPermission(entity.TypeInstance, auth.EntitlementCanManageSnapshots, "name")},
+	Get: APIEndpointAction{Handler: instanceBitmapGet, AccessHandler: allowPermission(entity.TypeInstance, auth.EntitlementCanView, "name")},
 }
 
 var instanceSnapshotBitmapsCmd = APIEndpoint{
@@ -407,46 +406,4 @@ func instanceBitmapGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	return response.NotFound(errors.New("Bitmap not found"))
-}
-
-// swagger:operation DELETE /1.0/instances/{name}/bitmaps/{bitmapName} instances instance_bitmap_delete
-//
-//	Delete the bitmap
-//
-//	Deletes the bitmap from every volume of the instance. The snapshots of the instance keep their copies.
-//
-//	---
-//	produces:
-//	  - application/json
-//	parameters:
-//	  - in: query
-//	    name: project
-//	    description: Project name
-//	    type: string
-//	    example: default
-//	responses:
-//	  "200":
-//	    $ref: "#/responses/EmptySyncResponse"
-//	  "400":
-//	    $ref: "#/responses/BadRequest"
-//	  "403":
-//	    $ref: "#/responses/Forbidden"
-//	  "404":
-//	    $ref: "#/responses/NotFound"
-//	  "500":
-//	    $ref: "#/responses/InternalServerError"
-func instanceBitmapDelete(d *Daemon, r *http.Request) response.Response {
-	s := d.State()
-
-	inst, _, resp := instanceBitmapsLoad(s, r)
-	if resp != nil {
-		return resp
-	}
-
-	err := inst.DeleteBitmap(r.PathValue("bitmapName"))
-	if err != nil {
-		return response.SmartError(err)
-	}
-
-	return response.EmptySyncResponse
 }

@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 	"go.yaml.in/yaml/v2"
 
-	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
 	cli "github.com/canonical/lxd/shared/cmd"
 )
@@ -27,10 +26,6 @@ func (c *cmdBitmap) command() *cobra.Command {
 A dirty bitmap records which blocks of the block volumes of a virtual machine change after it is created.
 A bitmap is created with a snapshot, named after it and kept across a stop and a start of the instance.
 An instance snapshot keeps a copy of the bitmaps that existed when it was created, which its NBD export publishes.`)
-
-	// Delete
-	bitmapDeleteCmd := cmdBitmapDelete{global: c.global, bitmap: c}
-	cmd.AddCommand(bitmapDeleteCmd.command())
 
 	// List
 	bitmapListCmd := cmdBitmapList{global: c.global, bitmap: c}
@@ -59,87 +54,6 @@ func (c *cmdBitmap) bitmaps(resource remoteResource, target string) ([]api.Insta
 	}
 
 	return client.GetInstanceBitmaps(instName)
-}
-
-// Delete.
-type cmdBitmapDelete struct {
-	global *cmdGlobal
-	bitmap *cmdBitmap
-
-	flagTarget string
-}
-
-func (c *cmdBitmapDelete) command() *cobra.Command {
-	cmd := &cobra.Command{}
-	cmd.Use = usage("delete", "[<remote>:]<instance> <bitmap>")
-	cmd.Aliases = []string{"rm"}
-	cmd.Short = "Delete a dirty bitmap from every volume of an instance"
-	cmd.Long = cli.FormatSection("Description", cmd.Short+`
-
-The snapshots of the instance keep their copies of the bitmap.`)
-	cmd.Example = cli.FormatSection("", `lxc bitmap delete vm1 snap0
-    Delete the bitmap "snap0" from every volume of virtual machine "vm1".`)
-
-	cmd.Flags().StringVar(&c.flagTarget, "target", "", cli.FormatStringFlagLabel("Cluster member name"))
-	cmd.RunE = c.run
-
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		if len(args) == 0 {
-			return c.global.cmpTopLevelResource("instance", toComplete)
-		}
-
-		if len(args) == 1 {
-			return c.global.cmpInstanceBitmaps(args[0])
-		}
-
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-
-	return cmd
-}
-
-func (c *cmdBitmapDelete) run(cmd *cobra.Command, args []string) error {
-	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 2, 2)
-	if exit {
-		return err
-	}
-
-	// Parse remote
-	resources, err := c.global.ParseServers(args[0])
-	if err != nil {
-		return err
-	}
-
-	resource := resources[0]
-
-	if resource.name == "" {
-		return errors.New("Missing instance name")
-	}
-
-	if shared.IsSnapshot(resource.name) {
-		return errors.New("Bitmaps cannot be deleted from a snapshot")
-	}
-
-	if args[1] == "" {
-		return errors.New("Missing bitmap name")
-	}
-
-	client := resource.server
-	if c.flagTarget != "" {
-		client = client.UseTarget(c.flagTarget)
-	}
-
-	err = client.DeleteInstanceBitmap(resource.name, args[1])
-	if err != nil {
-		return err
-	}
-
-	if !c.global.flagQuiet {
-		fmt.Printf("Bitmap %s deleted\n", args[1])
-	}
-
-	return nil
 }
 
 // List.

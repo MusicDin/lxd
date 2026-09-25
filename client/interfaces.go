@@ -175,13 +175,12 @@ type InstanceServer interface {
 	GetInstanceBitmapNames(instanceName string) (names []string, err error)
 	GetInstanceBitmaps(instanceName string) (bitmaps []api.InstanceBitmap, err error)
 	GetInstanceBitmap(instanceName string, bitmapName string) (bitmap *api.InstanceBitmap, err error)
-	DeleteInstanceBitmap(instanceName string, bitmapName string) (err error)
 	GetInstanceSnapshotBitmapNames(instanceName string, snapshotName string) (names []string, err error)
 	GetInstanceSnapshotBitmaps(instanceName string, snapshotName string) (bitmaps []api.InstanceBitmap, err error)
 	GetInstanceSnapshotBitmap(instanceName string, snapshotName string, bitmapName string) (bitmap *api.InstanceBitmap, err error)
 
 	// Instance NBD functions ("storage_volume_block_tracking" API extension)
-	GetInstanceSnapshotNBDConn(instanceName string, snapshotName string, deviceNames []string) (net.Conn, error)
+	GetInstanceSnapshotNBDConn(instanceName string, snapshotName string, deviceNames []string, previousSnapshotUUID string) (net.Conn, error)
 
 	// Event handling functions
 	GetEvents() (listener *EventListener, err error)
@@ -386,7 +385,7 @@ type InstanceServer interface {
 	CreateStoragePoolVolumeFromTarball(pool string, args StoragePoolVolumeBackupArgs) (op Operation, err error)
 
 	// Storage volume NBD function ("storage_volume_block_tracking" API extension)
-	GetStoragePoolVolumeNBDConn(pool string, volType string, volName string, args api.StorageVolumeNBDPost) (net.Conn, error)
+	GetStoragePoolVolumeNBDConn(pool string, volType string, volName string) (net.Conn, error)
 
 	// Cluster functions ("cluster" API extensions)
 	GetCluster() (cluster *api.Cluster, ETag string, err error)

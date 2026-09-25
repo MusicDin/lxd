@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"slices"
 
@@ -112,18 +110,16 @@ func storagePoolVolumeTypeNBDForward(s *state.State, r *http.Request, details st
 
 // swagger:operation POST /1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}/nbd storage storage_pool_volumes_type_nbd_post
 //
-//	Export the storage volume over NBD
+//	Write the storage volume over NBD
 //
-//	Upgrades the request to an NBD connection of the storage volume's block device, read-write when the request
-//	sets writable, for restoring a backup. The volume must be of type virtual-machine or custom, and the virtual
-//	machine whose root volume it is or that it is attached to must be stopped. A read-write export deletes the
-//	bitmaps of the volume.
+//	Upgrades the request to a read-write NBD connection of the storage volume's block device, for writing a backup
+//	back. The volume must be of type virtual-machine or custom, and the virtual machine whose root volume it is or
+//	that it is attached to must be stopped. Every write invalidates the bitmaps of the volume, so they are deleted
+//	before the export starts.
 //	The export runs as an operation on the cluster member serving it, which is listed and cancelled through
 //	the operations API. Cancelling the operation closes the connection.
 //
 //	---
-//	consumes:
-//	  - application/json
 //	produces:
 //	  - application/json
 //	  - application/octet-stream
@@ -138,12 +134,6 @@ func storagePoolVolumeTypeNBDForward(s *state.State, r *http.Request, details st
 //	    description: Cluster member name
 //	    type: string
 //	    example: lxd01
-//	  - in: body
-//	    name: nbd
-//	    description: NBD export
-//	    required: false
-//	    schema:
-//	      $ref: "#/definitions/StorageVolumeNBDPost"
 //	responses:
 //	  "101":
 //	    description: Switching protocols to NBD
@@ -176,13 +166,6 @@ func storagePoolVolumeTypeNBDPost(d *Daemon, r *http.Request) response.Response 
 		return response.BadRequest(fmt.Errorf("Invalid storage volume type %q", details.volumeTypeName))
 	}
 
-	// An empty body selects a read-only export.
-	args := api.StorageVolumeNBDPost{}
-	err = json.NewDecoder(r.Body).Decode(&args)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return response.BadRequest(err)
-	}
-
 	effectiveProjectName, err := request.GetContextValue[string](r.Context(), request.CtxEffectiveProjectName)
 	if err != nil {
 		return response.SmartError(err)
@@ -194,7 +177,7 @@ func storagePoolVolumeTypeNBDPost(d *Daemon, r *http.Request) response.Response 
 	}
 
 	if client != nil {
-		conn, err := client.GetStoragePoolVolumeNBDConn(details.pool.Name(), details.volumeTypeName, details.volumeName, args)
+		conn, err := client.GetStoragePoolVolumeNBDConn(details.pool.Name(), details.volumeTypeName, details.volumeName)
 		if err != nil {
 			return response.SmartError(err)
 		}
@@ -203,7 +186,7 @@ func storagePoolVolumeTypeNBDPost(d *Daemon, r *http.Request) response.Response 
 		return response.UpgradeResponse(conn, "nbd", nil)
 	}
 
-	conn, cleanup, conflictReference, err := details.pool.GetVolumeNBD(effectiveProjectName, storagePools.VolumeDBTypeToType(details.volumeType), details.volumeName, args.Writable)
+	conn, cleanup, conflictReference, err := details.pool.GetVolumeNBD(effectiveProjectName, storagePools.VolumeDBTypeToType(details.volumeType), details.volumeName)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -224,15 +207,10 @@ func storagePoolVolumeTypeNBDPost(d *Daemon, r *http.Request) response.Response 
 
 	// The operation takes the conflict reference of the session, so that no other cluster member can export the
 	// same volume at the same time.
-	opType := operationtype.VolumeNBDExport
-	if args.Writable {
-		opType = operationtype.VolumeNBDImport
-	}
-
 	opArgs := operations.OperationArgs{
 		ProjectName:       request.ProjectParam(r),
 		EntityURL:         entity.StorageVolumeURL(effectiveProjectName, details.location, details.pool.Name(), details.volumeTypeName, details.volumeName),
-		Type:              opType,
+		Type:              operationtype.VolumeNBDImport,
 		Class:             operationtype.OperationClassTask,
 		RunHook:           run,
 		ConflictReference: conflictReference,

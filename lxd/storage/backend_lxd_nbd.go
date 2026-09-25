@@ -2,7 +2,6 @@ package storage
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -111,18 +110,19 @@ func NBDExportInUse(poolName string, volType drivers.VolumeType, projectName str
 	}
 
 	if shared.IsSnapshot(volName) {
-		return api.StatusErrorf(http.StatusLocked, "Snapshot %q is exported over NBD: %w", volName, drivers.ErrInUse)
+		return api.StatusErrorf(http.StatusConflict, "Snapshot %q is exported over NBD: %w", volName, drivers.ErrInUse)
 	}
 
-	return api.StatusErrorf(http.StatusLocked, "A snapshot of %q is exported over NBD: %w", volName, drivers.ErrInUse)
+	return api.StatusErrorf(http.StatusConflict, "A snapshot of %q is exported over NBD: %w", volName, drivers.ErrInUse)
 }
 
-// GetVolumeNBD returns an NBD connection to a block volume, served by qemu-nbd against the volume and read-write
-// when writable is set. The virtual machine whose root volume it is, or that the volume is attached to, must be
-// stopped and on this member, as qemu-nbd opens the volume itself. A read-write export writes the volume, so the
-// bitmaps of the volume are deleted before it. The returned conflict reference is the lock name of the session.
-func (b *lxdBackend) GetVolumeNBD(projectName string, volType drivers.VolumeType, volName string, writable bool) (net.Conn, func(), string, error) {
-	l := b.logger.AddContext(logger.Ctx{"project": projectName, "volType": volType, "volume": volName, "writable": writable})
+// GetVolumeNBD returns a read-write NBD connection to a block volume, served by qemu-nbd against the volume, for
+// writing a backup back. The virtual machine whose root volume it is, or that the volume is attached to, must be
+// stopped and on this member, as qemu-nbd opens the volume itself. The export writes the volume, so an overlay left
+// on the disk is committed first and the bitmaps of the volume are deleted. The returned conflict reference is the
+// lock name of the session.
+func (b *lxdBackend) GetVolumeNBD(projectName string, volType drivers.VolumeType, volName string) (net.Conn, func(), string, error) {
+	l := b.logger.AddContext(logger.Ctx{"project": projectName, "volType": volType, "volume": volName})
 	l.Debug("GetVolumeNBD started")
 	defer l.Debug("GetVolumeNBD finished")
 
@@ -164,14 +164,17 @@ func (b *lxdBackend) GetVolumeNBD(projectName string, volType drivers.VolumeType
 
 		lockName := nbdInstanceLockName(projectName, volName)
 		return nbdLockedSession(b.state, lockName, fmt.Sprintf("instance %q", volName), func() (net.Conn, func(), error) {
-			if writable {
-				err := inst.DeleteVolumeBitmaps(rootDiskName)
-				if err != nil {
-					return nil, nil, fmt.Errorf("Failed deleting bitmaps: %w", err)
-				}
+			err := inst.CommitDiskOverlays([]string{rootDiskName})
+			if err != nil {
+				return nil, nil, err
 			}
 
-			return b.connectOfflineNBD(vol, writable)
+			err = inst.DeleteVolumeBitmaps(rootDiskName)
+			if err != nil {
+				return nil, nil, fmt.Errorf("Failed deleting bitmaps: %w", err)
+			}
+
+			return b.connectOfflineNBD(vol)
 		})
 	case drivers.VolumeTypeCustom:
 		dbVol, err := VolumeDBGet(b, projectName, volName, drivers.VolumeTypeCustom)
@@ -215,28 +218,31 @@ func (b *lxdBackend) GetVolumeNBD(projectName string, volType drivers.VolumeType
 
 		lockName := nbdVolumeLockName(b.nbdVolumeLockMember(), b.name, projectName, volName)
 		return nbdLockedSession(b.state, lockName, fmt.Sprintf("volume %q", b.name+"/"+volName), func() (net.Conn, func(), error) {
-			if writable {
-				for inst, deviceNames := range instanceDevices {
-					for _, deviceName := range deviceNames {
-						err := inst.DeleteVolumeBitmaps(deviceName)
-						if err != nil {
-							return nil, nil, fmt.Errorf("Failed deleting bitmaps: %w", err)
-						}
+			for inst, deviceNames := range instanceDevices {
+				err := inst.CommitDiskOverlays(deviceNames)
+				if err != nil {
+					return nil, nil, err
+				}
+
+				for _, deviceName := range deviceNames {
+					err := inst.DeleteVolumeBitmaps(deviceName)
+					if err != nil {
+						return nil, nil, fmt.Errorf("Failed deleting bitmaps: %w", err)
 					}
 				}
 			}
 
-			return b.connectOfflineNBD(vol, writable)
+			return b.connectOfflineNBD(vol)
 		})
 	default:
 		return nil, nil, "", api.StatusErrorf(http.StatusBadRequest, "NBD export is not supported for volumes of type %q", volType)
 	}
 }
 
-// connectOfflineNBD serves the volume through qemu-nbd and returns a connection to it. The volume stays
+// connectOfflineNBD serves the volume read-write through qemu-nbd and returns a connection to it. The volume stays
 // activated until qemu-nbd exits, which happens once the connection is closed or the returned disconnect
 // function is called. The disconnect function returns once the volume has been released.
-func (b *lxdBackend) connectOfflineNBD(vol drivers.Volume, writable bool) (net.Conn, func(), error) {
+func (b *lxdBackend) connectOfflineNBD(vol drivers.Volume) (net.Conn, func(), error) {
 	socketPath := nbdSocketPath(vol.Pool() + "_" + string(vol.Type()) + "_" + vol.Name())
 
 	err := os.MkdirAll(filepath.Dir(socketPath), 0700)
@@ -250,9 +256,6 @@ func (b *lxdBackend) connectOfflineNBD(vol drivers.Volume, writable bool) (net.C
 
 	// LXD block volumes are raw, and format probing must never run on guest controlled data.
 	args := []string{"--socket=" + socketPath, "--format=raw"}
-	if !writable {
-		args = append(args, "--read-only")
-	}
 
 	// Share the qemu-nbd process safely between the activation goroutine and this function.
 	var procMu sync.Mutex
@@ -401,14 +404,16 @@ func (b *lxdBackend) connectOfflineNBD(vol drivers.Volume, writable bool) (net.C
 
 // nbdExport describes one export served by a snapshot NBD server.
 type nbdExport struct {
-	name              string // Export name.
-	devPath           string // Block device holding the snapshot data.
-	metadataImagePath string // Metadata image with the bitmaps to publish.
+	name              string   // Export name.
+	devPath           string   // Block device holding the snapshot data.
+	metadataImagePath string   // Snapshot metadata image with the bitmaps of the snapshot.
+	bitmapNames       []string // Names of the bitmaps of the image to expose.
 }
 
 // serveSnapshotNBD serves the given exports read-only through qemu-storage-daemon listening on socketPath and returns
-// a connection to it. Each export publishes the bitmaps of its metadata image, which the daemon opens as a separate
-// read-only node. The returned disconnect function ends the daemon and returns once it has exited.
+// a connection to it. Each export exposes the given bitmaps of its snapshot metadata image, which the daemon opens as
+// a separate read-only node over the same block device. The returned disconnect function ends the daemon and returns
+// once it has exited.
 func (b *lxdBackend) serveSnapshotNBD(socketPath string, exports []nbdExport) (net.Conn, func(), error) {
 	err := os.MkdirAll(filepath.Dir(socketPath), 0700)
 	if err != nil {
@@ -428,18 +433,15 @@ func (b *lxdBackend) serveSnapshotNBD(socketPath string, exports []nbdExport) (n
 			{"driver": "file", "node-name": dataNode + "-file", "filename": export.devPath, "read-only": true},
 			// LXD block volumes are raw, and format probing must never run on guest controlled data.
 			{"driver": "raw", "node-name": dataNode, "file": dataNode + "-file", "read-only": true},
+			// The image is opened over the block device as its data file, as the data file recorded in the image
+			// is a temporary file that no longer exists.
 			{"driver": "file", "node-name": metadataImageNode + "-file", "filename": export.metadataImagePath, "read-only": true},
-			{"driver": "qcow2", "node-name": metadataImageNode, "file": metadataImageNode + "-file", "read-only": true},
+			{"driver": "qcow2", "node-name": metadataImageNode, "file": metadataImageNode + "-file", "data-file": dataNode, "read-only": true},
 		}
 
-		bitmaps, err := Qcow2Bitmaps(export.metadataImagePath)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		published := make([]map[string]any, 0, len(bitmaps))
-		for _, bitmap := range bitmaps {
-			published = append(published, map[string]any{"node": metadataImageNode, "name": bitmap.Name})
+		published := make([]map[string]any, 0, len(export.bitmapNames))
+		for _, bitmapName := range export.bitmapNames {
+			published = append(published, map[string]any{"node": metadataImageNode, "name": bitmapName})
 		}
 
 		exportOptions := map[string]any{"type": "nbd", "id": fmt.Sprintf("export%d", i), "node-name": dataNode, "name": export.name}
@@ -529,12 +531,59 @@ func (b *lxdBackend) serveSnapshotNBD(socketPath string, exports []nbdExport) (n
 	return nbdConn, disconnect, nil
 }
 
+// exposedSnapshotBitmaps returns the names of the bitmaps of the instance snapshot to expose over NBD, by disk
+// device. Without a previous snapshot UUID every bitmap of the snapshot is exposed. With one, only the bitmaps
+// created with the instance snapshot of that UUID are exposed, and only while an instance snapshot of that UUID
+// exists, so that a client never reads the changes since a snapshot that was deleted and created again under the
+// same name. When none match, the exports have no bitmap and the client takes a full backup.
+func (b *lxdBackend) exposedSnapshotBitmaps(snapInst instance.Instance, previousSnapshotUUID string) (map[string][]string, error) {
+	bitmaps, err := snapInst.Bitmaps()
+	if err != nil {
+		return nil, err
+	}
+
+	exposed := map[string][]string{}
+	if previousSnapshotUUID != "" {
+		parentName, _, _ := api.GetParentAndSnapshotName(snapInst.Name())
+		dbVolSnaps, err := VolumeDBSnapshotsGet(b, snapInst.Project().Name, parentName, drivers.VolumeTypeVM)
+		if err != nil {
+			return nil, err
+		}
+
+		found := false
+		for _, dbVolSnap := range dbVolSnaps {
+			if dbVolSnap.Config["volatile.uuid"] == previousSnapshotUUID {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			b.logger.Warn("No instance snapshot has the previous snapshot UUID, exposing no bitmap", logger.Ctx{"instance": snapInst.Name(), "previousSnapshotUUID": previousSnapshotUUID})
+			return exposed, nil
+		}
+	}
+
+	for _, bitmap := range bitmaps {
+		if previousSnapshotUUID != "" && bitmap.UUID != previousSnapshotUUID {
+			continue
+		}
+
+		for _, volume := range bitmap.Volumes {
+			exposed[volume.Device] = append(exposed[volume.Device], bitmap.Name)
+		}
+	}
+
+	return exposed, nil
+}
+
 // GetInstanceSnapshotNBD returns a read-only NBD connection serving the volume snapshots of a virtual machine
-// snapshot that have a metadata image, each under an export named after its disk device together with the bitmaps
-// of the snapshot. deviceNames selects a subset of the devices, and every device is served when it is empty. A
+// snapshot that have a snapshot metadata image, each under an export named after its disk device together with the
+// bitmaps of the snapshot. deviceNames selects a subset of the devices, and every device is served when it is empty.
+// previousSnapshotUUID limits the exposed bitmaps to the ones created with the instance snapshot of that UUID. A
 // volume snapshot that no longer exists is skipped. The returned conflict reference is empty, as every client opens
 // its own session.
-func (b *lxdBackend) GetInstanceSnapshotNBD(snapInst instance.Instance, deviceNames []string) (net.Conn, func(), string, error) {
+func (b *lxdBackend) GetInstanceSnapshotNBD(snapInst instance.Instance, deviceNames []string, previousSnapshotUUID string) (net.Conn, func(), string, error) {
 	l := b.logger.AddContext(logger.Ctx{"project": snapInst.Project().Name, "instance": snapInst.Name()})
 	l.Debug("GetInstanceSnapshotNBD started")
 	defer l.Debug("GetInstanceSnapshotNBD finished")
@@ -564,8 +613,13 @@ func (b *lxdBackend) GetInstanceSnapshotNBD(snapInst instance.Instance, deviceNa
 	for _, deviceName := range deviceNames {
 		_, ok := images[deviceName]
 		if !ok {
-			return nil, nil, "", api.StatusErrorf(http.StatusBadRequest, "Snapshot has no volume snapshot with bitmaps for device %q", deviceName)
+			return nil, nil, "", api.StatusErrorf(http.StatusNotFound, "Snapshot has no volume snapshot with bitmaps for device %q", deviceName)
 		}
+	}
+
+	exposed, err := b.exposedSnapshotBitmaps(snapInst, previousSnapshotUUID)
+	if err != nil {
+		return nil, nil, "", err
 	}
 
 	revert := revert.New()
@@ -574,7 +628,7 @@ func (b *lxdBackend) GetInstanceSnapshotNBD(snapInst instance.Instance, deviceNa
 	cleanups := []func(){}
 	refs := []nbdExportRef{{poolName: b.name, volType: drivers.VolumeTypeVM, projectName: snapInst.Project().Name, snapshotName: snapInst.Name()}}
 
-	// The metadata images are on the config volume snapshot, which is mounted with the root volume snapshot.
+	// The snapshot metadata images are on the config volume snapshot, which is mounted with the root volume snapshot.
 	mountInfo, err := b.MountInstanceSnapshot(snapInst, nil)
 	if err != nil {
 		return nil, nil, "", err
@@ -589,14 +643,8 @@ func (b *lxdBackend) GetInstanceSnapshotNBD(snapInst instance.Instance, deviceNa
 		return nil, nil, "", errors.New("Failed getting disk path of snapshot")
 	}
 
-	rootDBVol, err := VolumeDBGet(b, snapInst.Project().Name, snapInst.Name(), drivers.VolumeTypeVM)
-	if err != nil {
-		return nil, nil, "", err
-	}
-
 	instProject := snapInst.Project()
 	effectiveProject := project.StorageVolumeProjectFromRecord(&instProject, cluster.StoragePoolVolumeTypeCustom)
-	customType := cluster.StoragePoolVolumeTypeCustom
 	pools := map[string]Pool{b.name: b}
 	exports := []nbdExport{}
 	for _, deviceName := range slices.Sorted(maps.Keys(images)) {
@@ -605,41 +653,30 @@ func (b *lxdBackend) GetInstanceSnapshotNBD(snapInst instance.Instance, deviceNa
 			continue
 		}
 
-		if image.SnapshotUUID == rootDBVol.Config["volatile.uuid"] {
-			exports = append(exports, nbdExport{name: deviceName, devPath: devSource.Path, metadataImagePath: image.Path})
+		if image.VolumeSnapshot == "" {
+			exports = append(exports, nbdExport{name: deviceName, devPath: devSource.Path, metadataImagePath: image.Path, bitmapNames: exposed[deviceName]})
 			continue
 		}
 
-		// The volume snapshot of an attached custom volume, which can be deleted on its own.
-		var dbSnapVols []*db.StorageVolume
-		err = b.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-			var err error
-			dbSnapVols, err = tx.GetStorageVolumes(ctx, true, db.StorageVolumeFilter{Type: &customType, Project: &effectiveProject, UUIDs: []string{image.SnapshotUUID}})
-			return err
-		})
-		if err != nil {
-			return nil, nil, "", err
-		}
-
-		if len(dbSnapVols) == 0 {
-			l.Warn("Volume snapshot of the snapshot no longer exists, not exporting it", logger.Ctx{"device": deviceName, "snapshotUUID": image.SnapshotUUID})
-			continue
-		}
-
-		dbSnapVol := dbSnapVols[0]
-		pool, ok := pools[dbSnapVol.Pool]
+		// The volume snapshot of an attached custom volume.
+		pool, ok := pools[image.Pool]
 		if !ok {
-			pool, err = LoadByName(b.state, dbSnapVol.Pool)
+			pool, err = LoadByName(b.state, image.Pool)
 			if err != nil {
 				return nil, nil, "", err
 			}
 
-			pools[dbSnapVol.Pool] = pool
+			pools[image.Pool] = pool
 		}
 
 		lxdPool, ok := pool.(*lxdBackend)
 		if !ok {
-			return nil, nil, "", fmt.Errorf("Unexpected storage pool type for %q", dbSnapVol.Pool)
+			return nil, nil, "", fmt.Errorf("Unexpected storage pool type for %q", image.Pool)
+		}
+
+		dbSnapVol, err := VolumeDBGet(lxdPool, effectiveProject, image.VolumeSnapshot, drivers.VolumeTypeCustom)
+		if err != nil {
+			return nil, nil, "", err
 		}
 
 		snapVol := lxdPool.GetVolume(drivers.VolumeTypeCustom, drivers.ContentTypeBlock, project.StorageVolume(effectiveProject, dbSnapVol.Name), dbSnapVol.Config)
@@ -666,8 +703,8 @@ func (b *lxdBackend) GetInstanceSnapshotNBD(snapInst instance.Instance, deviceNa
 			return nil, nil, "", fmt.Errorf("Failed getting disk path of volume snapshot %q: %w", dbSnapVol.Name, err)
 		}
 
-		exports = append(exports, nbdExport{name: deviceName, devPath: devPath, metadataImagePath: image.Path})
-		refs = append(refs, nbdExportRef{poolName: dbSnapVol.Pool, volType: drivers.VolumeTypeCustom, projectName: effectiveProject, snapshotName: dbSnapVol.Name})
+		exports = append(exports, nbdExport{name: deviceName, devPath: devPath, metadataImagePath: image.Path, bitmapNames: exposed[deviceName]})
+		refs = append(refs, nbdExportRef{poolName: image.Pool, volType: drivers.VolumeTypeCustom, projectName: effectiveProject, snapshotName: dbSnapVol.Name})
 	}
 
 	if len(exports) == 0 {

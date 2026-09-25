@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/canonical/lxd/shared/api"
 	cli "github.com/canonical/lxd/shared/cmd"
 )
 
@@ -26,21 +25,21 @@ func (c *cmdStorageVolumeNBD) command() *cobra.Command {
 	cmd.Short = "Serve a block storage volume over NBD"
 	cmd.Long = cli.FormatSection("Description", cmd.Short+`
 
-The volume is served under the default export. The virtual machine whose root volume it is, or that it
-is attached to, must be stopped. With --writable the export is read-write, for restoring a backup, and
-the bitmaps of the volume are deleted.
+The volume is served read-write under the default export, for restoring a backup, and the bitmaps of the
+volume are deleted first. The virtual machine whose root volume it is, or that it is attached to, must be
+stopped. The command requires --writable, as a confirmation that the volume is overwritten.
 
 The command is not an NBD client. It opens a local listener, prints the address and forwards
 the NBD client that connects to it to the LXD server, so that a tool such as nbdinfo, qemu-img
 or nbdcopy can be pointed at it. It serves one client and exits when that client disconnects.`)
-	cmd.Example = cli.FormatSection("", `lxc storage volume nbd default virtual-machine/vm1
+	cmd.Example = cli.FormatSection("", `lxc storage volume nbd default virtual-machine/vm1 --writable
     Serve the root volume of virtual machine "vm1" in pool "default" on a random loopback port.
 
 lxc storage volume nbd default data --writable --address /run/user/1000/data.sock
-    Serve custom volume "data" in pool "default" read-write on a unix socket.`)
+    Serve custom volume "data" in pool "default" on a unix socket.`)
 
 	cmd.Flags().StringVar(&c.flagAddress, "address", "", cli.FormatStringFlagLabel("Local address to listen on, either host:port or an absolute unix socket path"))
-	cmd.Flags().BoolVar(&c.flagWritable, "writable", false, "Open a read-write NBD session instead of a read-only one")
+	cmd.Flags().BoolVar(&c.flagWritable, "writable", false, "Confirm that the volume is served read-write and its bitmaps are deleted")
 	cmd.Flags().StringVar(&c.storage.flagTarget, "target", "", cli.FormatStringFlagLabel("Cluster member name"))
 	cmd.RunE = c.run
 
@@ -78,6 +77,10 @@ func (c *cmdStorageVolumeNBD) run(cmd *cobra.Command, args []string) error {
 		return errors.New("Missing pool name")
 	}
 
+	if !c.flagWritable {
+		return errors.New("The volume is served read-write, which --writable confirms")
+	}
+
 	client := resource.server
 
 	// If a target member was specified, serve the volume from that member.
@@ -104,6 +107,6 @@ func (c *cmdStorageVolumeNBD) run(cmd *cobra.Command, args []string) error {
 	fmt.Printf("NBD listening on %v\n", listener.Addr())
 
 	return nbdProxy(listener, func() (net.Conn, error) {
-		return client.GetStoragePoolVolumeNBDConn(resource.name, volType, volName, api.StorageVolumeNBDPost{Writable: c.flagWritable})
+		return client.GetStoragePoolVolumeNBDConn(resource.name, volType, volName)
 	})
 }

@@ -1798,11 +1798,12 @@ func (r *ProtocolLXD) GetInstanceFileSFTP(instanceName string) (*sftp.Client, er
 
 // GetInstanceSnapshotNBDConn returns a connection to the read-only NBD export of the instance snapshot, which serves
 // the volume snapshots of the given disk devices, or of every device when none is given, each under an export named
-// after its device together with the bitmaps of the snapshot.
+// after its device together with the bitmaps of the snapshot. previousSnapshotUUID limits the bitmaps to the ones
+// created with the instance snapshot of that UUID, and every bitmap of the snapshot is served when it is empty.
 //
 // The returned connection speaks NBD and the server sends the first message of the handshake.
 // Note that it's the caller's responsibility to close the returned connection.
-func (r *ProtocolLXD) GetInstanceSnapshotNBDConn(instanceName string, snapshotName string, deviceNames []string) (net.Conn, error) {
+func (r *ProtocolLXD) GetInstanceSnapshotNBDConn(instanceName string, snapshotName string, deviceNames []string, previousSnapshotUUID string) (net.Conn, error) {
 	err := r.CheckExtension("storage_volume_block_tracking")
 	if err != nil {
 		return nil, err
@@ -1811,11 +1812,18 @@ func (r *ProtocolLXD) GetInstanceSnapshotNBDConn(instanceName string, snapshotNa
 	apiURL := api.NewURL()
 	apiURL.URL = r.httpBaseURL // Preload the URL with the client base URL.
 	apiURL.Path("1.0", "instances", instanceName, "snapshots", snapshotName, "nbd")
-	if len(deviceNames) > 0 {
-		apiURL.WithQuery("devices", strings.Join(deviceNames, ","))
+	r.setURLQueryAttributes(&apiURL.URL)
+
+	query := apiURL.Query()
+	for _, deviceName := range deviceNames {
+		query.Add("device", deviceName)
 	}
 
-	r.setURLQueryAttributes(&apiURL.URL)
+	if previousSnapshotUUID != "" {
+		query.Set("previous_snapshot_uuid", previousSnapshotUUID)
+	}
+
+	apiURL.RawQuery = query.Encode()
 
 	return r.rawUpgradeConn(http.MethodGet, &apiURL.URL, "nbd", nil)
 }
@@ -1904,22 +1912,6 @@ func (r *ProtocolLXD) GetInstanceBitmap(instanceName string, bitmapName string) 
 	}
 
 	return r.getInstanceBitmap(path, bitmapName)
-}
-
-// DeleteInstanceBitmap deletes the named bitmap from every volume of the instance.
-func (r *ProtocolLXD) DeleteInstanceBitmap(instanceName string, bitmapName string) error {
-	path, err := r.instanceBitmapsPath(instanceName, "")
-	if err != nil {
-		return err
-	}
-
-	// Send the request
-	_, _, err = r.query(http.MethodDelete, path+"/"+url.PathEscape(bitmapName), nil, "")
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
 
 // GetInstanceSnapshotBitmapNames returns the names of the bitmaps of the instance snapshot.

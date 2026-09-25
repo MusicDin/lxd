@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/canonical/lxd/lxd/auth"
 	"github.com/canonical/lxd/lxd/cluster"
@@ -51,10 +50,15 @@ var instanceSnapshotNBDCmd = APIEndpoint{
 //	    type: string
 //	    example: default
 //	  - in: query
-//	    name: devices
-//	    description: Comma separated names of the disk devices whose volume snapshots are exported, all of them when empty
+//	    name: device
+//	    description: Name of a disk device of the snapshot whose volume snapshot is exported, repeated once per device, all of them when absent
 //	    type: string
-//	    example: root,data
+//	    example: root
+//	  - in: query
+//	    name: previous_snapshot_uuid
+//	    description: Instance snapshot UUID of the previous snapshot, which limits the exported bitmaps to the ones created with that snapshot
+//	    type: string
+//	    example: 5b1e7c2a-3d4f-4e6a-9b8c-7d6e5f4a3b2c
 //	responses:
 //	  "101":
 //	    description: Switching protocols to NBD
@@ -86,11 +90,8 @@ func instanceSnapshotNBDGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// An empty list exports every device.
-	deviceNames := []string{}
-	devices := request.QueryParam(r, "devices")
-	if devices != "" {
-		deviceNames = strings.Split(devices, ",")
-	}
+	deviceNames := r.URL.Query()["device"]
+	previousSnapshotUUID := request.QueryParam(r, "previous_snapshot_uuid")
 
 	instanceType, err := urlInstanceTypeDetect(r)
 	if err != nil {
@@ -104,7 +105,7 @@ func instanceSnapshotNBDGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if client != nil {
-		conn, err := client.GetInstanceSnapshotNBDConn(instName, snapshotName, deviceNames)
+		conn, err := client.GetInstanceSnapshotNBDConn(instName, snapshotName, deviceNames, previousSnapshotUUID)
 		if err != nil {
 			return response.SmartError(err)
 		}
@@ -127,7 +128,7 @@ func instanceSnapshotNBDGet(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	conn, cleanup, conflictReference, err := pool.GetInstanceSnapshotNBD(snapInst, deviceNames)
+	conn, cleanup, conflictReference, err := pool.GetInstanceSnapshotNBD(snapInst, deviceNames, previousSnapshotUUID)
 	if err != nil {
 		return response.SmartError(err)
 	}

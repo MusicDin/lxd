@@ -447,11 +447,11 @@ func (b *mockBackend) CreateCustomVolumeFromTarball(ctx context.Context, project
 }
 
 // GetVolumeNBD ...
-func (b *mockBackend) GetVolumeNBD(projectName string, volType drivers.VolumeType, volName string, writable bool) (net.Conn, func(), string, error) {
+func (b *mockBackend) GetVolumeNBD(projectName string, volType drivers.VolumeType, volName string) (net.Conn, func(), string, error) {
 	return nil, nil, "", nil
 }
 
 // GetInstanceSnapshotNBD ...
-func (b *mockBackend) GetInstanceSnapshotNBD(snapInst instance.Instance, deviceNames []string) (net.Conn, func(), string, error) {
+func (b *mockBackend) GetInstanceSnapshotNBD(snapInst instance.Instance, deviceNames []string, previousSnapshotUUID string) (net.Conn, func(), string, error) {
 	return nil, nil, "", nil
 }

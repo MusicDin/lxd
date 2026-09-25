@@ -154,6 +154,6 @@ type Pool interface {
 
 	// NBD. Each getter returns the conflict reference to set on the operation representing the session, which is
 	// empty for a snapshot export, as every client opens its own session.
-	GetVolumeNBD(projectName string, volType drivers.VolumeType, volName string, writable bool) (net.Conn, func(), string, error)
-	GetInstanceSnapshotNBD(snapInst instance.Instance, deviceNames []string) (net.Conn, func(), string, error)
+	GetVolumeNBD(projectName string, volType drivers.VolumeType, volName string) (net.Conn, func(), string, error)
+	GetInstanceSnapshotNBD(snapInst instance.Instance, deviceNames []string, previousSnapshotUUID string) (net.Conn, func(), string, error)
 }

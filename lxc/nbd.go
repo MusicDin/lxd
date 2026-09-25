@@ -15,8 +15,9 @@ import (
 type cmdNBD struct {
 	global *cmdGlobal
 
-	flagAddress string
-	flagDevices string
+	flagAddress              string
+	flagDevices              string
+	flagPreviousSnapshotUUID string
 }
 
 func (c *cmdNBD) command() *cobra.Command {
@@ -41,6 +42,7 @@ lxc nbd vm1/snap1 --devices root --address 127.0.0.1:10809
 
 	cmd.Flags().StringVar(&c.flagAddress, "address", "", cli.FormatStringFlagLabel("Local address to listen on, either host:port or an absolute unix socket path"))
 	cmd.Flags().StringVar(&c.flagDevices, "devices", "", cli.FormatStringFlagLabel("Comma separated names of the disk devices whose volume snapshots are served, all of them by default"))
+	cmd.Flags().StringVar(&c.flagPreviousSnapshotUUID, "previous-snapshot-uuid", "", cli.FormatStringFlagLabel("UUID of the previous snapshot, which limits the served bitmaps to the ones created with it"))
 	cmd.RunE = c.run
 
 	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -95,6 +97,6 @@ func (c *cmdNBD) run(cmd *cobra.Command, args []string) error {
 	fmt.Printf("NBD listening on %v\n", listener.Addr())
 
 	return nbdProxy(listener, func() (net.Conn, error) {
-		return resource.server.GetInstanceSnapshotNBDConn(instName, snapName, deviceNames)
+		return resource.server.GetInstanceSnapshotNBDConn(instName, snapName, deviceNames, c.flagPreviousSnapshotUUID)
 	})
 }
