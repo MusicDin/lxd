@@ -853,13 +853,16 @@ func (m *Monitor) NBDBlockExportAdd(deviceNodeName string) error {
 	return nil
 }
 
-// BlockDirtyInfo contains information about a dirty bitmap.
+// BlockDirtyInfo contains information about a dirty bitmap. An inconsistent bitmap is a persistent bitmap that its
+// image marked in use, because the process that had it loaded exited without writing it back.
 type BlockDirtyInfo struct {
-	Name        string `json:"name"`
-	Count       int64  `json:"count"`
-	Granularity int    `json:"granularity"`
-	Recording   bool   `json:"recording"`
-	Busy        bool   `json:"busy"`
+	Name         string `json:"name"`
+	Count        int64  `json:"count"`
+	Granularity  int    `json:"granularity"`
+	Recording    bool   `json:"recording"`
+	Busy         bool   `json:"busy"`
+	Persistent   bool   `json:"persistent"`
+	Inconsistent bool   `json:"inconsistent"`
 }
 
 // QueryNodeDirtyBitmaps returns the dirty bitmaps of the given block node.
