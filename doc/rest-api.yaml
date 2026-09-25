@@ -8340,16 +8340,6 @@ definitions:
         title: StorageVolume represents the fields of a LXD storage volume.
         type: object
         x-go-package: github.com/canonical/lxd/shared/api
-    StorageVolumeNBDPost:
-        description: StorageVolumeNBDPost represents the fields available for an NBD export of a volume
-        properties:
-            writable:
-                description: Whether the volume is exported read-write, for a restore, instead of read-only
-                example: true
-                type: boolean
-                x-go-name: Writable
-        type: object
-        x-go-package: github.com/canonical/lxd/shared/api
     StorageVolumePost:
         description: StorageVolumePost represents the fields required to rename a LXD storage pool volume
         properties:
@@ -13526,31 +13516,6 @@ paths:
             tags:
                 - instances
     /1.0/instances/{name}/bitmaps/{bitmapName}:
-        delete:
-            description: Deletes the bitmap from every volume of the instance. The snapshots of the instance keep their copies.
-            operationId: instance_bitmap_delete
-            parameters:
-                - description: Project name
-                  example: default
-                  in: query
-                  name: project
-                  type: string
-            produces:
-                - application/json
-            responses:
-                "200":
-                    $ref: '#/responses/EmptySyncResponse'
-                "400":
-                    $ref: '#/responses/BadRequest'
-                "403":
-                    $ref: '#/responses/Forbidden'
-                "404":
-                    $ref: '#/responses/NotFound'
-                "500":
-                    $ref: '#/responses/InternalServerError'
-            summary: Delete the bitmap
-            tags:
-                - instances
         get:
             description: Gets a specific bitmap of the instance.
             operationId: instance_bitmap_get
@@ -14774,10 +14739,15 @@ paths:
                   in: query
                   name: project
                   type: string
-                - description: Comma separated names of the disk devices whose volume snapshots are exported, all of them when empty
-                  example: root,data
+                - description: Name of a disk device of the snapshot whose volume snapshot is exported, repeated once per device, all of them when absent
+                  example: root
                   in: query
-                  name: devices
+                  name: device
+                  type: string
+                - description: Instance snapshot UUID of the previous snapshot, which limits the exported bitmaps to the ones created with that snapshot
+                  example: 5b1e7c2a-3d4f-4e6a-9b8c-7d6e5f4a3b2c
+                  in: query
+                  name: previous_snapshot_uuid
                   type: string
             produces:
                 - application/json
@@ -20551,13 +20521,11 @@ paths:
                 - storage
     /1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}/nbd:
         post:
-            consumes:
-                - application/json
             description: |-
-                Upgrades the request to an NBD connection of the storage volume's block device, read-write when the request
-                sets writable, for restoring a backup. The volume must be of type virtual-machine or custom, and the virtual
-                machine whose root volume it is or that it is attached to must be stopped. A read-write export deletes the
-                bitmaps of the volume.
+                Upgrades the request to a read-write NBD connection of the storage volume's block device, for writing a backup
+                back. The volume must be of type virtual-machine or custom, and the virtual machine whose root volume it is or
+                that it is attached to must be stopped. Every write invalidates the bitmaps of the volume, so they are deleted
+                before the export starts.
                 The export runs as an operation on the cluster member serving it, which is listed and cancelled through
                 the operations API. Cancelling the operation closes the connection.
             operationId: storage_pool_volumes_type_nbd_post
@@ -20572,11 +20540,6 @@ paths:
                   in: query
                   name: target
                   type: string
-                - description: NBD export
-                  in: body
-                  name: nbd
-                  schema:
-                    $ref: '#/definitions/StorageVolumeNBDPost'
             produces:
                 - application/json
                 - application/octet-stream
@@ -20595,7 +20558,7 @@ paths:
                     $ref: '#/responses/NotFound'
                 "500":
                     $ref: '#/responses/InternalServerError'
-            summary: Export the storage volume over NBD
+            summary: Write the storage volume over NBD
             tags:
                 - storage
     /1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}/snapshots:
