@@ -1105,7 +1105,7 @@ func (d *alletra) commonVolumeRules() map[string]func(value string) error {
 		//  type: string
 		//  defaultdesc: `10GiB`
 		//  shortdesc: Size/quota of the storage volume
-		"volume.size": validate.Optional(validate.IsMultipleOfUnit("256MiB")),
+		"size": validate.Optional(validate.IsMultipleOfUnit("256MiB")),
 	}
 }
 
